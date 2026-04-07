@@ -6,8 +6,11 @@
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod pipeline;
+pub mod processor;
 pub mod traits;
 pub mod types;
+pub mod watcher;
 
 use std::path::PathBuf;
 

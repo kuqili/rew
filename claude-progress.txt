@@ -65,3 +65,38 @@ Summary: Tests: 4/4 passed. Criteria: 5/5 met. Verdict: pass
 
 ---
 
+## Session 2: Feature #2 — 文件监听与事件处理引擎 (2026-04-07)
+
+### Completed
+- Integrated `notify` v7 crate with macOS FSEvents support for file watching
+- Integrated `tokio` for async runtime, `globset` for glob matching, `tracing` for logging
+- Implemented `PathFilter` (watcher/filter.rs): glob-based ignore patterns matching node_modules, .git, target, __pycache__, .DS_Store, etc. + custom patterns from config
+- Implemented `MacOSWatcher` (watcher/macos.rs): wraps `notify::RecommendedWatcher`, produces `FileEvent`s via tokio mpsc unbounded channel, supports runtime add/remove paths
+- Implemented `EventProcessor` (processor.rs): 30-second sliding window aggregation with deduplication (same path + same kind = keep latest), dynamic filtering pause:
+  - `package.json`/`Cargo.toml` change -> pause node_modules/target filtering for 60s
+  - `.git/HEAD` change -> global pause for 10s
+  - Trigger event is still processed; pause affects subsequent events only
+- Implemented `BatchStats` for per-batch statistics (files_added/modified/deleted/renamed + sizes)
+- Implemented `Pipeline` (pipeline.rs): wires MacOSWatcher -> EventProcessor via tokio mpsc channels, provides `PipelineHandle` for downstream batch consumption
+- All components have unit tests; pipeline has integration tests with real filesystem operations
+
+### Test Results
+- 22/22 tests pass (up from 4 in Session 1)
+- 0 warnings on `cargo build --workspace`
+- Filter tests: 7 (node_modules, .git, .DS_Store, target, __pycache__, swap files, custom patterns)
+- Processor tests: 5 (dedup, different events, batch stats, package.json pause, .git/HEAD pause, flush on close)
+- Pipeline tests: 3 (start/stop, file creation detection, noise filtering)
+
+### Files Created/Modified
+```
+crates/rew-core/Cargo.toml          — Added notify, tokio, globset, tracing deps
+crates/rew-core/src/lib.rs          — Added watcher, processor, pipeline modules
+crates/rew-core/src/types.rs        — Added Hash derive to FileEventKind
+crates/rew-core/src/watcher/mod.rs  — Watcher module root
+crates/rew-core/src/watcher/filter.rs — PathFilter with glob matching
+crates/rew-core/src/watcher/macos.rs  — MacOSWatcher with FSEvents
+crates/rew-core/src/processor.rs    — EventProcessor with sliding window
+crates/rew-core/src/pipeline.rs     — Pipeline connecting watcher to processor
+```
+
+---

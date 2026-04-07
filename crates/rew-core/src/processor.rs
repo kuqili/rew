@@ -1,0 +1,545 @@
+//! Event processor with sliding window aggregation, deduplication, and dynamic filtering.
+//!
+//! The EventProcessor receives raw `FileEvent`s from the watcher and:
+//! 1. Deduplicates same-path, same-kind events within the window
+//! 2. Aggregates events into `EventBatch`es at configurable intervals (default 30s)
+//! 3. Implements dynamic filter pausing:
+//!    - `package.json`/`Cargo.toml` changes -> pause `node_modules`/`target` filtering for 60s
+//!    - `.git/HEAD` changes -> pause all filtering for 10s
+//! 4. Computes batch statistics (files added/modified/deleted + sizes)
+
+use crate::types::{EventBatch, FileEvent, FileEventKind};
+use chrono::Utc;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
+
+/// Configuration for the event processor.
+#[derive(Debug, Clone)]
+pub struct ProcessorConfig {
+    /// Window duration for event aggregation
+    pub window_duration: Duration,
+    /// How long to pause node_modules/target filtering after package.json/Cargo.toml change
+    pub package_pause_duration: Duration,
+    /// How long to pause all filtering after .git/HEAD change
+    pub git_pause_duration: Duration,
+}
+
+impl Default for ProcessorConfig {
+    fn default() -> Self {
+        Self {
+            window_duration: Duration::from_secs(30),
+            package_pause_duration: Duration::from_secs(60),
+            git_pause_duration: Duration::from_secs(10),
+        }
+    }
+}
+
+/// Key for deduplication: path + event kind.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DeduplicationKey {
+    path: PathBuf,
+    kind: FileEventKind,
+}
+
+/// Tracks dynamic filter pause state.
+#[derive(Debug)]
+struct PauseState {
+    /// When package-related pause expires (node_modules/target ignored)
+    package_pause_until: Option<Instant>,
+    /// When git-related pause expires (global pause)
+    git_pause_until: Option<Instant>,
+}
+
+impl PauseState {
+    fn new() -> Self {
+        Self {
+            package_pause_until: None,
+            git_pause_until: None,
+        }
+    }
+
+    /// Check if we're in a global pause (git HEAD change detected).
+    fn is_globally_paused(&self) -> bool {
+        self.git_pause_until
+            .map(|t| Instant::now() < t)
+            .unwrap_or(false)
+    }
+
+    /// Check if package-related directories should be paused.
+    fn is_package_paused(&self) -> bool {
+        self.package_pause_until
+            .map(|t| Instant::now() < t)
+            .unwrap_or(false)
+    }
+
+    /// Trigger package pause (package.json or Cargo.toml changed).
+    fn trigger_package_pause(&mut self, duration: Duration) {
+        let until = Instant::now() + duration;
+        self.package_pause_until = Some(until);
+        info!(
+            "Dynamic pause activated: package dirs paused for {}s",
+            duration.as_secs()
+        );
+    }
+
+    /// Trigger global pause (.git/HEAD changed).
+    fn trigger_git_pause(&mut self, duration: Duration) {
+        let until = Instant::now() + duration;
+        self.git_pause_until = Some(until);
+        info!(
+            "Dynamic pause activated: global pause for {}s",
+            duration.as_secs()
+        );
+    }
+}
+
+/// Statistics computed for each EventBatch.
+#[derive(Debug, Clone, Default)]
+pub struct BatchStats {
+    pub files_added: usize,
+    pub files_modified: usize,
+    pub files_deleted: usize,
+    pub files_renamed: usize,
+    pub total_added_size: u64,
+    pub total_modified_size: u64,
+    pub total_deleted_size: u64,
+}
+
+impl BatchStats {
+    /// Compute statistics from an EventBatch.
+    pub fn from_batch(batch: &EventBatch) -> Self {
+        let mut stats = BatchStats::default();
+        for event in &batch.events {
+            let size = event.size_bytes.unwrap_or(0);
+            match event.kind {
+                FileEventKind::Created => {
+                    stats.files_added += 1;
+                    stats.total_added_size += size;
+                }
+                FileEventKind::Modified => {
+                    stats.files_modified += 1;
+                    stats.total_modified_size += size;
+                }
+                FileEventKind::Deleted => {
+                    stats.files_deleted += 1;
+                    stats.total_deleted_size += size;
+                }
+                FileEventKind::Renamed => {
+                    stats.files_renamed += 1;
+                }
+            }
+        }
+        stats
+    }
+}
+
+/// The event processor aggregates, deduplicates, and batches file events.
+pub struct EventProcessor {
+    config: ProcessorConfig,
+}
+
+impl EventProcessor {
+    /// Create a new EventProcessor with the given configuration.
+    pub fn new(config: ProcessorConfig) -> Self {
+        Self { config }
+    }
+
+    /// Create an EventProcessor with default configuration.
+    pub fn with_defaults() -> Self {
+        Self::new(ProcessorConfig::default())
+    }
+
+    /// Run the event processing loop.
+    ///
+    /// Receives events from `event_rx`, aggregates them into batches,
+    /// and sends the batches to `batch_tx`.
+    ///
+    /// This method runs until the input channel is closed.
+    pub async fn run(
+        &self,
+        mut event_rx: mpsc::UnboundedReceiver<FileEvent>,
+        batch_tx: mpsc::Sender<(EventBatch, BatchStats)>,
+    ) {
+        let window = self.config.window_duration;
+        let package_pause = self.config.package_pause_duration;
+        let git_pause = self.config.git_pause_duration;
+
+        let mut event_map: HashMap<DeduplicationKey, FileEvent> = HashMap::new();
+        let mut pause_state = PauseState::new();
+        let mut window_start = Utc::now();
+        let mut interval = tokio::time::interval(window);
+        // First tick completes immediately, skip it
+        interval.tick().await;
+
+        loop {
+            tokio::select! {
+                // Receive new event
+                event = event_rx.recv() => {
+                    match event {
+                        Some(file_event) => {
+                            // Check pause state BEFORE triggering new pauses
+                            // (the event that triggers a pause should still be processed)
+                            let drop = self.should_drop_during_pause(&file_event, &pause_state);
+
+                            // Check if this event triggers dynamic pauses (for future events)
+                            self.check_dynamic_triggers(&file_event, &mut pause_state, package_pause, git_pause);
+
+                            // Should we drop this event due to pause?
+                            if drop {
+                                debug!("Event dropped due to dynamic pause: {:?}", file_event.path);
+                                continue;
+                            }
+
+                            // Deduplicate: same path + same kind = keep latest
+                            let key = DeduplicationKey {
+                                path: file_event.path.clone(),
+                                kind: file_event.kind.clone(),
+                            };
+                            event_map.insert(key, file_event);
+                        }
+                        None => {
+                            // Channel closed, flush remaining events and exit
+                            if !event_map.is_empty() {
+                                let batch = self.flush_events(&mut event_map, window_start);
+                                let stats = BatchStats::from_batch(&batch);
+                                let _ = batch_tx.send((batch, stats)).await;
+                            }
+                            info!("Event channel closed, processor shutting down");
+                            return;
+                        }
+                    }
+                }
+                // Window tick
+                _ = interval.tick() => {
+                    if !event_map.is_empty() {
+                        let batch = self.flush_events(&mut event_map, window_start);
+                        let stats = BatchStats::from_batch(&batch);
+                        info!(
+                            "EventBatch: {} events (added={}, modified={}, deleted={}, renamed={})",
+                            batch.events.len(),
+                            stats.files_added,
+                            stats.files_modified,
+                            stats.files_deleted,
+                            stats.files_renamed,
+                        );
+                        if batch_tx.send((batch, stats)).await.is_err() {
+                            warn!("Batch channel closed, processor shutting down");
+                            return;
+                        }
+                    }
+                    window_start = Utc::now();
+                }
+            }
+        }
+    }
+
+    /// Check if this event should trigger a dynamic pause.
+    fn check_dynamic_triggers(
+        &self,
+        event: &FileEvent,
+        pause_state: &mut PauseState,
+        package_pause: Duration,
+        git_pause: Duration,
+    ) {
+        let path_str = event.path.to_string_lossy();
+        let file_name = event
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // package.json or Cargo.toml changed -> pause node_modules/target
+        if file_name == "package.json"
+            || file_name == "Cargo.toml"
+            || file_name == "package-lock.json"
+            || file_name == "yarn.lock"
+            || file_name == "pnpm-lock.yaml"
+            || file_name == "Cargo.lock"
+        {
+            pause_state.trigger_package_pause(package_pause);
+        }
+
+        // .git/HEAD changed -> global pause
+        if path_str.contains(".git") && file_name == "HEAD" {
+            pause_state.trigger_git_pause(git_pause);
+        }
+    }
+
+    /// Check if an event should be dropped due to dynamic pause.
+    fn should_drop_during_pause(&self, event: &FileEvent, pause_state: &PauseState) -> bool {
+        // Global pause drops everything
+        if pause_state.is_globally_paused() {
+            return true;
+        }
+
+        // Package pause only drops node_modules and target
+        if pause_state.is_package_paused() {
+            let path_str = event.path.to_string_lossy();
+            if path_str.contains("node_modules") || path_str.contains("/target/") {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Flush accumulated events into an EventBatch.
+    fn flush_events(
+        &self,
+        event_map: &mut HashMap<DeduplicationKey, FileEvent>,
+        window_start: chrono::DateTime<Utc>,
+    ) -> EventBatch {
+        let events: Vec<FileEvent> = event_map.drain().map(|(_, v)| v).collect();
+        EventBatch {
+            events,
+            window_start,
+            window_end: Utc::now(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use tokio::time::timeout;
+
+    fn make_event(path: &str, kind: FileEventKind) -> FileEvent {
+        FileEvent {
+            path: PathBuf::from(path),
+            kind,
+            timestamp: Utc::now(),
+            size_bytes: Some(100),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_deduplication() {
+        let config = ProcessorConfig {
+            window_duration: Duration::from_millis(200),
+            ..Default::default()
+        };
+        let processor = EventProcessor::new(config);
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (batch_tx, mut batch_rx) = mpsc::channel(10);
+
+        // Spawn processor
+        let handle = tokio::spawn(async move {
+            processor.run(event_rx, batch_tx).await;
+        });
+
+        // Send 5 identical events (same path, same kind)
+        for _ in 0..5 {
+            event_tx
+                .send(make_event("/tmp/test.txt", FileEventKind::Modified))
+                .unwrap();
+        }
+
+        // Wait for batch
+        let result = timeout(Duration::from_secs(2), batch_rx.recv()).await;
+        assert!(result.is_ok());
+        let (batch, stats) = result.unwrap().unwrap();
+        // Should be deduplicated to 1 event
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(stats.files_modified, 1);
+
+        // Close channel
+        drop(event_tx);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_different_events_not_deduped() {
+        let config = ProcessorConfig {
+            window_duration: Duration::from_millis(200),
+            ..Default::default()
+        };
+        let processor = EventProcessor::new(config);
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (batch_tx, mut batch_rx) = mpsc::channel(10);
+
+        let handle = tokio::spawn(async move {
+            processor.run(event_rx, batch_tx).await;
+        });
+
+        // Different paths
+        event_tx
+            .send(make_event("/tmp/a.txt", FileEventKind::Created))
+            .unwrap();
+        event_tx
+            .send(make_event("/tmp/b.txt", FileEventKind::Created))
+            .unwrap();
+        // Same path but different kind
+        event_tx
+            .send(make_event("/tmp/a.txt", FileEventKind::Modified))
+            .unwrap();
+
+        let result = timeout(Duration::from_secs(2), batch_rx.recv()).await;
+        assert!(result.is_ok());
+        let (batch, stats) = result.unwrap().unwrap();
+        assert_eq!(batch.events.len(), 3);
+        assert_eq!(stats.files_added, 2);
+        assert_eq!(stats.files_modified, 1);
+
+        drop(event_tx);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_batch_stats() {
+        let batch = EventBatch {
+            events: vec![
+                make_event("/a.txt", FileEventKind::Created),
+                make_event("/b.txt", FileEventKind::Created),
+                make_event("/c.txt", FileEventKind::Modified),
+                make_event("/d.txt", FileEventKind::Deleted),
+                make_event("/e.txt", FileEventKind::Deleted),
+                make_event("/f.txt", FileEventKind::Deleted),
+            ],
+            window_start: Utc::now(),
+            window_end: Utc::now(),
+        };
+
+        let stats = BatchStats::from_batch(&batch);
+        assert_eq!(stats.files_added, 2);
+        assert_eq!(stats.files_modified, 1);
+        assert_eq!(stats.files_deleted, 3);
+        assert_eq!(stats.total_added_size, 200);
+        assert_eq!(stats.total_deleted_size, 300);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_pause_package_json() {
+        let config = ProcessorConfig {
+            window_duration: Duration::from_millis(200),
+            package_pause_duration: Duration::from_secs(2),
+            ..Default::default()
+        };
+        let processor = EventProcessor::new(config);
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (batch_tx, mut batch_rx) = mpsc::channel(10);
+
+        let handle = tokio::spawn(async move {
+            processor.run(event_rx, batch_tx).await;
+        });
+
+        // Trigger package.json change -> activates pause on node_modules
+        event_tx
+            .send(make_event(
+                "/project/package.json",
+                FileEventKind::Modified,
+            ))
+            .unwrap();
+
+        // Small delay to ensure the trigger is processed
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // These node_modules events should be dropped
+        event_tx
+            .send(make_event(
+                "/project/node_modules/foo/index.js",
+                FileEventKind::Created,
+            ))
+            .unwrap();
+        event_tx
+            .send(make_event(
+                "/project/node_modules/bar/index.js",
+                FileEventKind::Created,
+            ))
+            .unwrap();
+
+        // This regular event should NOT be dropped
+        event_tx
+            .send(make_event("/project/src/main.js", FileEventKind::Modified))
+            .unwrap();
+
+        let result = timeout(Duration::from_secs(2), batch_rx.recv()).await;
+        assert!(result.is_ok());
+        let (batch, _stats) = result.unwrap().unwrap();
+        // Should only have package.json + main.js (node_modules events dropped)
+        let paths: Vec<String> = batch.events.iter().map(|e| e.path.to_string_lossy().to_string()).collect();
+        assert!(!paths.iter().any(|p| p.contains("node_modules")));
+        assert!(paths.iter().any(|p| p.contains("package.json")));
+        assert!(paths.iter().any(|p| p.contains("main.js")));
+
+        drop(event_tx);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_pause_git_head() {
+        let config = ProcessorConfig {
+            window_duration: Duration::from_millis(200),
+            git_pause_duration: Duration::from_secs(2),
+            ..Default::default()
+        };
+        let processor = EventProcessor::new(config);
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (batch_tx, mut batch_rx) = mpsc::channel(10);
+
+        let handle = tokio::spawn(async move {
+            processor.run(event_rx, batch_tx).await;
+        });
+
+        // Trigger .git/HEAD change -> global pause
+        event_tx
+            .send(make_event("/project/.git/HEAD", FileEventKind::Modified))
+            .unwrap();
+
+        // Small delay
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // All events should be dropped during global pause
+        event_tx
+            .send(make_event("/project/src/main.rs", FileEventKind::Modified))
+            .unwrap();
+        event_tx
+            .send(make_event("/project/README.md", FileEventKind::Modified))
+            .unwrap();
+
+        // First batch: only the .git/HEAD event
+        let result = timeout(Duration::from_secs(2), batch_rx.recv()).await;
+        assert!(result.is_ok());
+        let (batch, _stats) = result.unwrap().unwrap();
+        assert_eq!(batch.events.len(), 1);
+        assert!(batch.events[0]
+            .path
+            .to_string_lossy()
+            .contains(".git/HEAD"));
+
+        drop(event_tx);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_flush_on_channel_close() {
+        let config = ProcessorConfig {
+            window_duration: Duration::from_secs(60), // long window
+            ..Default::default()
+        };
+        let processor = EventProcessor::new(config);
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (batch_tx, mut batch_rx) = mpsc::channel(10);
+
+        let handle = tokio::spawn(async move {
+            processor.run(event_rx, batch_tx).await;
+        });
+
+        // Send event and immediately close
+        event_tx
+            .send(make_event("/tmp/test.txt", FileEventKind::Created))
+            .unwrap();
+        drop(event_tx);
+
+        // Should flush remaining events
+        let result = timeout(Duration::from_secs(2), batch_rx.recv()).await;
+        assert!(result.is_ok());
+        let (batch, _stats) = result.unwrap().unwrap();
+        assert_eq!(batch.events.len(), 1);
+
+        let _ = handle.await;
+    }
+}

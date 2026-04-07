@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 /// The kind of file system event observed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FileEventKind {
     Created,
     Modified,
