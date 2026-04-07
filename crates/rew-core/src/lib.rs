@@ -1,0 +1,29 @@
+//! rew-core: Core library for rew — AI 时代的文件安全网
+//!
+//! This crate defines the shared traits, types, configuration, database,
+//! and error handling used by both rew-tauri and rew-cli.
+
+pub mod config;
+pub mod db;
+pub mod error;
+pub mod traits;
+pub mod types;
+
+use std::path::PathBuf;
+
+/// Returns the rew home directory (~/.rew/)
+pub fn rew_home_dir() -> PathBuf {
+    let home = dirs::home_dir().expect("Could not determine home directory");
+    home.join(".rew")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rew_home_dir() {
+        let dir = rew_home_dir();
+        assert!(dir.ends_with(".rew"));
+    }
+}

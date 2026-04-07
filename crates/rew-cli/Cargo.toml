@@ -1,0 +1,12 @@
+[package]
+name = "rew-cli"
+version = "0.1.0"
+edition = "2021"
+description = "rew CLI — command-line interface for rew file safety net"
+
+[[bin]]
+name = "rew"
+path = "src/main.rs"
+
+[dependencies]
+rew-core = { path = "../rew-core" }
