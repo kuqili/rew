@@ -432,3 +432,52 @@ Summary: Tests: 110/110 passed. Criteria: 5/5 met. Verdict: pass
 
 ---
 
+## Session 10: Feature #7 — 开机自启、生产打包与集成测试 (2026-04-08)
+
+### Completed
+
+**LaunchAgent (`crates/rew-core/src/launchd.rs`):**
+- Plist generation with RunAtLoad, KeepAlive (SuccessfulExit=false for crash restart), ThrottleInterval=5s
+- `install()`: writes plist to ~/Library/LaunchAgents/, loads via launchctl
+- `uninstall()`: unloads via launchctl, removes plist
+- `is_installed()`, `is_running()`, `get_daemon_pid()` status queries
+
+**Lifecycle Management (`crates/rew-core/src/lifecycle.rs`):**
+- Global shutdown signal via AtomicBool + ctrlc handler (SIGTERM/SIGINT)
+- Database integrity check (PRAGMA integrity_check + schema verification)
+- PID file management (write/read/remove)
+- Process liveness check via kill(pid, 0)
+
+**Logging (`crates/rew-core/src/logging.rs`):**
+- Daily log rotation via tracing-appender (rew.YYYY-MM-DD format)
+- 7-day retention with automatic cleanup on startup
+- Dual output: file (DEBUG+) + stderr (WARN+)
+- Non-blocking async writer for performance
+
+**CLI Commands:**
+- `rew install` — registers LaunchAgent for auto-start
+- `rew uninstall` — removes LaunchAgent
+- `rew daemon` — runs rew daemon in foreground with full pipeline
+
+**Tauri Build Configuration:**
+- Updated tauri.conf.json: targets=["dmg","app"], macOS minimum 11.0
+- Tauri lib uses new logging module (daily rotation to ~/.rew/logs/)
+
+**Integration Tests (11 tests):**
+- Full journey: create 30 files → detect → snapshot → delete all → anomaly → restore → verify
+- Database integrity, plist generation, anomaly detection, config roundtrip, PID lifecycle
+
+**Performance Tests (5 tests):**
+- 10000 events: < 500ms, 1000 DB inserts: < 5s, 10000 path filter: < 200ms
+
+**Bug Fix:** Fixed flaky `test_mixed_tiers_comprehensive` (calendar-hour boundary)
+
+### Test Results
+- 142/142 tests pass (up from 110). 0 build warnings.
+
+## Session 10 — 2026-04-08
+Feature: #7 开机自启、生产打包与集成测试
+Result: done
+Summary: Tests: 142/142 passed. Criteria: 5/5 met. Verdict: pass
+
+---

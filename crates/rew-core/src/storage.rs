@@ -713,7 +713,16 @@ mod tests {
     #[test]
     fn test_mixed_tiers_comprehensive() {
         let (manager, _dir) = test_storage_manager();
-        let now = Utc::now();
+        // Use a fixed time at minute 30 to avoid calendar-hour boundary issues
+        // when subtracting small offsets
+        let now = {
+            let t = Utc::now();
+            use chrono::Timelike;
+            t.date_naive()
+                .and_hms_opt(t.hour(), 30, 0)
+                .unwrap()
+                .and_utc()
+        };
 
         // Tier 1: 3 snapshots in last 30 minutes
         for i in 0..3 {

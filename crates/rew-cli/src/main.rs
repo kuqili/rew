@@ -65,6 +65,15 @@ enum Commands {
 
     /// Initialize rew (create config and database)
     Init,
+
+    /// Install LaunchAgent for auto-start on login
+    Install,
+
+    /// Remove LaunchAgent (disable auto-start)
+    Uninstall,
+
+    /// Run the rew daemon in the foreground
+    Daemon,
 }
 
 #[derive(Subcommand)]
@@ -131,6 +140,15 @@ fn main() {
 
 fn run() -> RewResult<()> {
     let cli = Cli::parse();
+
+    // These commands don't need AppContext
+    match &cli.command {
+        Some(Commands::Install) => return commands::install::install(),
+        Some(Commands::Uninstall) => return commands::install::uninstall(),
+        Some(Commands::Daemon) => return commands::daemon::run(),
+        _ => {}
+    }
+
     let ctx = AppContext::init()?;
 
     match cli.command {
@@ -151,6 +169,10 @@ fn run() -> RewResult<()> {
         Some(Commands::Init) => {
             commands::init::run(&ctx);
             Ok(())
+        }
+        // Already handled above
+        Some(Commands::Install) | Some(Commands::Uninstall) | Some(Commands::Daemon) => {
+            unreachable!()
         }
     }
 }

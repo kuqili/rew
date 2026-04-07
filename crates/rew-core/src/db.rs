@@ -23,6 +23,11 @@ impl Database {
         Ok(Database { conn })
     }
 
+    /// Returns a reference to the underlying SQLite connection.
+    pub fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Create the snapshots table if it doesn't exist.
     pub fn initialize(&self) -> RewResult<()> {
         self.conn.execute_batch(

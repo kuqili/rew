@@ -18,6 +18,11 @@ pub fn warning_prefix() -> ColoredString {
     "⚠".yellow().bold()
 }
 
+/// Colored info prefix.
+pub fn info_prefix() -> ColoredString {
+    "ℹ".blue().bold()
+}
+
 /// Section header.
 pub fn section(title: &str) -> ColoredString {
     title.cyan().bold()

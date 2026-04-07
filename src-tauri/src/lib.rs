@@ -12,8 +12,16 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing
-    tracing_subscriber::fmt().init();
+    // Initialize logging to ~/.rew/logs/ with daily rotation
+    let log_dir = rew_core::logging::log_dir();
+    let _log_guard = match rew_core::logging::init_logging(&log_dir) {
+        Ok(guard) => Some(guard),
+        Err(_) => {
+            // Fallback: basic stderr logging
+            tracing_subscriber::fmt().init();
+            None
+        }
+    };
 
     // Initialize rew core
     let (db, config) = match initialize_rew() {
