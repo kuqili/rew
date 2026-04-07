@@ -290,3 +290,10 @@ Result: fix (addressing blocking issues)
 Summary: Tests: 56/56 passed. All 2 blocking issues fixed. Both suggestions addressed.
 
 ---
+## Session 6 — 2026-04-07 23:51:33
+Feature: #3 APFS 快照引擎与存储生命周期管理：封装 tmutil CLI 实现快照的创建/列举/挂载/恢复/删除全流程。实现分级保留策略（1小时内全保留、24小时内每小时1个、30天内每天1个），异常快照双倍保留，用户标记快照永久保留。快照元数据写入 SQLite，实际文件数据完全依赖 APFS CoW。
+Result: done
+Summary: Tests: 56/56 passed. Criteria: 5/5 met. Verdict: pass
+
+---
+
