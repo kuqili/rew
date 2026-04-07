@@ -481,3 +481,10 @@ Result: done
 Summary: Tests: 142/142 passed. Criteria: 5/5 met. Verdict: pass
 
 ---
+## Session 10 — 2026-04-08 01:31:21
+Feature: #7 开机自启、生产打包与集成测试：配置 macOS LaunchAgent 实现开机自启，构建 .dmg 安装包（< 10MB），编写端到端集成测试覆盖完整用户旅程（安装 → 监听 → 异常检测 → 恢复）。确保产品级健壮性：崩溃自动重启、优雅退出、日志轮转。
+Result: done
+Summary: Tests: 142/142 passed. Criteria: 5/5 met. Verdict: pass
+
+---
+
