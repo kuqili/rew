@@ -58,3 +58,10 @@ crates/rew-core/src/db.rs           — SQLite Database with snapshot CRUD
 crates/rew-cli/Cargo.toml           — CLI crate
 crates/rew-cli/src/main.rs          — CLI commands: init, status, list
 ```
+## Session 1 — 2026-04-07 22:40:38
+Feature: #1 Tauri v2 项目初始化与核心架构搭建：创建完整的 Tauri v2 + Rust 项目骨架，定义所有核心模块的 trait 接口和数据结构，建立跨平台抽象层。包括 Cargo workspace 配置、模块划分（watcher/engine/detector/notifier/storage/cli）、公共数据类型定义、错误处理框架。
+Result: done
+Summary: Tests: 4/4 passed. Criteria: 5/5 met. Verdict: pass
+
+---
+
