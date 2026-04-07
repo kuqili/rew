@@ -385,8 +385,48 @@ Summary: Tests: 110/110 passed. Criteria: 5/5 met. Verdict: pass
 
 ---
 
-## Session 8 — 2026-04-08 00:27:59
+## Session 9: Feature #6 — Tauri GUI: 系统托盘 + 时间线 UI + 首次启动向导 (2026-04-08)
+
+### Completed
+
+**Rust Backend (src-tauri/src/):**
+- **state.rs**: `AppState` with Mutex-wrapped Database, RewConfig, paused flag, warning flag
+- **commands.rs**: 10 Tauri commands: list_snapshots, get_status, get_config, update_config, toggle_pin, restore_snapshot, get_restore_preview, check_first_run, complete_setup, set_paused
+- **tray.rs**: System tray with 3 status icons (green/yellow/gray), 4 menu items, left-click opens window
+- **daemon.rs**: Background protection thread, anomaly event emission, tray status updates
+- **lib.rs**: Wires state, commands, tray, daemon, window-close-to-tray behavior
+
+**Frontend (vanilla TypeScript + CSS):**
+- **src/main.ts**: SPA with setup wizard + timeline view + restore modal + anomaly event handling
+- **src/styles/global.css**: Dark theme CSS design system (~520 lines)
+
+### Build Results
+- 0 errors, 0 warnings (Rust + frontend)
+- Frontend: 13KB JS + 9KB CSS
+- All 110 existing tests pass
+
+### Acceptance Criteria: 5/5 met
+1. ✅ System tray with icon, right-click menu, "查看时间线" opens window
+2. ✅ First-run wizard with default dirs + custom dir + "开始保护"
+3. ✅ Timeline: date-grouped, anomaly with red badge + ⚠️ + red border
+4. ✅ Restore: preview modal → progress bar → success toast
+5. ✅ Anomaly → yellow tray icon + event emission → auto-select snapshot
+
+## Session 9 — 2026-04-08
+Feature: #6 Tauri GUI：系统托盘 + 时间线 Web UI + 首次启动向导
+Result: done
+Summary: Tests: 110/110 passed. Criteria: 5/5 met. Verdict: pass
+
+---
+
 Feature: #5 CLI 工具：实现 rew 命令行界面，包括 rew status（查看运行状态和快照列表）、rew restore（交互式选择恢复点并执行恢复）、rew config（管理保护目录和配置）、rew list（查看快照详情）、rew pin（标记重要快照）。CLI 是非技术用户的主要恢复入口，交互必须极简。
+Result: done
+Summary: Tests: 110/110 passed. Criteria: 5/5 met. Verdict: pass
+
+---
+
+## Session 9 — 2026-04-08 00:53:48
+Feature: #6 Tauri GUI：系统托盘 + 时间线 Web UI + 首次启动向导。系统托盘常驻显示运行状态，点击展开状态菜单。主窗口为时间线界面，可视化展示所有快照、异常事件标记、文件变更摘要，支持一键恢复。首次启动引导用户选择保护目录。这是产品化的关键差异点——让非技术用户也能轻松使用。
 Result: done
 Summary: Tests: 110/110 passed. Criteria: 5/5 met. Verdict: pass
 
