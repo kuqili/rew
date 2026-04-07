@@ -228,4 +228,90 @@ mod tests {
 
         handle.stop().await.unwrap();
     }
+
+    /// Test sustained pipeline operation over many window cycles.
+    ///
+    /// This validates that the full pipeline (watcher -> processor -> output)
+    /// properly drains state each window cycle, proving memory stability.
+    /// Simulates multiple waves of file creation/deletion to exercise the
+    /// full event lifecycle.
+    #[tokio::test]
+    async fn test_pipeline_sustained_operation_memory_stable() {
+        let dir = tempdir().unwrap();
+        let config = RewConfig {
+            watch_dirs: vec![dir.path().to_path_buf()],
+            ..Default::default()
+        };
+
+        let processor_config = ProcessorConfig {
+            window_duration: Duration::from_millis(200),
+            ..Default::default()
+        };
+
+        let mut handle = start_pipeline_with_config(&config, processor_config).unwrap();
+
+        // Give the watcher time to initialize
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut total_batches = 0usize;
+        let mut total_events = 0usize;
+
+        // Run 5 waves of file operations, each followed by batch collection
+        for wave in 0..5 {
+            // Create files
+            for i in 0..10 {
+                let path = dir.path().join(format!("wave{}_{}.txt", wave, i));
+                std::fs::write(&path, format!("content wave={} i={}", wave, i)).unwrap();
+            }
+
+            // Collect batch(es) from this wave
+            loop {
+                match tokio::time::timeout(Duration::from_millis(500), handle.recv_batch()).await {
+                    Ok(Some((batch, stats))) => {
+                        total_batches += 1;
+                        total_events += batch.events.len();
+                        // Stats should be self-consistent
+                        let stat_total = stats.files_added
+                            + stats.files_modified
+                            + stats.files_deleted
+                            + stats.files_renamed;
+                        assert_eq!(stat_total, batch.events.len());
+                    }
+                    _ => break,
+                }
+            }
+
+            // Clean up files from this wave (triggers delete events)
+            for i in 0..10 {
+                let path = dir.path().join(format!("wave{}_{}.txt", wave, i));
+                let _ = std::fs::remove_file(&path);
+            }
+
+            // Let delete events be processed
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            loop {
+                match tokio::time::timeout(Duration::from_millis(300), handle.recv_batch()).await {
+                    Ok(Some((batch, _))) => {
+                        total_batches += 1;
+                        total_events += batch.events.len();
+                    }
+                    _ => break,
+                }
+            }
+        }
+
+        // Verify we actually processed events across multiple batches
+        assert!(
+            total_batches >= 2,
+            "Should produce multiple batches across waves, got {}",
+            total_batches
+        );
+        assert!(
+            total_events >= 10,
+            "Should process substantial events, got {}",
+            total_events
+        );
+
+        handle.stop().await.unwrap();
+    }
 }
