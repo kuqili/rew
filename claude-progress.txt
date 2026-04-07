@@ -189,3 +189,43 @@ Summary: Tests: 49/49 passed. Criteria: 4/5 met. Blocking issues: 1. Verdict: fi
 
 ---
 
+## Session 5: Feature #3 — Fix Blocking Issue: preview_restore Logic (2026-04-07)
+
+### Problem
+Adversary evaluation flagged that `preview_restore()` in `restore.rs` had a logic error:
+- `files_to_remove` was declared as an immutable empty Vec and never populated
+- No file comparison algorithm to distinguish files created after vs before the snapshot
+- Result: dry-run mode could never correctly report files that would be removed during restore
+
+### Fixed
+1. **Fixed preview_restore file classification logic**:
+   - Added `classify_file()` method that compares each file's creation timestamp against the snapshot timestamp
+   - Files created AFTER snapshot → `files_to_remove` (they didn't exist at snapshot time, would be deleted)
+   - Files created BEFORE snapshot → `files_to_overwrite` (would be reverted to snapshot version)
+   - Non-existent paths → `files_to_restore` (existed at snapshot time but gone now)
+
+2. **Decoupled RestoreEngine from MacOSSnapshotEngine** (suggestion fix):
+   - Introduced `RestoreSnapshotProvider` trait with `get_snapshot()` and `create_safety_snapshot()`
+   - `RestoreEngine<P: RestoreSnapshotProvider>` is now generic over any provider
+   - `SnapshotProviderAdapter` bridges Database + create closure for real use
+   - `compat::restore_engine_from_macos()` preserves backward-compatible construction
+   - Tests use a `TestSnapshotProvider` that doesn't need tmutil
+
+3. **Added timeout and retry for tmutil commands** (suggestion fix):
+   - `TMUTIL_RESTORE_TIMEOUT_SECS = 60` default timeout
+   - `TMUTIL_RESTORE_MAX_RETRIES = 2` with transient error detection
+   - `with_timeout()` and `with_max_retries()` builder methods
+   - Better error messages with exit code and permission-specific hints
+
+4. **New tests** (53 total, up from 49):
+   - `test_dry_run_files_created_after_snapshot_are_marked_for_removal` — verifies files_to_remove is populated
+   - `test_dry_run_mixed_files_before_and_after_snapshot` — verifies all 3 categories work together
+   - `test_dry_run_empty_preview_on_no_targets` — edge case coverage
+   - `test_custom_timeout_and_retries` — builder pattern works
+
+### Test Results
+- 53/53 tests pass (up from 49)
+- 0 build warnings
+- All acceptance criteria should now be met
+
+
