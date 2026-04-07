@@ -348,3 +348,10 @@ Summary: Tests: 107/107 passed. Criteria: 5/5 met. Verdict: pass
 
 ---
 
+## Session 7 — 2026-04-08 00:09:28
+Feature: #4 异常检测规则引擎与系统通知：实现 7 条异常检测规则的滑动窗口规则引擎，按 CRITICAL/HIGH/MEDIUM 分级输出告警。CRITICAL 和 HIGH 立刻触发快照+系统通知，MEDIUM 延迟聚合后通知。macOS 系统通知支持操作按钮（查看详情/忽略）。
+Result: done
+Summary: Tests: 107/107 passed. Criteria: 5/5 met. Verdict: pass
+
+---
+
