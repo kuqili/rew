@@ -11,15 +11,16 @@ IMPORTANT files to read at the start of each session:
 
 **Completed features:**
 - [x] Feature #1: Tauri v2 项目初始化与核心架构搭建：创建完整的 Tauri v2 + Rust 项目骨架，定义所有核心模块的 trait 接口和数据结构，建立跨平台抽象层。包括 Cargo workspace 配置、模块划分（watcher/engine/detector/notifier/storage/cli）、公共数据类型定义、错误处理框架。
+- [x] Feature #2: 文件监听与事件处理引擎：基于 notify crate 实现 macOS FSEvents 文件监听，配合 tokio 异步运行时实现 30 秒滑动窗口事件聚合、去重、节流。包括智能噪音过滤（忽略 node_modules/.git/.DS_Store 等）、package.json 变更触发的动态过滤暂停机制。
 
-**Current feature:** #2: 文件监听与事件处理引擎：基于 notify crate 实现 macOS FSEvents 文件监听，配合 tokio 异步运行时实现 30 秒滑动窗口事件聚合、去重、节流。包括智能噪音过滤（忽略 node_modules/.git/.DS_Store 等）、package.json 变更触发的动态过滤暂停机制。
+**Current feature:** #3: APFS 快照引擎与存储生命周期管理：封装 tmutil CLI 实现快照的创建/列举/挂载/恢复/删除全流程。实现分级保留策略（1小时内全保留、24小时内每小时1个、30天内每天1个），异常快照双倍保留，用户标记快照永久保留。快照元数据写入 SQLite，实际文件数据完全依赖 APFS CoW。
 **Steps:**
-- 集成 notify crate（v6+），实现 MacOSWatcher：监听配置的目标目录，递归监听子目录
-- 实现路径过滤器 PathFilter：基于 glob 模式匹配忽略列表（node_modules、.git、target、__pycache__、.DS_Store、Thumbs.db 等），支持用户在 config.toml 中自定义
-- 实现 EventProcessor：使用 tokio::time::interval 和 HashMap<PathBuf, FileEvent> 实现 30 秒滑动窗口，同路径同类型事件去重，窗口结束时输出 EventBatch
-- 实现动态过滤暂停：检测到 package.json/Cargo.toml 变化时暂停 node_modules/target 目录检测 60 秒；检测到 .git/HEAD 变化时暂停全局检测 10 秒
-- 实现事件统计模块：每个 EventBatch 计算 files_added/files_modified/files_deleted 数量和总大小
-- 将 FileWatcher 和 EventProcessor 通过 tokio mpsc channel 连接，形成异步事件管道
+- 实现 TmutilWrapper：封装 tmutil localsnapshot（创建）、listlocalsnapshots（列举）、deletelocalsnapshots（删除）命令，解析输出格式
+- 实现 SnapshotEngine for macOS：接收 EventBatch，调用 TmutilWrapper 创建快照，将元数据（时间戳、触发类型、文件变更统计）写入 SQLite
+- 实现 RestoreEngine：通过 tmutil restore 执行恢复，支持 dry_run 模式（预览恢复影响但不执行），恢复前自动创建当前状态快照作为保险
+- 实现 StorageManager：分级保留策略清理器，每次新快照创建后触发，按规则清理过期快照；磁盘占用超过用户配置阈值（默认 10GB）时发出告警
+- 实现快照标记功能：用户可将任意快照标记为 pinned，pinned 快照不参与自动清理
+- 处理边界情况：tmutil 权限不足时的友好提示、快照被 OS 自动删除时更新 DB、并发快照请求的串行化
 
 **Rules:**
 - Do NOT remove or weaken existing tests

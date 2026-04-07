@@ -143,3 +143,42 @@ Summary: Tests: 26/26 passed. Criteria: 5/5 met. Verdict: pass
 
 ---
 
+## Session 4: Feature #3 — APFS 快照引擎与存储生命周期管理 (2026-04-07)
+
+### Completed
+- **TmutilWrapper** (`snapshot/tmutil.rs`): Wraps `tmutil localsnapshot` (create), `listlocalsnapshots` (list), `deletelocalsnapshots` (delete). Parses stdout output formats. Handles permission errors with friendly messages. Gracefully handles OS-deleted snapshots.
+- **MacOSSnapshotEngine** (`snapshot/macos.rs`): Integrates TmutilWrapper + SQLite Database. Concurrent request serialization via `Mutex`. Supports `create_from_batch()` (auto from EventBatch), `create_manual()`, `create()`. DB sync with OS (`sync_with_os()`) to detect snapshots deleted by macOS.
+- **RestoreEngine** (`restore.rs`): Dry-run mode returns `RestorePreview` with files_to_restore/overwrite/remove + estimated size. Actual restore creates pre-restore safety snapshot as insurance. Validates snapshot existence, requires explicit target paths for non-dry-run.
+- **StorageManager** (`storage.rs`): Tiered retention policy:
+  - 0-1h: keep all
+  - 1-24h: keep 1 per hour (most recent in each calendar hour)
+  - 1-30d: keep 1 per day (most recent in each calendar day)
+  - >30d: delete all
+  - Anomaly snapshots: 2x retention multiplier (configurable)
+  - Pinned snapshots: never auto-deleted
+  - Cleanup runs after each snapshot creation
+
+### Test Results
+- 49/49 tests pass (up from 26)
+- 0 build warnings
+- New tests: 23 (7 tmutil parser, 1 engine, 5 restore, 10 storage)
+- Key test: `test_70_snapshots_retention_policy` -- creates 70 snapshots spread across all time tiers, verifies retention policy
+- Key test: `test_pinned_snapshots_survive_30_days` -- pinned snapshots at 31-71 days old survive cleanup
+
+### Files Created/Modified
+```
+crates/rew-core/src/snapshot/mod.rs     -- Snapshot module root
+crates/rew-core/src/snapshot/tmutil.rs  -- TmutilWrapper (tmutil CLI)
+crates/rew-core/src/snapshot/macos.rs   -- MacOSSnapshotEngine
+crates/rew-core/src/restore.rs          -- RestoreEngine with dry-run
+crates/rew-core/src/storage.rs          -- StorageManager with retention
+crates/rew-core/src/lib.rs              -- Added snapshot, restore, storage modules
+```
+
+### Acceptance Criteria Assessment
+1. SnapshotEngine.create() -- creates APFS snapshot via tmutil, writes metadata to SQLite
+2. RestoreEngine.restore(dry_run=true) -- returns RestorePreview with affected files without modifying filesystem
+3. RestoreEngine.restore(dry_run=false) -- creates safety snapshot first, then restores via tmutil
+4. 70-snapshot test: StorageManager correctly applies tiered retention policy (tested and passing)
+5. Pinned snapshots survive cleanup indefinitely (tested at 31-71 days old)
+
