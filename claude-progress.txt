@@ -99,4 +99,10 @@ crates/rew-core/src/processor.rs    — EventProcessor with sliding window
 crates/rew-core/src/pipeline.rs     — Pipeline connecting watcher to processor
 ```
 
+---## Session 2 — 2026-04-07 22:55:44
+Feature: #2 文件监听与事件处理引擎：基于 notify crate 实现 macOS FSEvents 文件监听，配合 tokio 异步运行时实现 30 秒滑动窗口事件聚合、去重、节流。包括智能噪音过滤（忽略 node_modules/.git/.DS_Store 等）、package.json 变更触发的动态过滤暂停机制。
+Result: fix
+Summary: Tests: 22/22 passed. Criteria: 4/5 met. Verdict: fix
+
 ---
+
