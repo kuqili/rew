@@ -229,3 +229,10 @@ Adversary evaluation flagged that `preview_restore()` in `restore.rs` had a logi
 - All acceptance criteria should now be met
 
 
+## Session 5 — 2026-04-07 23:33:12
+Feature: #3 APFS 快照引擎与存储生命周期管理：封装 tmutil CLI 实现快照的创建/列举/挂载/恢复/删除全流程。实现分级保留策略（1小时内全保留、24小时内每小时1个、30天内每天1个），异常快照双倍保留，用户标记快照永久保留。快照元数据写入 SQLite，实际文件数据完全依赖 APFS CoW。
+Result: fix
+Summary: Tests: 53/53 passed. Criteria: 3/5 met. Blocking issues: 2. Verdict: fix
+
+---
+
