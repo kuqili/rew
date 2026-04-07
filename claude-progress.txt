@@ -136,3 +136,10 @@ The EventProcessor's only per-window state is `event_map: HashMap<DeduplicationK
 - No `Vec::push` or `HashMap::insert` survives across window boundaries
 
 ---
+## Session 3 — 2026-04-07 23:04:11
+Feature: #2 文件监听与事件处理引擎：基于 notify crate 实现 macOS FSEvents 文件监听，配合 tokio 异步运行时实现 30 秒滑动窗口事件聚合、去重、节流。包括智能噪音过滤（忽略 node_modules/.git/.DS_Store 等）、package.json 变更触发的动态过滤暂停机制。
+Result: done
+Summary: Tests: 26/26 passed. Criteria: 5/5 met. Verdict: pass
+
+---
+
