@@ -211,6 +211,11 @@ impl MacOSSnapshotEngine {
     pub fn db(&self) -> &Database {
         &self.db
     }
+
+    /// Get a reference to the TmutilWrapper.
+    pub fn tmutil(&self) -> &TmutilWrapper {
+        &self.tmutil
+    }
 }
 
 #[cfg(test)]

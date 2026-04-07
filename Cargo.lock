@@ -2961,6 +2961,7 @@ dependencies = [
  "chrono",
  "dirs",
  "globset",
+ "libc",
  "notify",
  "rusqlite",
  "serde",

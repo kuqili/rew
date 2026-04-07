@@ -236,3 +236,57 @@ Summary: Tests: 53/53 passed. Criteria: 3/5 met. Blocking issues: 2. Verdict: fi
 
 ---
 
+## Session 6: Feature #3 — Fix 2 Blocking Issues + Suggestions (2026-04-07)
+
+### Problems (from Adversary Evaluation)
+1. **BLOCKING**: `restore.rs:371-372` — `tmutil restore target_str target_str` is completely wrong. Same path as source and dest, no snapshot reference.
+2. **BLOCKING**: `tmutil.rs:45-86` — `create_snapshot()` has no timeout protection; acceptance criterion requires < 2s.
+3. **SUGGESTION**: Snapshot mount functionality missing (needed for proper restore).
+4. **SUGGESTION**: `check_disk_usage()` not implemented; `disk_alert` always false.
+
+### Fixed
+
+1. **Fixed tmutil restore command syntax** (`restore.rs` + `tmutil.rs`):
+   - Added `mount_snapshot()` to TmutilWrapper: mounts APFS snapshot read-only via `mount_apfs -o ro -s <name> <volume> <mount_point>`
+   - Added `unmount_snapshot()` to TmutilWrapper
+   - Added `restore_from_snapshot()`: mount → build source path in mounted snapshot → `tmutil restore -v src dst` → unmount
+   - Added `execute_restore()` private helper with proper `tmutil restore [-v] src dst` syntax
+   - Extended `RestoreSnapshotProvider` trait with `restore_path_from_snapshot()` method
+   - `RestoreEngine` now delegates restore to the provider (no more direct tmutil calls)
+   - `SnapshotProviderAdapter` accepts a restore closure alongside the create closure
+   - `compat::restore_engine_from_macos()` wires up TmutilWrapper's `restore_from_snapshot`
+
+2. **Added timeout to create_snapshot** (`tmutil.rs`):
+   - Default `SNAPSHOT_CREATE_TIMEOUT = 2s` (matches acceptance criterion)
+   - Spawns child process, polls `try_wait()` every 50ms
+   - On timeout: kills the hung process, returns descriptive error
+   - `with_create_timeout()` builder method for custom values
+   - Tests: `test_default_create_timeout`, `test_custom_create_timeout`
+
+3. **Implemented snapshot mount/unmount** (`tmutil.rs`):
+   - `mount_snapshot()`: creates temp mount point under `/tmp/rew-snapshot-*`, calls `mount_apfs`
+   - `unmount_snapshot()`: calls `umount`, cleans up mount dir
+   - `restore_from_snapshot()`: full mount→restore→unmount pipeline
+   - `volume()` accessor for disk usage checking
+
+4. **Implemented disk usage alert** (`storage.rs`):
+   - `check_disk_usage()` uses `libc::statvfs` on macOS to check available space
+   - Alerts when available space < threshold (default 10GB)
+   - `disk_alert` field in `CleanupResult` now populated from actual check
+   - Added `libc` as macOS-only dependency
+
+5. **Fixed flaky test** (`storage.rs`):
+   - `test_hourly_retention_keeps_one_per_hour` could fail when 3 snapshots spanned a calendar-hour boundary
+   - Fixed by truncating base_time to the start of its hour
+
+### Test Results
+- 56/56 tests pass (up from 53)
+- 0 build warnings
+- New tests: `test_default_create_timeout`, `test_custom_create_timeout`, `test_mount_point_path_construction`
+
+## Session 6 — 2026-04-07
+Feature: #3 APFS 快照引擎与存储生命周期管理
+Result: fix (addressing blocking issues)
+Summary: Tests: 56/56 passed. All 2 blocking issues fixed. Both suggestions addressed.
+
+---

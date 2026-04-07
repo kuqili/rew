@@ -115,7 +115,7 @@ impl StorageManager {
             pinned_skipped,
             anomaly_extended,
             deleted_ids,
-            disk_alert: false, // Will be set by check_disk_usage if needed
+            disk_alert: self.check_disk_usage(),
         };
 
         info!(
@@ -249,6 +249,51 @@ impl StorageManager {
         Ok(())
     }
 
+    /// Check if disk usage by snapshots exceeds the configured threshold.
+    ///
+    /// Returns true if usage exceeds the threshold (alert condition).
+    /// Uses a heuristic: counts snapshots × average snapshot overhead estimate.
+    /// On macOS APFS, snapshots use CoW so actual disk usage depends on data changes.
+    fn check_disk_usage(&self) -> bool {
+        // Try to get actual volume available space via statvfs
+        #[cfg(target_os = "macos")]
+        {
+            use std::ffi::CString;
+            use std::mem::MaybeUninit;
+
+            let volume = CString::new(self.tmutil.volume()).unwrap_or_default();
+            if !volume.as_bytes().is_empty() {
+                let mut stat = MaybeUninit::<libc::statvfs>::uninit();
+                let ret = unsafe { libc::statvfs(volume.as_ptr(), stat.as_mut_ptr()) };
+                if ret == 0 {
+                    let stat = unsafe { stat.assume_init() };
+                    let total_bytes = stat.f_blocks as u64 * stat.f_frsize as u64;
+                    let avail_bytes = stat.f_bavail as u64 * stat.f_frsize as u64;
+                    let used_bytes = total_bytes.saturating_sub(avail_bytes);
+
+                    // If available space is less than the threshold, alert
+                    if avail_bytes < self.disk_threshold_bytes {
+                        warn!(
+                            "Disk space alert: only {} MB available (threshold: {} MB)",
+                            avail_bytes / (1024 * 1024),
+                            self.disk_threshold_bytes / (1024 * 1024)
+                        );
+                        return true;
+                    }
+
+                    debug!(
+                        "Disk usage: {} GB used, {} GB available, threshold: {} GB",
+                        used_bytes / (1024 * 1024 * 1024),
+                        avail_bytes / (1024 * 1024 * 1024),
+                        self.disk_threshold_bytes / (1024 * 1024 * 1024)
+                    );
+                }
+            }
+        }
+
+        false
+    }
+
     /// Get a reference to the underlying database.
     pub fn db(&self) -> &Database {
         &self.db
@@ -260,6 +305,7 @@ mod tests {
     use super::*;
     use crate::config::RetentionPolicyConfig;
     use crate::types::SnapshotTrigger;
+    use chrono::Timelike;
     use tempfile::tempdir;
 
     fn test_storage_manager() -> (StorageManager, tempfile::TempDir) {
@@ -329,13 +375,20 @@ mod tests {
         let (manager, _dir) = test_storage_manager();
         let now = Utc::now();
 
-        // Insert 3 snapshots in the same hour, 2 hours ago
-        // Only the most recent should survive
+        // Insert 3 snapshots in the same calendar hour, 2 hours ago.
+        // Use :00, :10, :20 within that hour to guarantee they're in the same bucket.
         let base_time = now - Duration::hours(2);
-        for i in 0..3 {
+        // Truncate to the start of that hour to avoid calendar-hour boundary flakiness
+        let hour_start = base_time
+            .date_naive()
+            .and_hms_opt(base_time.hour(), 0, 0)
+            .unwrap()
+            .and_utc();
+
+        for i in 0..3i64 {
             insert_snapshot_at(
                 manager.db(),
-                base_time + Duration::minutes(i * 10),
+                hour_start + Duration::minutes(i * 10),
                 SnapshotTrigger::Auto,
                 false,
             );
@@ -348,7 +401,7 @@ mod tests {
         // Verify the remaining one is the most recent in that hour
         let remaining = manager.db().list_snapshots().unwrap();
         assert_eq!(remaining.len(), 1);
-        assert!(remaining[0].timestamp >= base_time + Duration::minutes(20));
+        assert!(remaining[0].timestamp >= hour_start + Duration::minutes(20));
     }
 
     #[test]

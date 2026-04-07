@@ -42,6 +42,15 @@ pub trait RestoreSnapshotProvider {
 
     /// Create a safety snapshot (best-effort, for insurance before restore).
     fn create_safety_snapshot(&self) -> RewResult<Snapshot>;
+
+    /// Restore a file/directory from a snapshot to a destination.
+    /// Returns the destination path on success.
+    fn restore_path_from_snapshot(
+        &self,
+        snapshot: &Snapshot,
+        source_path: &Path,
+        dest_path: &Path,
+    ) -> RewResult<PathBuf>;
 }
 
 /// Blanket implementation for any Database + SnapshotEngine combo.
@@ -50,17 +59,21 @@ pub struct SnapshotProviderAdapter<'a> {
     db: &'a Database,
     /// Closure that creates a snapshot. Returns the created Snapshot on success.
     create_fn: Box<dyn Fn() -> RewResult<Snapshot> + 'a>,
+    /// Closure that restores a path from a snapshot.
+    restore_fn: Box<dyn Fn(&Snapshot, &Path, &Path) -> RewResult<PathBuf> + 'a>,
 }
 
 impl<'a> SnapshotProviderAdapter<'a> {
-    /// Create a provider backed by a Database and a closure for snapshot creation.
+    /// Create a provider backed by a Database and closures for snapshot creation and restore.
     pub fn new(
         db: &'a Database,
         create_fn: impl Fn() -> RewResult<Snapshot> + 'a,
+        restore_fn: impl Fn(&Snapshot, &Path, &Path) -> RewResult<PathBuf> + 'a,
     ) -> Self {
         Self {
             db,
             create_fn: Box::new(create_fn),
+            restore_fn: Box::new(restore_fn),
         }
     }
 }
@@ -72,6 +85,15 @@ impl<'a> RestoreSnapshotProvider for SnapshotProviderAdapter<'a> {
 
     fn create_safety_snapshot(&self) -> RewResult<Snapshot> {
         (self.create_fn)()
+    }
+
+    fn restore_path_from_snapshot(
+        &self,
+        snapshot: &Snapshot,
+        source_path: &Path,
+        dest_path: &Path,
+    ) -> RewResult<PathBuf> {
+        (self.restore_fn)(snapshot, source_path, dest_path)
     }
 }
 
@@ -331,8 +353,8 @@ impl<P: RestoreSnapshotProvider> RestoreEngine<P> {
                 );
             }
 
-            match self.restore_path(snapshot, target) {
-                Ok(()) => return Ok(()),
+            match self.provider.restore_path_from_snapshot(snapshot, target, target) {
+                Ok(_) => return Ok(()),
                 Err(e) => {
                     // Only retry on potentially transient errors
                     let is_transient = matches!(&e, RewError::Io(_))
@@ -358,55 +380,6 @@ impl<P: RestoreSnapshotProvider> RestoreEngine<P> {
                 self.max_retries
             ))
         }))
-    }
-
-    /// Restore a single path from a snapshot using tmutil.
-    fn restore_path(&self, snapshot: &Snapshot, target: &Path) -> RewResult<()> {
-        use std::process::Command;
-
-        let target_str = target.to_str().unwrap_or_default();
-
-        // tmutil restore uses: tmutil restore <source> <destination>
-        // For APFS snapshot restore, the snapshot can be accessed via the mount point.
-        let output = Command::new("tmutil")
-            .args(["restore", target_str, target_str])
-            .output()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    RewError::Snapshot(format!(
-                        "tmutil restore requires elevated privileges for {:?}. \
-                         Please grant Full Disk Access to rew in System Settings > \
-                         Privacy & Security > Full Disk Access.",
-                        target
-                    ))
-                } else if e.kind() == std::io::ErrorKind::NotFound {
-                    RewError::Snapshot(
-                        "tmutil not found. Restore is only available on macOS.".to_string(),
-                    )
-                } else {
-                    RewError::Io(e)
-                }
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let detail = if !stderr.trim().is_empty() {
-                stderr.trim().to_string()
-            } else {
-                stdout.trim().to_string()
-            };
-
-            return Err(RewError::Snapshot(format!(
-                "tmutil restore failed for {:?} (exit code {:?}): {}",
-                target,
-                output.status.code(),
-                detail
-            )));
-        }
-
-        info!("Restored {:?} from snapshot {}", target, snapshot.id);
-        Ok(())
     }
 
     /// Recursively walk a directory and return all file paths.
@@ -445,9 +418,15 @@ pub mod compat {
     pub fn restore_engine_from_macos(
         engine: &MacOSSnapshotEngine,
     ) -> RestoreEngine<SnapshotProviderAdapter<'_>> {
-        let provider = SnapshotProviderAdapter::new(engine.db(), || {
-            engine.create(SnapshotTrigger::Auto, 0, 0, 0)
-        });
+        let provider = SnapshotProviderAdapter::new(
+            engine.db(),
+            || engine.create(SnapshotTrigger::Auto, 0, 0, 0),
+            |snapshot, source, dest| {
+                engine
+                    .tmutil()
+                    .restore_from_snapshot(&snapshot.os_snapshot_ref, source, dest)
+            },
+        );
         RestoreEngine::new(provider)
     }
 }
@@ -495,6 +474,16 @@ mod tests {
             };
             self.db.save_snapshot(&snapshot)?;
             Ok(snapshot)
+        }
+
+        fn restore_path_from_snapshot(
+            &self,
+            _snapshot: &Snapshot,
+            _source_path: &Path,
+            _dest_path: &Path,
+        ) -> RewResult<PathBuf> {
+            // In tests, we simulate a successful restore without calling tmutil
+            Ok(_dest_path.to_path_buf())
         }
     }
 
