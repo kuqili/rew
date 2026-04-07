@@ -5,7 +5,9 @@
 
 pub mod config;
 pub mod db;
+pub mod detector;
 pub mod error;
+pub mod notifier;
 pub mod pipeline;
 pub mod processor;
 pub mod restore;

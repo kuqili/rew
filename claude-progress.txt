@@ -297,3 +297,54 @@ Summary: Tests: 56/56 passed. Criteria: 5/5 met. Verdict: pass
 
 ---
 
+## Session 7: Feature #4 — 异常检测规则引擎与系统通知 (2026-04-08)
+
+### Completed
+- **RuleEngine** (`detector/mod.rs`): Evaluates EventBatches against all 7 rules, sorts by severity (CRITICAL first), deduplicates alerts via AlertDeduplicator, implements AnomalyDetector trait.
+- **7 Anomaly Rules** (`detector/rules.rs`):
+  - RULE-01: Bulk delete > 20 files → HIGH
+  - RULE-02: Bulk delete > 5 files (but ≤ 20) → MEDIUM (priority merge: doesn't fire when RULE-01 fires)
+  - RULE-03: Total deletion size > 100MB → HIGH
+  - RULE-04: Bulk modify > 50 files → MEDIUM
+  - RULE-05: Watch root directory deleted → CRITICAL
+  - RULE-06: Sensitive config file (.env, .gitconfig, etc.) modified → HIGH
+  - RULE-07: Non-package modifications > 30 → MEDIUM (excludes node_modules/target/__pycache__)
+- **AlertDeduplicator** (`detector/dedup.rs`): Suppresses duplicate alerts for same (directory, rule) pair within 5-minute cooldown. Supports periodic purge of expired entries.
+- **NotificationDispatcher** (`notifier/mod.rs`): Routes alerts by severity — CRITICAL/HIGH sent immediately, MEDIUM queued and aggregated over 2-minute window. Implements Notifier trait.
+- **MediumAggregator** (`notifier/mod.rs`): Collects MEDIUM alerts, flushes after configurable window (default 2 min), supports force flush on shutdown.
+- **MacOSNotifier** (`notifier/macos.rs`): Sends macOS notifications via osascript with severity-specific formatting (icons, titles, bodies). Supports aggregated summary for MEDIUM batches.
+
+### Test Results
+- 107/107 tests pass (up from 56)
+- 0 build warnings
+- New tests: 51
+  - detector/rules.rs: 16 tests (each rule + edge cases)
+  - detector/dedup.rs: 7 tests (dedup logic, cooldown, purge)
+  - detector/mod.rs: 10 tests (RuleEngine integration, priority, dedup)
+  - notifier/mod.rs: 12 tests (dispatcher, aggregation, mock notifier)
+  - notifier/macos.rs: 8 tests (formatting, title, body, aggregation)
+
+### Acceptance Criteria Assessment
+1. ✅ 25 files deleted → HIGH alert with count and directory in description
+2. ✅ Root directory deleted → CRITICAL alert, immediate snapshot trigger
+3. ✅ .env modified → HIGH alert (RULE-06), description shows specific file
+4. ✅ Same dir+rule dedup: 5-minute cooldown suppresses repeats
+5. ✅ node_modules excluded: RULE-07 filters package paths, processor dynamic pause drops npm events
+
+### Files Created
+```
+crates/rew-core/src/detector/mod.rs     -- RuleEngine with priority merge and dedup
+crates/rew-core/src/detector/rules.rs   -- 7 anomaly detection rules (RULE-01 to RULE-07)
+crates/rew-core/src/detector/dedup.rs   -- AlertDeduplicator (5-min cooldown)
+crates/rew-core/src/notifier/mod.rs     -- NotificationDispatcher + MediumAggregator
+crates/rew-core/src/notifier/macos.rs   -- MacOSNotifier via osascript
+crates/rew-core/src/lib.rs              -- Added detector + notifier modules
+```
+
+## Session 7 — 2026-04-08
+Feature: #4 异常检测规则引擎与系统通知
+Result: done
+Summary: Tests: 107/107 passed. Criteria: 5/5 met. Verdict: pass
+
+---
+
