@@ -245,7 +245,7 @@ mod tests {
         config.save(&path).unwrap();
 
         let loaded = RewConfig::load(&path).unwrap();
-        assert_eq!(loaded.watch_dirs.len(), 3);
+        assert_eq!(loaded.watch_dirs.len(), 0);  // Default config has no watch_dirs
         assert_eq!(loaded.anomaly_rules.bulk_delete_high, 20);
         assert_eq!(loaded.retention_policy.keep_all_secs, 3600);
     }

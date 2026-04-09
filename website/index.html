@@ -1,635 +1,364 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>rew — AI 时代的文件安全网</title>
-  <meta name="description" content="AI 以机器的速度改你的文件，rew 自动存档、实时告警、一键还原。不只是开发者，所有使用 AI 工具的人都需要它。" />
-  <meta property="og:title" content="rew — AI 时代的文件安全网" />
-  <meta property="og:description" content="AI 的善意有时会造成破坏。rew 是 AI 时代的安全带——看着、拦着、兜底。" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet" />
+  <meta name="description" content="AI 每次改动你的文件，rew 自动存档。出错了？一键读档回到任意历史状态。不需要 Git，不需要任何命令。"/>
+  <meta property="og:title" content="rew — AI 时代的文件安全网"/>
+  <meta property="og:description" content="自动存档每一次 AI 改动，出错后一键读档还原。支持 Cursor、Claude Code、Codebuddy 等所有 AI 工具。"/>
+  <meta property="og:type" content="website"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="shared.css"/>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root {
-      --blue:       #3b82f6;
-      --blue-dark:  #2563eb;
-      --blue-light: #eff6ff;
-      --hero-bg:    #080e1a;
-      --text:       #1e293b;
-      --text-2:     #475569;
-      --text-3:     #94a3b8;
-      --border:     #e2e8f0;
-      --bg:         #ffffff;
-      --bg-2:       #f8fafc;
-      --green:      #22c55e;
-      --green-bg:   #f0fdf4;
-      --red:        #ef4444;
-      --red-bg:     #fef2f2;
-      --amber:      #f59e0b;
-      --amber-bg:   #fffbeb;
-      --radius:     12px;
-      --shadow:     0 1px 3px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.08);
-      --shadow-lg:  0 4px 6px rgba(0,0,0,.04), 0 20px 40px rgba(0,0,0,.12);
+    /* ── Index-page specific ── */
+    /* Hero */
+    .hero {
+      min-height: 100vh;
+      padding: 180px 0 120px;
+      position: relative;
+      overflow: hidden;
+      display: flex; align-items: center;
     }
-    html { scroll-behavior: smooth; }
-    body {
-      font-family: "Inter", system-ui, -apple-system, sans-serif;
-      color: var(--text); background: var(--bg);
-      line-height: 1.6; overflow-x: hidden;
+    .hero-glow {
+      position: absolute; top: -100px; left: 50%; transform: translateX(-50%);
+      width: 900px; height: 700px; pointer-events: none;
+      background: radial-gradient(ellipse at 50% 15%, rgba(249,115,22,.13) 0%, transparent 62%);
     }
-    a { color: inherit; text-decoration: none; }
-
-    /* ─── Utilities ─── */
-    .container { max-width: 1140px; margin: 0 auto; padding: 0 24px; }
-    .section-label {
-      font-size: 12px; font-weight: 600; letter-spacing: .12em;
-      text-transform: uppercase; color: var(--blue);
+    .hero-inner {
+      position: relative; z-index: 1;
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 60px; align-items: center;
     }
-    .section-title {
-      font-size: clamp(28px, 4vw, 42px); font-weight: 800;
-      line-height: 1.15; color: var(--text);
+    @media (max-width: 900px) {
+      .hero-inner { grid-template-columns: 1fr; gap: 48px; }
+      .hero-mockup { order: -1; }
+      .hero { padding: 140px 0 80px; }
     }
-    .section-sub {
-      font-size: 17px; color: var(--text-2); line-height: 1.75;
-      max-width: 620px;
-    }
-
-    /* scroll-reveal */
-    .reveal { opacity: 0; transform: translateY(28px); transition: opacity .65s ease, transform .65s ease; }
-    .reveal.visible { opacity: 1; transform: none; }
-    .reveal-delay-1 { transition-delay: .1s; }
-    .reveal-delay-2 { transition-delay: .2s; }
-    .reveal-delay-3 { transition-delay: .3s; }
-    .reveal-delay-4 { transition-delay: .4s; }
-    .reveal-delay-5 { transition-delay: .5s; }
-
-    /* ─── Nav ─── */
-    #nav {
-      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
-      transition: background .25s, border-color .25s, backdrop-filter .25s;
-      border-bottom: 1px solid transparent;
-    }
-    #nav.scrolled {
-      background: rgba(8,14,26,.88);
-      backdrop-filter: blur(20px) saturate(1.8);
-      border-color: rgba(255,255,255,.07);
-    }
-    .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 64px; }
-    .nav-logo { display: flex; align-items: center; gap: 10px; }
-    .nav-logo-mark {
-      width: 32px; height: 32px; border-radius: 8px;
-      background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 16px; font-weight: 900; color: #fff;
-    }
-    .nav-logo-name { font-size: 18px; font-weight: 800; color: #fff; letter-spacing: -.02em; }
-    .nav-logo-tag { font-size: 12px; color: rgba(255,255,255,.35); display: none; }
-    @media (min-width: 640px) { .nav-logo-tag { display: block; } }
-    .nav-right { display: flex; align-items: center; gap: 12px; }
-    .nav-link { font-size: 14px; color: rgba(255,255,255,.5); font-weight: 500; transition: color .15s; }
-    .nav-link:hover { color: #fff; }
-    .nav-cta {
-      padding: 8px 20px; border-radius: 8px;
-      background: var(--blue); color: #fff;
-      font-size: 14px; font-weight: 600;
-      transition: all .18s; border: none; cursor: pointer;
-    }
-    .nav-cta:hover { background: var(--blue-dark); }
-
-    /* ─── Hero ─── */
-    #hero {
-      background: var(--hero-bg);
-      padding: 140px 0 0; overflow: hidden; position: relative;
-    }
-    /* ambient glow */
-    .hero-glow-1 {
-      position: absolute; top: -200px; left: 50%; transform: translateX(-50%);
-      width: 1000px; height: 700px; pointer-events: none;
-      background: radial-gradient(ellipse at 50% 0%, rgba(59,130,246,.15) 0%, rgba(99,102,241,.08) 45%, transparent 72%);
-    }
-    .hero-glow-2 {
-      position: absolute; top: 60px; left: 10%; width: 400px; height: 400px;
-      border-radius: 50%; pointer-events: none;
-      background: radial-gradient(circle, rgba(239,68,68,.06) 0%, transparent 70%);
-    }
-    .hero-content { text-align: center; position: relative; z-index: 2; }
     .hero-eyebrow {
       display: inline-flex; align-items: center; gap: 8px;
-      padding: 6px 14px; border-radius: 100px;
-      background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.2);
-      font-size: 13px; font-weight: 500; color: #fca5a5;
+      font-size: 12px; font-weight: 700;
+      letter-spacing: .08em; text-transform: uppercase;
+      color: var(--orange); margin-bottom: 24px;
+      padding: 5px 12px; border-radius: 100px;
+      background: rgba(249,115,22,.08);
+      border: 1px solid rgba(249,115,22,.2);
+    }
+    .hero-title {
+      font-size: clamp(52px, 7.5vw, 88px);
+      font-weight: 900;
+      line-height: 1.0;
+      letter-spacing: -.04em;
+      color: var(--text);
       margin-bottom: 28px;
     }
-    .hero-eyebrow-dot { width: 6px; height: 6px; border-radius: 50%; background: #f87171; animation: pulse 2s infinite; }
-    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.3; } }
-
-    .hero-title {
-      font-size: clamp(38px, 6.5vw, 72px); font-weight: 900;
-      line-height: 1.08; color: #fff; letter-spacing: -.03em;
-      margin-bottom: 24px;
-    }
     .hero-title em {
+      display: block;
       font-style: normal;
-      background: linear-gradient(90deg, #f87171 0%, #fb923c 60%, #fbbf24 100%);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-    }
-    .hero-title .blue-em {
-      font-style: normal;
-      background: linear-gradient(90deg, #60a5fa 0%, #a78bfa 100%);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+      background: var(--grad-orange);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
     .hero-sub {
-      font-size: clamp(16px, 2vw, 20px); color: rgba(255,255,255,.5);
-      line-height: 1.7; max-width: 560px; margin: 0 auto 36px;
+      font-size: 18px; color: var(--text-2); line-height: 1.75;
+      max-width: 480px; margin-bottom: 40px;
     }
-    .hero-badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-bottom: 40px; }
-    .hero-badge {
-      background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09);
-      color: rgba(255,255,255,.6); border-radius: 100px;
-      padding: 5px 14px; font-size: 13px; font-weight: 500;
+    .hero-badges {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 32px;
     }
-    .hero-ctas { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-bottom: 80px; }
-    .hero-cta-primary {
-      padding: 15px 30px; font-size: 16px;
-      background: var(--blue); color: #fff; border-radius: 10px; font-weight: 700;
-      display: flex; align-items: center; gap: 8px;
-      transition: all .18s; border: none; cursor: pointer;
-      box-shadow: 0 0 40px rgba(59,130,246,.3);
-    }
-    .hero-cta-primary:hover { background: var(--blue-dark); transform: translateY(-2px); box-shadow: 0 8px 40px rgba(59,130,246,.45); }
-    .hero-cta-secondary {
-      padding: 15px 30px; font-size: 16px;
-      background: transparent; color: rgba(255,255,255,.4);
-      border: 1.5px dashed rgba(255,255,255,.18); border-radius: 10px; font-weight: 600;
-      display: flex; align-items: center; gap: 8px; cursor: default;
+    .hero-actions {
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
     }
 
     /* App Mockup */
-    .hero-mockup { position: relative; z-index: 2; max-width: 920px; margin: 0 auto; }
-    .mockup-wrapper {
-      border-radius: 14px 14px 0 0;
-      border: 1px solid rgba(255,255,255,.09); border-bottom: none;
-      overflow: hidden; box-shadow: 0 -20px 80px rgba(0,0,0,.5);
+    .hero-mockup {
+      position: relative; display: flex; justify-content: center; align-items: center;
     }
-    .mockup-bar {
-      height: 34px; background: #161f30;
-      display: flex; align-items: center; padding: 0 16px; gap: 6px;
+    .mockup-frame {
+      width: 100%; max-width: 540px;
+      background: #111; border: 1px solid rgba(255,255,255,.1);
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,.05),
+        0 0 80px rgba(249,115,22,.1),
+        var(--shadow-lg);
+    }
+    .mockup-titlebar {
+      height: 36px; background: #0d0d0d;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      display: flex; align-items: center; padding: 0 14px; gap: 7px;
+    }
+    .tb-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .tb-red { background: #ff5f57; }
+    .tb-yellow { background: #febc2e; }
+    .tb-green { background: #28c840; }
+    .mockup-title-text {
+      flex: 1; text-align: center; font-size: 11px;
+      color: rgba(255,255,255,.25); font-weight: 500;
+    }
+    .mockup-body { display: grid; grid-template-columns: 44px 210px 1fr; height: 360px; }
+    @media (max-width: 540px) {
+      .mockup-body { grid-template-columns: 36px 160px 1fr; height: 280px; }
+    }
+    /* Nav rail */
+    .mock-rail {
+      background: #0d0d0d;
+      border-right: 1px solid rgba(255,255,255,.06);
+      display: flex; flex-direction: column; align-items: center;
+      padding: 12px 0; gap: 6px;
+    }
+    .rail-icon {
+      width: 28px; height: 28px; border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; color: rgba(255,255,255,.2);
+      cursor: pointer; transition: background .15s;
+    }
+    .rail-icon.active { background: rgba(249,115,22,.15); color: #f97316; }
+    /* Sidebar */
+    .mock-sidebar {
+      border-right: 1px solid rgba(255,255,255,.06);
+      background: #0e0e0e;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    .ms-header {
+      padding: 10px 10px 6px;
       border-bottom: 1px solid rgba(255,255,255,.05);
     }
-    .mockup-dot { width: 10px; height: 10px; border-radius: 50%; }
-    .mockup-dot.r { background: #ff5f57; } .mockup-dot.y { background: #febc2e; } .mockup-dot.g { background: #28c840; }
-    .mockup-screen { height: 460px; overflow: hidden; background: #0d1525; display: flex; }
-
-    /* Inline App UI */
-    .app-ui { width: 100%; height: 100%; display: flex; font-size: 12px; }
-    .app-sidebar { width: 170px; flex-shrink: 0; background: #0b1120; border-right: 1px solid rgba(255,255,255,.05); padding: 14px 0; }
-    .app-s-label { font-size: 9px; font-weight: 700; letter-spacing: .1em; color: rgba(255,255,255,.2); padding: 0 14px; margin-bottom: 6px; }
-    .app-s-item { display: flex; align-items: center; gap: 8px; padding: 6px 14px; font-size: 11px; color: rgba(255,255,255,.4); }
-    .app-s-item.active { background: rgba(59,130,246,.12); color: #93c5fd; }
-    .app-s-dir { padding: 3px 14px; font-size: 10px; color: rgba(255,255,255,.25); display: flex; align-items: center; gap: 5px; }
-    .app-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-    .app-tabs { display: flex; align-items: center; height: 36px; border-bottom: 1px solid rgba(255,255,255,.05); background: #0b1120; padding: 0 14px; gap: 0; }
-    .app-tab { padding: 0 14px; height: 100%; display: flex; align-items: center; font-size: 11px; color: rgba(255,255,255,.3); border-bottom: 2px solid transparent; }
-    .app-tab.active { color: #60a5fa; border-color: #60a5fa; }
-    .app-col-header { display: flex; padding: 6px 14px; border-bottom: 1px solid rgba(255,255,255,.04); background: #0a1020; font-size: 9px; font-weight: 600; letter-spacing: .06em; color: rgba(255,255,255,.18); }
-    .app-row { display: flex; align-items: center; padding: 8px 14px; gap: 10px; border-bottom: 1px solid rgba(255,255,255,.03); }
-    .app-row.sel { background: rgba(59,130,246,.07); }
-    .app-row-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.12); flex-shrink: 0; }
-    .app-row.sel .app-row-dot { background: #60a5fa; }
-    .app-row-lbl { flex: 1; font-size: 11px; color: rgba(255,255,255,.35); }
-    .app-row.sel .app-row-lbl { color: rgba(255,255,255,.75); }
-    .app-row-files { font-size: 10px; color: rgba(255,255,255,.22); width: 60px; text-align: right; }
-    .app-row-time { font-size: 10px; color: rgba(255,255,255,.18); width: 120px; text-align: right; }
-    .app-bottom { height: 200px; display: flex; border-top: 1px solid rgba(255,255,255,.05); }
-    .app-files { width: 220px; border-right: 1px solid rgba(255,255,255,.05); }
-    .app-files-hdr { padding: 7px 12px; font-size: 9px; font-weight: 700; letter-spacing: .08em; color: rgba(255,255,255,.18); border-bottom: 1px solid rgba(255,255,255,.04); background: #0a1020; }
-    .app-file { display: flex; align-items: center; gap: 8px; padding: 5px 12px; border-bottom: 1px solid rgba(255,255,255,.03); }
-    .app-fbadge { width: 14px; height: 14px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 800; flex-shrink: 0; }
-    .fb-m { background: rgba(234,179,8,.14); color: #eab308; }
-    .fb-a { background: rgba(34,197,94,.14); color: #22c55e; }
-    .fb-d { background: rgba(239,68,68,.14); color: #ef4444; }
-    .app-fname { font-size: 10px; color: rgba(255,255,255,.45); font-family: monospace; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-    .app-frestore { font-size: 8px; color: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.08); border-radius: 3px; padding: 1px 5px; flex-shrink: 0; }
-    .app-diff { flex: 1; padding: 10px 12px; font-family: monospace; font-size: 10px; overflow: hidden; }
-    .d-add { color: #4ade80; background: rgba(34,197,94,.05); display: block; padding: 1px 4px; border-radius: 2px; }
-    .d-del { color: #f87171; background: rgba(239,68,68,.05); display: block; padding: 1px 4px; border-radius: 2px; }
-    .d-ctx { color: rgba(255,255,255,.18); display: block; padding: 1px 4px; }
-    .d-hk  { color: rgba(99,102,241,.6); display: block; padding: 1px 4px; }
-
-    /* ─── Story Banner ─── */
-    #story {
-      background: linear-gradient(135deg, #1a0a0a 0%, #0f0505 100%);
-      border-top: 1px solid rgba(239,68,68,.15);
-      border-bottom: 1px solid rgba(239,68,68,.15);
-      padding: 64px 0;
+    .ms-title { font-size: 10px; font-weight: 700; color: rgba(255,255,255,.3); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 8px; }
+    .ms-tab-row { display: flex; gap: 3px; }
+    .ms-tab {
+      padding: 3px 8px; border-radius: 5px; font-size: 10px; font-weight: 600;
+      color: rgba(255,255,255,.3); cursor: pointer;
     }
-    .story-inner {
-      display: grid; grid-template-columns: 1fr 1.4fr; gap: 64px; align-items: center;
+    .ms-tab.active { background: rgba(249,115,22,.15); color: #f97316; }
+    .ms-list { flex: 1; overflow: hidden; padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; }
+    .ms-item {
+      padding: 6px 8px; border-radius: 7px; cursor: pointer;
+      display: flex; justify-content: space-between; align-items: center;
+      transition: background .12s;
     }
-    @media (max-width: 768px) { .story-inner { grid-template-columns: 1fr; gap: 32px; } }
-    .story-quote {
-      font-size: clamp(22px, 3.5vw, 34px); font-weight: 800;
-      color: #fff; line-height: 1.35; letter-spacing: -.02em;
+    .ms-item:hover { background: rgba(255,255,255,.04); }
+    .ms-item.active { background: rgba(249,115,22,.1); }
+    .ms-item-label { font-size: 10px; color: rgba(255,255,255,.5); }
+    .ms-item.active .ms-item-label { color: #f97316; }
+    .ms-item-time { font-size: 9px; color: rgba(255,255,255,.18); }
+    .ms-item-badge {
+      font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 4px;
+      background: rgba(249,115,22,.15); color: #f97316;
     }
-    .story-quote em { font-style: normal; color: #f87171; }
-    .story-sub { margin-top: 20px; font-size: 15px; color: rgba(255,255,255,.4); line-height: 1.7; }
-    .story-detail {
-      background: rgba(255,255,255,.03); border: 1px solid rgba(239,68,68,.15);
-      border-radius: var(--radius); padding: 28px;
+    /* Detail pane */
+    .mock-detail { background: #0f0f0f; display: flex; flex-direction: column; overflow: hidden; }
+    .md-header { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.05); display: flex; justify-content: space-between; align-items: center; }
+    .md-task-name { font-size: 10px; font-weight: 700; color: rgba(255,255,255,.7); }
+    .md-actions { display: flex; gap: 4px; }
+    .md-action-btn {
+      padding: 3px 7px; border-radius: 5px; font-size: 9px; font-weight: 700;
+      background: rgba(249,115,22,.15); color: #f97316; border: none; cursor: pointer;
     }
-    .story-tag {
-      display: inline-flex; align-items: center; gap: 6px;
-      background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.2);
-      color: #fca5a5; border-radius: 100px; padding: 4px 12px;
-      font-size: 11px; font-weight: 600; letter-spacing: .04em;
-      margin-bottom: 16px;
+    .md-list { flex: 1; overflow: hidden; padding: 8px; display: flex; flex-direction: column; gap: 3px; }
+    .md-file {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 5px 8px; border-radius: 6px; background: rgba(255,255,255,.02);
+      border: 1px solid rgba(255,255,255,.04);
     }
-    .story-p { font-size: 14px; color: rgba(255,255,255,.55); line-height: 1.8; margin-bottom: 20px; }
-    .story-p strong { color: rgba(255,255,255,.8); }
-    .story-outcome {
-      background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.15);
-      border-radius: 8px; padding: 14px 16px;
-      font-size: 14px; color: #fca5a5; font-weight: 600; line-height: 1.6;
+    .md-file-name { font-size: 9px; color: rgba(255,255,255,.45); font-family: 'Monaco','Menlo',monospace; }
+    .md-file-tag {
+      font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 4px;
+    }
+    .tag-mod { background: rgba(249,115,22,.12); color: #f97316; }
+    .tag-add { background: rgba(34,197,94,.12); color: #22c55e; }
+    .tag-del { background: rgba(239,68,68,.12); color: #ef4444; }
+    .md-restore-row {
+      margin: 6px 8px 8px; padding: 7px 10px; border-radius: 8px;
+      background: rgba(249,115,22,.06); border: 1px solid rgba(249,115,22,.15);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .md-restore-label { font-size: 9px; color: rgba(255,255,255,.4); }
+    .md-restore-btn {
+      font-size: 9px; font-weight: 700; padding: 3px 8px; border-radius: 5px;
+      background: #f97316; color: #fff; border: none; cursor: pointer;
     }
 
-    /* ─── Scale Stats ─── */
-    #scale { padding: 80px 0; background: var(--bg-2); }
-    .scale-header { text-align: center; margin-bottom: 52px; }
-    .scale-header .section-sub { margin: 14px auto 0; }
-    .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
-    @media (max-width: 768px) { .stats-grid { grid-template-columns: 1fr; gap: 16px; } }
-    .stat-card {
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 28px 24px; text-align: center;
-      box-shadow: var(--shadow); transition: transform .2s, box-shadow .2s;
+    /* ── Three Jobs Section ── */
+    .jobs-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 24px; margin-top: 60px;
     }
-    .stat-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
-    .stat-num { font-size: 40px; font-weight: 900; color: var(--text); letter-spacing: -.03em; line-height: 1; margin-bottom: 8px; }
-    .stat-num span { color: var(--blue); }
-    .stat-label { font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
-    .stat-sub { font-size: 12px; color: var(--text-3); line-height: 1.5; }
+    @media (max-width: 768px) { .jobs-grid { grid-template-columns: 1fr; } }
+    .job-card { padding: 40px 32px; }
+    .job-icon { font-size: 36px; margin-bottom: 20px; display: block; }
+    .job-title { font-size: 22px; font-weight: 800; margin-bottom: 12px; letter-spacing: -.02em; }
+    .job-desc { font-size: 14px; color: var(--text-2); line-height: 1.75; }
+    .job-link {
+      display: inline-block; margin-top: 20px;
+      font-size: 13px; font-weight: 600;
+      color: var(--orange); opacity: .85;
+      transition: opacity .15s;
+    }
+    .job-link:hover { opacity: 1; }
 
-    /* ─── Why Existing Tools Fail ─── */
-    #gap { padding: 100px 0; }
-    .gap-header { text-align: center; margin-bottom: 56px; }
-    .gap-header .section-sub { margin: 14px auto 0; }
-    .gap-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
-    @media (max-width: 640px) { .gap-grid { grid-template-columns: 1fr; } }
-    .gap-card {
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 24px;
-      display: flex; gap: 16px; align-items: flex-start;
-      transition: transform .2s, box-shadow .2s;
+    /* ── Features Highlight ── */
+    .features-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 20px; margin-top: 56px;
     }
-    .gap-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
-    .gap-icon {
-      width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
-      display: flex; align-items: center; justify-content: center; font-size: 18px;
-      background: var(--red-bg);
-    }
-    .gap-name { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
-    .gap-fail { font-size: 13px; color: var(--text-2); line-height: 1.6; }
-    .gap-fail strong { color: var(--red); font-weight: 600; }
-    .gap-bottom {
-      margin-top: 32px; background: linear-gradient(135deg, #eff6ff 0%, #f5f3ff 100%);
-      border: 1px solid rgba(59,130,246,.2); border-radius: var(--radius);
-      padding: 28px 32px; display: flex; align-items: center; gap: 20px;
-    }
-    @media (max-width: 640px) { .gap-bottom { flex-direction: column; gap: 16px; text-align: center; } }
-    .gap-bottom-icon { font-size: 36px; flex-shrink: 0; }
-    .gap-bottom-title { font-size: 17px; font-weight: 800; color: var(--text); margin-bottom: 6px; }
-    .gap-bottom-sub { font-size: 14px; color: var(--text-2); line-height: 1.65; }
-
-    /* ─── Integration Strip ─── */
-    #integration {
-      background: var(--bg-2); border-top: 1px solid var(--border);
-      border-bottom: 1px solid var(--border); padding: 40px 0;
-    }
-    .integration-label { text-align: center; font-size: 13px; font-weight: 500; color: var(--text-3); margin-bottom: 24px; }
-    .integration-logos { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; }
-    .tool-badge {
-      display: flex; align-items: center; gap: 10px;
-      padding: 10px 20px; border-radius: 10px;
-      border: 1px solid var(--border); background: var(--bg);
-      font-size: 14px; font-weight: 600; color: var(--text-2);
-      transition: all .18s;
-    }
-    .tool-badge:hover { border-color: var(--blue); color: var(--text); box-shadow: var(--shadow); }
-    .tool-icon { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
-    .tool-coming { font-size: 12px; color: var(--text-3); font-weight: 500; padding: 10px 20px; border-radius: 10px; border: 1.5px dashed var(--border); }
-
-    /* ─── Three Jobs (看着 / 拦着 / 兜底) ─── */
-    #jobs { padding: 100px 0; background: var(--hero-bg); }
-    .jobs-header { text-align: center; margin-bottom: 56px; }
-    .jobs-header .section-title { color: #fff; }
-    .jobs-header .section-sub { color: rgba(255,255,255,.45); margin: 14px auto 0; }
-    .jobs-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
-    @media (max-width: 768px) { .jobs-grid { grid-template-columns: 1fr; gap: 20px; } }
-    .job-card {
-      border-radius: var(--radius); padding: 36px 28px;
-      border: 1px solid rgba(255,255,255,.07);
-      background: rgba(255,255,255,.03);
-      transition: transform .2s, border-color .2s, background .2s;
-    }
-    .job-card:hover { transform: translateY(-4px); border-color: rgba(255,255,255,.14); background: rgba(255,255,255,.05); }
-    .job-num {
-      font-size: 13px; font-weight: 700; letter-spacing: .1em;
-      text-transform: uppercase; margin-bottom: 20px;
-    }
-    .job-icon { font-size: 36px; margin-bottom: 16px; display: block; }
-    .job-title { font-size: 22px; font-weight: 800; color: #fff; margin-bottom: 12px; letter-spacing: -.02em; }
-    .job-desc { font-size: 14px; color: rgba(255,255,255,.45); line-height: 1.75; }
-    .job-desc strong { color: rgba(255,255,255,.7); font-weight: 600; }
-    .job-card:nth-child(1) .job-num { color: #60a5fa; }
-    .job-card:nth-child(2) .job-num { color: #f87171; }
-    .job-card:nth-child(3) .job-num { color: #4ade80; }
-
-    /* ─── How It Works ─── */
-    #how { padding: 100px 0; background: var(--bg-2); }
-    .how-header { text-align: center; margin-bottom: 64px; }
-    .how-header .section-sub { margin: 14px auto 0; }
-    .how-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; }
-    @media (max-width: 768px) { .how-grid { grid-template-columns: 1fr; gap: 20px; } }
-    .how-card {
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 32px 28px;
-      box-shadow: var(--shadow); transition: transform .2s, box-shadow .2s;
-    }
-    .how-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
-    .how-num { font-size: 44px; font-weight: 900; color: var(--blue); opacity: .12; line-height: 1; margin-bottom: 14px; }
-    .how-icon { width: 44px; height: 44px; border-radius: 10px; background: var(--blue-light); display: flex; align-items: center; justify-content: center; font-size: 22px; margin-bottom: 16px; }
-    .how-title { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
-    .how-desc { font-size: 14px; color: var(--text-2); line-height: 1.7; }
-
-    /* ─── Features ─── */
-    #features { padding: 100px 0; }
-    .features-header { text-align: center; margin-bottom: 52px; }
-    .features-header .section-sub { margin: 14px auto 0; }
-    .feat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
-    @media (max-width: 900px) { .feat-grid { grid-template-columns: repeat(2, 1fr); } }
-    @media (max-width: 560px) { .feat-grid { grid-template-columns: 1fr; } }
-    .feat-card {
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 28px 24px;
-      transition: transform .2s, box-shadow .2s, border-color .2s;
-    }
-    .feat-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: rgba(59,130,246,.2); }
-    .feat-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; margin-bottom: 14px; }
-    .feat-title { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+    @media (max-width: 768px) { .features-grid { grid-template-columns: 1fr; } }
+    .feat-card { padding: 32px; }
+    .feat-icon { font-size: 28px; margin-bottom: 16px; display: block; }
+    .feat-name { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
     .feat-desc { font-size: 13px; color: var(--text-2); line-height: 1.7; }
+    .features-more {
+      text-align: center; margin-top: 36px;
+    }
+    .features-more a {
+      font-size: 14px; font-weight: 600; color: var(--text-2);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 2px;
+      transition: color .15s, border-color .15s;
+    }
+    .features-more a:hover { color: var(--text); border-color: var(--border-hi); }
 
-    /* ─── Safety Belt ─── */
-    #seatbelt { padding: 100px 0; background: var(--hero-bg); overflow: hidden; position: relative; }
-    .seatbelt-glow {
-      position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
-      width: 800px; height: 500px; pointer-events: none;
-      background: radial-gradient(ellipse at 50% 50%, rgba(59,130,246,.1) 0%, transparent 65%);
-    }
-    .seatbelt-inner { text-align: center; position: relative; z-index: 1; max-width: 760px; margin: 0 auto; }
-    .seatbelt-kicker { font-size: 14px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: #60a5fa; margin-bottom: 24px; }
-    .seatbelt-quote {
-      font-size: clamp(26px, 4vw, 44px); font-weight: 800; color: #fff;
-      line-height: 1.2; letter-spacing: -.02em; margin-bottom: 24px;
-    }
-    .seatbelt-quote em { font-style: italic; color: rgba(255,255,255,.5); font-weight: 400; }
-    .seatbelt-sub { font-size: 17px; color: rgba(255,255,255,.45); line-height: 1.75; margin-bottom: 48px; }
-    .seatbelt-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; text-align: left; }
-    @media (max-width: 640px) { .seatbelt-cards { grid-template-columns: 1fr; } }
-    .seatbelt-card {
-      background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
-      border-radius: 10px; padding: 22px 20px;
-    }
-    .seatbelt-card-label { font-size: 11px; font-weight: 600; letter-spacing: .08em; color: rgba(255,255,255,.3); text-transform: uppercase; margin-bottom: 10px; }
-    .seatbelt-card-text { font-size: 14px; color: rgba(255,255,255,.5); line-height: 1.7; }
-    .seatbelt-card-text strong { color: rgba(255,255,255,.75); font-weight: 600; }
-
-    /* ─── Demo ─── */
-    #demo { padding: 100px 0; background: var(--bg-2); }
-    .demo-header { text-align: center; margin-bottom: 48px; }
-    .demo-header .section-sub { margin: 14px auto 0; }
-    .demo-frame {
-      border-radius: 16px; overflow: hidden;
-      background: linear-gradient(135deg, #1e2d4a 0%, #0b1628 100%);
-      border: 1px solid rgba(255,255,255,.07);
-      box-shadow: 0 40px 80px rgba(0,0,0,.25);
-      aspect-ratio: 16/9; max-width: 900px; margin: 0 auto;
-      display: flex; align-items: center; justify-content: center;
-      position: relative; cursor: pointer;
-    }
-    .demo-frame::before {
-      content: ""; position: absolute; inset: 0;
-      background: radial-gradient(circle at 50% 50%, rgba(59,130,246,.07) 0%, transparent 65%);
-    }
-    .demo-play {
-      width: 72px; height: 72px; border-radius: 50%;
-      background: rgba(255,255,255,.1); backdrop-filter: blur(8px);
-      border: 1.5px solid rgba(255,255,255,.2);
-      display: flex; align-items: center; justify-content: center;
-      transition: all .2s; z-index: 1;
-    }
-    .demo-frame:hover .demo-play { background: rgba(59,130,246,.4); transform: scale(1.1); }
-    .demo-play svg { width: 28px; height: 28px; fill: #fff; margin-left: 4px; }
-    .demo-placeholder-label {
-      position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
-      font-size: 12px; color: rgba(255,255,255,.18); white-space: nowrap;
-    }
-    .demo-caption { text-align: center; margin-top: 16px; font-size: 13px; color: var(--text-3); }
-
-    /* ─── Download ─── */
-    #download {
-      padding: 100px 0;
-      background: linear-gradient(180deg, #fff 0%, #f0f7ff 100%);
-    }
-    .download-header { text-align: center; margin-bottom: 52px; }
-    .download-header .section-sub { margin: 14px auto 0; }
-    .download-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; max-width: 740px; margin: 0 auto; }
-    @media (max-width: 600px) { .download-grid { grid-template-columns: 1fr; } }
-    .dl-card { border-radius: var(--radius); padding: 36px 32px; text-align: center; border: 1.5px solid var(--border); }
-    .dl-card.primary { background: #fff; border-color: rgba(59,130,246,.3); box-shadow: 0 0 0 4px rgba(59,130,246,.06), var(--shadow-lg); }
-    .dl-card.secondary { background: var(--bg-2); border-style: dashed; }
-    .dl-card-icon { font-size: 40px; margin-bottom: 16px; }
-    .dl-card-title { font-size: 20px; font-weight: 800; margin-bottom: 8px; }
-    .dl-card.secondary .dl-card-title { color: var(--text-3); }
-    .dl-card-sub { font-size: 13px; color: var(--text-3); margin-bottom: 24px; line-height: 1.6; }
-    .dl-btn { width: 100%; padding: 13px; border-radius: 9px; font-size: 15px; font-weight: 700; cursor: pointer; border: none; transition: all .18s; }
-    .dl-btn.primary { background: var(--blue); color: #fff; box-shadow: 0 4px 20px rgba(59,130,246,.3); }
-    .dl-btn.primary:hover { background: var(--blue-dark); transform: translateY(-1px); }
-    .dl-btn.secondary { background: var(--bg); color: var(--text-3); border: 1.5px solid var(--border); cursor: not-allowed; }
-    .dl-meta { margin-top: 14px; font-size: 12px; color: var(--text-3); line-height: 1.65; }
-    .dl-meta a { color: var(--blue); text-decoration: underline; text-decoration-color: rgba(59,130,246,.3); }
-    .win-email { margin-top: 16px; display: flex; gap: 8px; }
-    .win-email input { flex: 1; padding: 9px 12px; border-radius: 7px; border: 1px solid var(--border); font-size: 13px; background: #fff; outline: none; }
-    .win-email input:focus { border-color: var(--blue); }
-    .win-email button { padding: 9px 14px; border-radius: 7px; border: none; background: var(--text); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: background .15s; }
-    .win-email button:hover { background: #334155; }
-    .win-note { font-size: 11px; color: var(--text-3); margin-top: 8px; }
-    .gk-note { max-width: 580px; margin: 32px auto 0; background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 18px 22px; font-size: 13px; color: var(--text-2); line-height: 1.7; }
-    .gk-steps { margin-top: 8px; padding-left: 18px; }
-    .gk-steps li { margin-bottom: 4px; }
-
-    /* ─── Footer ─── */
-    #footer { background: var(--hero-bg); padding: 56px 0 40px; border-top: 1px solid rgba(255,255,255,.05); }
-    .footer-inner { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 28px; }
-    .footer-brand .nav-logo-name { font-size: 20px; }
-    .footer-tagline { font-size: 13px; color: rgba(255,255,255,.3); margin-top: 8px; max-width: 240px; line-height: 1.6; }
-    .footer-links { display: flex; gap: 24px; }
-    .footer-link { font-size: 14px; color: rgba(255,255,255,.4); transition: color .15s; }
-    .footer-link:hover { color: rgba(255,255,255,.8); }
-    .footer-bottom { margin-top: 48px; padding-top: 24px; border-top: 1px solid rgba(255,255,255,.05); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-    .footer-copy { font-size: 13px; color: rgba(255,255,255,.2); }
-    .footer-heart { color: rgba(239,68,68,.5); }
-
-    /* ─── Responsive ─── */
-    @media (max-width: 768px) {
-      #hero { padding: 110px 0 0; }
-      .hero-title { font-size: 36px; }
-      .mockup-screen { height: 300px; }
-      .app-sidebar { width: 120px; }
-      #nav .nav-logo-tag { display: none; }
-      .footer-inner { flex-direction: column; }
-      .footer-bottom { flex-direction: column; text-align: center; }
-    }
-    @media (max-width: 480px) {
-      .container { padding: 0 16px; }
-      .hero-ctas { flex-direction: column; align-items: center; }
-      .hero-cta-primary, .hero-cta-secondary { width: 100%; max-width: 300px; justify-content: center; }
-    }
+    /* ── Download Section ── */
+    .dl-section { text-align: center; }
+    .dl-section .sub { margin: 16px auto 56px; }
   </style>
 </head>
 <body>
 
-<!-- ─── Nav ──────────────────────────────────────────────────── -->
+<!-- ─── Nav ───────────────────────────────────────────────────── -->
 <nav id="nav">
-  <div class="container nav-inner">
-    <a href="#" class="nav-logo">
-      <div class="nav-logo-mark">r</div>
-      <span class="nav-logo-name">rew</span>
-      <span class="nav-logo-tag">/ AI 时代的文件安全网</span>
-    </a>
-    <div class="nav-right">
-      <a href="#download" class="nav-cta">免费下载</a>
+  <div class="container">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">
+        <div class="nav-logo-mark">R</div>
+        <span class="nav-logo-name">rew</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="why.html">为什么需要</a></li>
+        <li><a href="features.html">功能详情</a></li>
+        <li><a href="#download">下载</a></li>
+      </ul>
+      <div class="nav-right">
+        <a href="#download" class="btn btn-primary btn-sm nav-cta">免费下载</a>
+      </div>
     </div>
   </div>
 </nav>
 
-<!-- ─── Hero ─────────────────────────────────────────────────── -->
-<section id="hero">
-  <div class="hero-glow-1"></div>
-  <div class="hero-glow-2"></div>
+<!-- ─── Hero ──────────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="hero-glow"></div>
   <div class="container">
-    <div class="hero-content">
-      <div class="hero-eyebrow reveal">
-        <div class="hero-eyebrow-dot"></div>
-        AI 的善意，有时候会造成破坏
-      </div>
-
-      <h1 class="hero-title reveal reveal-delay-1">
-        你让 AI 帮你改文件<br/>
-        <em>它能改对的，也能删错的</em>
-      </h1>
-
-      <p class="hero-sub reveal reveal-delay-2">
-        rew 是 AI 时代的安全带。<br/>
-        自动存档每一次变更，实时告警异常操作，一键读档回到历史状态。
-      </p>
-
-      <div class="hero-badges reveal reveal-delay-3">
-        <span class="hero-badge">🔒 无需账号</span>
-        <span class="hero-badge">💾 数据不出本机</span>
-        <span class="hero-badge">⚡ 零额外磁盘占用</span>
-        <span class="hero-badge">🆓 完全免费</span>
-        <span class="hero-badge">👤 不只适合开发者</span>
-      </div>
-
-      <div class="hero-ctas reveal reveal-delay-4">
-        <a href="#download" class="hero-cta-primary">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 17l-7-7h4V3h6v7h4l-7 7zM3 21h18"/></svg>
-          下载 for macOS
-        </a>
-        <div class="hero-cta-secondary">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
-          Windows · 即将到来
+    <div class="hero-inner">
+      <!-- Left: copy -->
+      <div class="hero-copy">
+        <div class="hero-eyebrow">AI 时代的文件安全网</div>
+        <h1 class="hero-title">
+          AI 改文件
+          <em>rew 守着</em>
+        </h1>
+        <p class="hero-sub">
+          自动存档每一次变更，出错后一键读档还原。<br/>
+          不需要 Git，不需要任何命令。
+        </p>
+        <div class="hero-actions">
+          <a href="#download" class="btn btn-primary">下载 macOS 版本 →</a>
+          <a href="why.html" class="btn btn-ghost">了解背后的故事</a>
+        </div>
+        <div class="hero-badges">
+          <span class="pill">✦ 自动存档，无需手动</span>
+          <span class="pill">⚡ 毫秒级文件监控</span>
+          <span class="pill">🔒 数据全部存本地</span>
+          <span class="pill">👤 不只是开发者</span>
         </div>
       </div>
-    </div>
 
-    <!-- App UI Mockup -->
-    <div class="hero-mockup reveal reveal-delay-5">
-      <div class="mockup-wrapper">
-        <div class="mockup-bar">
-          <div class="mockup-dot r"></div><div class="mockup-dot y"></div><div class="mockup-dot g"></div>
-        </div>
-        <div class="mockup-screen">
-          <div class="app-ui">
-            <div class="app-sidebar">
-              <div class="app-s-label">WORKSPACE</div>
-              <div class="app-s-item active"><span>🕐</span> 存档</div>
-              <div style="height:14px"></div>
-              <div class="app-s-label">保护状态</div>
-              <div class="app-s-item"><span>🛡️</span> 保护中 <span style="width:5px;height:5px;border-radius:50%;background:#22c55e;margin-left:auto"></span></div>
-              <div style="height:14px"></div>
-              <div class="app-s-label">保护目录</div>
-              <div class="app-s-dir"><span>✓</span> Desktop</div>
-              <div class="app-s-dir"><span>✓</span> Documents</div>
-              <div class="app-s-dir"><span>✓</span> project</div>
+      <!-- Right: App mockup -->
+      <div class="hero-mockup">
+        <div class="mockup-frame">
+          <div class="mockup-titlebar">
+            <div class="tb-dot tb-red"></div>
+            <div class="tb-dot tb-yellow"></div>
+            <div class="tb-dot tb-green"></div>
+            <div class="mockup-title-text">rew — 文件存档助手</div>
+          </div>
+          <div class="mockup-body">
+            <!-- Rail -->
+            <div class="mock-rail">
+              <div class="rail-icon active">⏱</div>
+              <div class="rail-icon">🤖</div>
+              <div class="rail-icon">⚙</div>
             </div>
-            <div class="app-main">
-              <div class="app-tabs">
-                <div class="app-tab active">定时存档 (18)</div>
-                <div class="app-tab">AI 任务</div>
-                <div style="flex:1"></div>
-                <div style="font-size:9px;color:rgba(255,255,255,.18)">时间筛选 · 今天 ▾</div>
-              </div>
-              <div class="app-col-header">
-                <span style="width:40px;text-align:center">图表</span>
-                <span style="flex:1;padding-left:8px">描述</span>
-                <span style="width:60px;text-align:right">文件</span>
-                <span style="width:120px;text-align:right">时间</span>
-              </div>
-              <div class="app-row sel">
-                <div class="app-row-dot"></div>
-                <div class="app-row-lbl">16:20 存档</div>
-                <div class="app-row-files">22 文件</div>
-                <div class="app-row-time">2026-04-09 16:20</div>
-              </div>
-              <div class="app-row">
-                <div class="app-row-dot"></div>
-                <div class="app-row-lbl">15:20 存档</div>
-                <div class="app-row-files">31 文件</div>
-                <div class="app-row-time">2026-04-09 15:20</div>
-              </div>
-              <div class="app-row">
-                <div class="app-row-dot"></div>
-                <div class="app-row-lbl">14:20 存档</div>
-                <div class="app-row-files">28 文件</div>
-                <div class="app-row-time">2026-04-09 14:20</div>
-              </div>
-              <div class="app-row">
-                <div class="app-row-dot"></div>
-                <div class="app-row-lbl">13:20 存档</div>
-                <div class="app-row-files">9 文件</div>
-                <div class="app-row-time">2026-04-09 13:20</div>
-              </div>
-              <div class="app-bottom">
-                <div class="app-files">
-                  <div class="app-files-hdr">变更文件 (22)</div>
-                  <div class="app-file"><div class="app-fbadge fb-m">M</div><div class="app-fname">commands.rs</div><span style="font-size:9px;color:#4ade80">+18</span><div class="app-frestore">↩ 读档</div></div>
-                  <div class="app-file"><div class="app-fbadge fb-m">M</div><div class="app-fname">TaskTimeline.tsx</div><span style="font-size:9px;color:#f87171">-24</span><div class="app-frestore">↩ 读档</div></div>
-                  <div class="app-file"><div class="app-fbadge fb-a">A</div><div class="app-fname">DiffViewer.tsx</div><span style="font-size:9px;color:#4ade80">+153</span><div class="app-frestore">↩ 读档</div></div>
-                  <div class="app-file"><div class="app-fbadge fb-d">D</div><div class="app-fname">legacy.rs</div><span style="font-size:9px;color:#f87171">-88</span><span style="font-size:8px;color:rgba(255,255,255,.15)">已删除</span></div>
+            <!-- Sidebar: timeline -->
+            <div class="mock-sidebar">
+              <div class="ms-header">
+                <div class="ms-title">存档记录</div>
+                <div class="ms-tab-row">
+                  <div class="ms-tab active">定时存档</div>
+                  <div class="ms-tab">AI 任务</div>
                 </div>
-                <div class="app-diff">
-                  <span class="d-hk">@@ -288,10 +288,14 @@</span>
-                  <span class="d-ctx">  let window_secs = state.config</span>
-                  <span class="d-del">-   .unwrap_or(600);</span>
-                  <span class="d-add">+   .unwrap_or(600);</span>
-                  <span class="d-add">+ let seal_time = w.started_at</span>
-                  <span class="d-add">+   + Duration::seconds(window_secs as i64);</span>
-                  <span class="d-ctx"> </span>
-                  <span class="d-add">+ // Seal exactly at started_at + window_secs</span>
+              </div>
+              <div class="ms-list">
+                <div class="ms-item active">
+                  <span class="ms-item-label">📦 16:30 存档</span>
+                  <span class="ms-item-badge">7 文件</span>
                 </div>
+                <div class="ms-item">
+                  <span class="ms-item-label">📦 15:30 存档</span>
+                  <span class="ms-item-time">2 文件</span>
+                </div>
+                <div class="ms-item">
+                  <span class="ms-item-label">📦 14:30 存档</span>
+                  <span class="ms-item-time">12 文件</span>
+                </div>
+                <div class="ms-item">
+                  <span class="ms-item-label">📦 13:30 存档</span>
+                  <span class="ms-item-time">5 文件</span>
+                </div>
+                <div class="ms-item">
+                  <span class="ms-item-label">📦 12:30 存档</span>
+                  <span class="ms-item-time">3 文件</span>
+                </div>
+              </div>
+            </div>
+            <!-- Detail -->
+            <div class="mock-detail">
+              <div class="md-header">
+                <span class="md-task-name">2026-04-09 16:30 存档 · 7 个文件</span>
+                <div class="md-actions">
+                  <div class="md-action-btn">↩ 整体读档</div>
+                </div>
+              </div>
+              <div class="md-list">
+                <div class="md-file">
+                  <span class="md-file-name">src/components/App.tsx</span>
+                  <span class="md-file-tag tag-mod">修改</span>
+                </div>
+                <div class="md-file">
+                  <span class="md-file-name">src/utils/api.ts</span>
+                  <span class="md-file-tag tag-mod">修改</span>
+                </div>
+                <div class="md-file">
+                  <span class="md-file-name">src/types.ts</span>
+                  <span class="md-file-tag tag-add">新建</span>
+                </div>
+                <div class="md-file">
+                  <span class="md-file-name">docs/report.md</span>
+                  <span class="md-file-tag tag-del">删除</span>
+                </div>
+                <div class="md-file">
+                  <span class="md-file-name">package.json</span>
+                  <span class="md-file-tag tag-mod">修改</span>
+                </div>
+              </div>
+              <div class="md-restore-row">
+                <span class="md-restore-label">回到此存档点（全部文件）</span>
+                <button class="md-restore-btn">↩ 读档</button>
               </div>
             </div>
           </div>
@@ -639,434 +368,237 @@
   </div>
 </section>
 
-<!-- ─── Story ─────────────────────────────────────────────────── -->
-<section id="story">
+<!-- ─── Integration Strip ─────────────────────────────────────── -->
+<div class="integration-strip">
   <div class="container">
-    <div class="story-inner">
-      <div class="reveal">
-        <div class="story-quote">
-          「请清空所有测试数据」<br/>
-          <em>一句非常正常的话</em><br/>
-          <span style="color:#fff">却让他丢了<em>十三年的工作文件</em></span>
-        </div>
-        <p class="story-sub">
-          AI 自行推导路径，生成清理脚本，不只清了测试数据——<br/>
-          把桌面和文档目录下的文件也一并删除了。<br/>
-          固态硬盘 TRIM 已开启。十三年，物理不可恢复。
-        </p>
+    <p class="integration-label">无缝集成你正在使用的 AI 工具 — 开发者、产品经理、设计师都能用</p>
+    <div class="integration-logos">
+      <div class="tool-chip">
+        <div class="tool-chip-icon" style="background:#1a1a2e;">🖱</div>
+        Cursor
       </div>
-      <div class="story-detail reveal reveal-delay-2">
-        <div class="story-tag">⚠️ 真实案例 · 2026 年清明假期</div>
-        <p class="story-p">
-          开发者在家远程连公司电脑，用 CodeBuddy 开发一个线下数据计算工具。
-          开发完毕，想整理工程目录，对 AI 说了一句：<strong>「请清空所有测试数据，让工具处于初始化状态」</strong>。
-        </p>
-        <p class="story-p">
-          AI 自行推导路径，生成清理脚本。清空了工具的测试数据，
-          也把<strong>桌面和文档目录下的文件一并删除了</strong>。
-          而他的桌面，恰好映射在 D 盘——那里存着他 2012 年入职至今，<strong>十三年、每一年的全部工作文件</strong>。
-        </p>
-        <div class="story-outcome">
-          事后用专业工具扫描，文件名和目录结构还在，但固态硬盘 TRIM 已开启——
-          恢复出来的文件没有一个能打开。<strong>十三年，归零。</strong>
-        </div>
+      <div class="tool-chip">
+        <div class="tool-chip-icon" style="background:#1a1f2e;">🤖</div>
+        Claude Code
+      </div>
+      <div class="tool-chip">
+        <div class="tool-chip-icon" style="background:#0d1f2d;">💡</div>
+        Codebuddy
+      </div>
+      <div class="tool-chip">
+        <div class="tool-chip-icon" style="background:#1a1a1a;">⚡</div>
+        Windsurf
+      </div>
+      <div class="tool-chip">
+        <div class="tool-chip-icon" style="background:#161d27;">🔮</div>
+        GitHub Copilot
+      </div>
+      <div class="tool-chip" style="border-style: dashed; color: var(--text-3);">
+        通用文件监控，任意工具均支持
       </div>
     </div>
   </div>
-</section>
+</div>
 
-<!-- ─── Scale ─────────────────────────────────────────────────── -->
-<section id="scale">
+<!-- ─── Three Jobs ────────────────────────────────────────────── -->
+<section class="section">
   <div class="container">
-    <div class="scale-header">
-      <span class="section-label reveal">这不是个例</span>
-      <h2 class="section-title reveal reveal-delay-1" style="margin-top:12px;text-align:center">
-        AI 工具正在以超乎想象的速度普及
-      </h2>
-      <p class="section-sub reveal reveal-delay-2" style="margin:14px auto 0;text-align:center">
-        用 AI 改文件的人越来越多，而保护这些文件的工具却几乎没有进化。
-      </p>
-    </div>
-    <div class="stats-grid">
-      <div class="stat-card reveal reveal-delay-1">
-        <div class="stat-num"><span>63</span>%</div>
-        <div class="stat-label">用户不是程序员</div>
-        <div class="stat-sub">Cursor、Claude Code 等 AI 编程工具的用户中，超过六成是产品经理、创业者、运营、设计师</div>
-      </div>
-      <div class="stat-card reveal reveal-delay-2">
-        <div class="stat-num"><span>520</span>%</div>
-        <div class="stat-label">非技术用户年增速</div>
-        <div class="stat-sub">越来越多没有 Git 基础的人在用 AI 大量修改文件，一次 prompt 可能改 10-20 个文件</div>
-      </div>
-      <div class="stat-card reveal reveal-delay-3">
-        <div class="stat-num"><span>4</span>个月</div>
-        <div class="stat-label">最长工作丢失记录</div>
-        <div class="stat-sub">Cursor 2026 年 3 月的代码静默回退 bug，竞态条件导致有用户丢失了 4 个月的工作</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ─── Why Existing Tools Fail ──────────────────────────────── -->
-<section id="gap">
-  <div class="container">
-    <div class="gap-header">
-      <span class="section-label reveal">现有方案的缺口</span>
-      <h2 class="section-title reveal reveal-delay-1" style="margin-top:12px;text-align:center">
-        每个工具都有一个明显的漏洞
-      </h2>
-      <p class="section-sub reveal reveal-delay-2" style="margin:14px auto 0;text-align:center">
-        这些缺口加在一起，就是一个巨大的真空地带——没有任何现有工具能系统性地解决这个问题。
-      </p>
-    </div>
-    <div class="gap-grid">
-      <div class="gap-card reveal reveal-delay-1">
-        <div class="gap-icon">🌿</div>
-        <div>
-          <div class="gap-name">Git</div>
-          <div class="gap-fail">需要你主动 commit，需要学分支、暂存区、reflog 这些概念。对非技术用户来说是另一道门槛。而且 <strong>Claude Code 自己会偷偷执行 git reset --hard</strong>，你的安全网本身已被 AI 操控。</div>
-        </div>
-      </div>
-      <div class="gap-card reveal reveal-delay-2">
-        <div class="gap-icon">🕐</div>
-        <div>
-          <div class="gap-name">Time Machine</div>
-          <div class="gap-fail">按小时备份。但 AI 交互是按秒的——一小时内 AI 可能帮你改了 50 次文件，Time Machine 只有<strong>一个快照</strong>。想回到第 30 次修改之后的状态？对不起，没有。</div>
-        </div>
-      </div>
-      <div class="gap-card reveal reveal-delay-3">
-        <div class="gap-icon">📦</div>
-        <div>
-          <div class="gap-name">Dropbox 版本历史</div>
-          <div class="gap-fail">有延迟，且<strong>只管 Dropbox 同步的文件</strong>。AI 在终端里 rm 掉的文件？Dropbox 感知不到，管不了。</div>
-        </div>
-      </div>
-      <div class="gap-card reveal reveal-delay-4">
-        <div class="gap-icon">🗑️</div>
-        <div>
-          <div class="gap-name">回收站</div>
-          <div class="gap-fail"><strong>rm 命令删的不进回收站。覆盖写的也不进回收站。</strong> AI 在终端里的操作，完全绕过了回收站机制。</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="gap-bottom reveal">
-      <div class="gap-bottom-icon">⚡</div>
-      <div>
-        <div class="gap-bottom-title">根本问题：速度差</div>
-        <div class="gap-bottom-sub">
-          传统工具的设计假设是「人类以人类的速度修改文件」——你花 30 分钟改两个文件，停下来 commit 一下。
-          但 AI 不一样：你说一句话，它 30 秒内改 15 个文件。你还没看清改了什么，下一轮又来了。
-          <strong>那段间隙，什么保护都没有。</strong>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ─── Integration Strip ──────────────────────────────────────── -->
-<section id="integration">
-  <div class="container">
-    <p class="integration-label reveal">无缝集成你正在使用的 AI 工具 — 不只是开发者，人人都能用</p>
-    <div class="integration-logos reveal reveal-delay-1">
-      <div class="tool-badge"><div class="tool-icon" style="background:#fef3c7;color:#d97706">✦</div>Claude Code</div>
-      <div class="tool-badge"><div class="tool-icon" style="background:#ede9fe;color:#7c3aed">⌶</div>Cursor</div>
-      <div class="tool-badge"><div class="tool-icon" style="background:#dbeafe;color:#2563eb">◈</div>CodeBuddy</div>
-      <div class="tool-badge"><div class="tool-icon" style="background:#f0fdf4;color:#16a34a">✦</div>Windsurf</div>
-      <div class="tool-badge"><div class="tool-icon" style="background:#fdf4ff;color:#9333ea">◇</div>通用文件监控</div>
-      <span class="tool-coming">更多 AI 工具持续接入 →</span>
-    </div>
-  </div>
-</section>
-
-<!-- ─── Three Jobs ─────────────────────────────────────────────── -->
-<section id="jobs">
-  <div class="container">
-    <div class="jobs-header">
-      <span class="section-label" style="color:#60a5fa;letter-spacing:.1em">rew 做三件事</span>
-      <h2 class="section-title reveal" style="margin-top:12px">看着·拦着·兜底</h2>
-      <p class="section-sub reveal reveal-delay-1">
-        不改变你的工作方式，不需要记命令，后台静默运行，出事了第一时间保护你。
-      </p>
+    <div class="section-center">
+      <span class="label">核心理念</span>
+      <h2 class="title reveal">看着，拦着，兜底</h2>
+      <p class="sub reveal d1">三件事，守护你每一次与 AI 协作的安全边界。</p>
     </div>
     <div class="jobs-grid">
-      <div class="job-card reveal reveal-delay-1">
-        <div class="job-num">看着</div>
-        <span class="job-icon">👁️</span>
-        <div class="job-title">自动存档，无感知</div>
-        <div class="job-desc">
-          AI 每次动你的文件，rew 自动存档。<strong>你不需要记得 commit</strong>，不需要学任何命令，后台静默运行，你完全感觉不到它在。
-          每隔设定时间存一个档，AI 任务完成后也自动留档，附完整 Diff。
-        </div>
+      <div class="card job-card reveal d1">
+        <span class="job-icon">👁</span>
+        <div class="job-title">看着</div>
+        <p class="job-desc">
+          AI 每次改动文件，rew 在后台自动存档快照。你完全感觉不到它在，直到你需要它的那一刻。
+        </p>
+        <a href="features.html#monitor" class="job-link">了解自动存档 →</a>
       </div>
-      <div class="job-card reveal reveal-delay-2">
-        <div class="job-num">拦着</div>
+      <div class="card job-card reveal d2">
         <span class="job-icon">🛑</span>
-        <div class="job-title">异常告警，立刻熔断</div>
-        <div class="job-desc">
-          AI 要碰不该碰的地方，或者<strong>短时间内大量删除文件</strong>，立刻告警。
-          就像那个十三年的案例——如果 3 秒内检测到 800 个文件被连续删除，
-          直接熔断，先暂停，让你确认。
-        </div>
+        <div class="job-title">拦着</div>
+        <p class="job-desc">
+          检测到 AI 在短时间内大量删除或修改文件时，立即发出告警。三秒内 800 个文件被删？先暂停，让你确认。
+        </p>
+        <a href="features.html#guard" class="job-link">了解异常熔断 →</a>
       </div>
-      <div class="job-card reveal reveal-delay-3">
-        <div class="job-num">兜底</div>
-        <span class="job-icon">↩️</span>
-        <div class="job-title">出了事，一键回去</div>
-        <div class="job-desc">
-          不是 <code style="font-size:12px;background:rgba(255,255,255,.08);padding:2px 6px;border-radius:4px">git checkout HEAD~3 -- file.txt</code>，
-          不需要你知道这串字符是什么意思。
-          <strong>打开 rew，选存档点，点读档。</strong>
-          像游戏里读档一样简单。可以反复读，不限次数。
-        </div>
+      <div class="card job-card reveal d3">
+        <span class="job-icon">🎮</span>
+        <div class="job-title">兜底</div>
+        <p class="job-desc">
+          出了事，像游戏读档一样回到任意历史节点。不需要 git checkout，不需要懂任何命令，一键还原。
+        </p>
+        <a href="features.html#restore" class="job-link">了解一键读档 →</a>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ─── How It Works ───────────────────────────────────────────── -->
-<section id="how">
-  <div class="container">
-    <div class="how-header">
-      <span class="section-label reveal">上手流程</span>
-      <h2 class="section-title reveal reveal-delay-1" style="margin-top:12px">三步，今天就能开始保护文件</h2>
-      <p class="section-sub reveal reveal-delay-2">无需服务器，无需账号，安装即用。</p>
-    </div>
-    <div class="how-grid">
-      <div class="how-card reveal reveal-delay-1">
-        <div class="how-num">01</div>
-        <div class="how-icon">📁</div>
-        <div class="how-title">选择保护目录</div>
-        <div class="how-desc">告诉 rew 你想守护哪些文件夹。rew 自动全量扫描、建立基线，30 秒完成初始化。桌面、文档、项目目录——任意选。</div>
-      </div>
-      <div class="how-card reveal reveal-delay-2">
-        <div class="how-num">02</div>
-        <div class="how-icon">⚡</div>
-        <div class="how-title">后台静默守护</div>
-        <div class="how-desc">rew 在后台运行，你完全感觉不到。按设定频率自动存档，AI 任务结束后自动留档，异常操作实时告警。</div>
-      </div>
-      <div class="how-card reveal reveal-delay-3">
-        <div class="how-num">03</div>
-        <div class="how-icon">↩️</div>
-        <div class="how-title">出事了，一键读档</div>
-        <div class="how-desc">打开 rew 时间线，点选任意存档点。支持整批还原或单文件读档，操作不限次数，就像游戏里读存档。</div>
-      </div>
-    </div>
-  </div>
-</section>
+<hr class="divider container"/>
 
-<!-- ─── Features ──────────────────────────────────────────────── -->
-<section id="features">
+<!-- ─── Feature Highlights ────────────────────────────────────── -->
+<section class="section">
   <div class="container">
-    <div class="features-header">
-      <span class="section-label reveal">核心能力</span>
-      <h2 class="section-title reveal reveal-delay-1" style="margin-top:12px">专为「AI 在改你的文件」而设计</h2>
-      <p class="section-sub reveal reveal-delay-2">不是传统备份工具，也不是 Git 替代品——是 AI 时代专属的文件安全层。</p>
+    <div class="section-center">
+      <span class="label">核心能力</span>
+      <h2 class="title reveal">你需要的，它都有</h2>
+      <p class="sub reveal d1">从自动存档到异常熔断，rew 在你看不见的地方持续工作。</p>
     </div>
-    <div class="feat-grid">
-      <div class="feat-card reveal reveal-delay-1">
-        <div class="feat-icon" style="background:#eff6ff">⏰</div>
-        <div class="feat-title">定时精准存档</div>
-        <div class="feat-desc">每 5 / 10 / 30 分钟或 1 小时自动存档，存档点精确封存，误差小于 10 秒。相同文件反复修改只算一次净变更，干净不冗余。</div>
+    <div class="features-grid">
+      <div class="card feat-card reveal d1">
+        <span class="feat-icon">⚡</span>
+        <div class="feat-name">毫秒级文件追踪</div>
+        <p class="feat-desc">基于 macOS FSEvents，捕捉每一次文件创建、修改、删除，内容未变则不记录。</p>
       </div>
-      <div class="feat-card reveal reveal-delay-2">
-        <div class="feat-icon" style="background:#fef9c3">🤖</div>
-        <div class="feat-title">AI 任务感知</div>
-        <div class="feat-desc">与 Cursor、Claude Code、CodeBuddy 深度集成，每次 AI 任务完成后独立存档，与定时存档互不干扰，附完整文件 Diff。</div>
+      <div class="card feat-card reveal d2">
+        <span class="feat-icon">📸</span>
+        <div class="feat-name">AI 任务独立存档</div>
+        <p class="feat-desc">Cursor 或 Claude Code 完成任务后，自动生成独立存档记录，与定时存档分开展示，互不干扰。</p>
       </div>
-      <div class="feat-card reveal reveal-delay-3">
-        <div class="feat-icon" style="background:#fff0f0">🚨</div>
-        <div class="feat-title">异常熔断告警</div>
-        <div class="feat-desc">短时间内大量文件被删除或修改，立刻触发告警。AI 越界操作到项目外的目录？第一时间通知你，防止"善意破坏"蔓延。</div>
-      </div>
-      <div class="feat-card reveal reveal-delay-1">
-        <div class="feat-icon" style="background:#fdf4ff">🔍</div>
-        <div class="feat-title">文件级 Diff 视图</div>
-        <div class="feat-desc">点击任意存档点，查看每个文件的具体增删行。右侧即时展示 Diff 对比，清楚知道 AI 改了什么、改了哪里。</div>
-      </div>
-      <div class="feat-card reveal reveal-delay-2">
-        <div class="feat-icon" style="background:#fff7ed">💽</div>
-        <div class="feat-title">零额外磁盘占用</div>
-        <div class="feat-desc">基于 APFS clonefile（CoW）技术，备份与原文件共享物理存储空间。10 万个文件的备份，只需几 MB 额外空间。</div>
-      </div>
-      <div class="feat-card reveal reveal-delay-3">
-        <div class="feat-icon" style="background:#f0fdf4">🔐</div>
-        <div class="feat-title">数据完全本地</div>
-        <div class="feat-desc">无账号、无云端、无订阅。所有数据存储在本机 <code style="font-size:12px;background:#f1f5f9;padding:1px 5px;border-radius:4px">~/.rew/</code>。你的文件，永远不会离开你的电脑。</div>
+      <div class="card feat-card reveal d3">
+        <span class="feat-icon">🔍</span>
+        <div class="feat-name">文件级 diff 对比</div>
+        <p class="feat-desc">点击任意存档记录，即可查看每个文件的前后变更 diff，精确定位 AI 改了什么。</p>
       </div>
     </div>
-  </div>
-</section>
-
-<!-- ─── Safety Belt ────────────────────────────────────────────── -->
-<section id="seatbelt">
-  <div class="seatbelt-glow"></div>
-  <div class="container">
-    <div class="seatbelt-inner">
-      <div class="seatbelt-kicker reveal">rew 的产品定位</div>
-      <div class="seatbelt-quote reveal reveal-delay-1">
-        安全带让车跑得更快了吗？<br/>
-        <em>没有。但它让人敢开更快。</em>
-      </div>
-      <p class="seatbelt-sub reveal reveal-delay-2">
-        1959 年沃尔沃发明三点式安全带，把专利开放给所有汽车厂商免费使用。<br/>
-        从此安全带成了每辆车的标配——不是因为它让车更快，而是让人更敢开。<br/><br/>
-        所有人都在卷「让 AI 更强」，而 rew 想做的，是<strong style="color:#60a5fa">让人敢用 AI</strong>。
-      </p>
-      <div class="seatbelt-cards reveal reveal-delay-3">
-        <div class="seatbelt-card">
-          <div class="seatbelt-card-label">信任 > 能力</div>
-          <div class="seatbelt-card-text">
-            AI 现在的能力已经很强了。Cursor 能帮你搭项目，Claude Code 能帮你重构代码。
-            但很多人还是犹豫的，心里有个声音：<strong>「万一它搞砸了呢？」</strong>
-          </div>
-        </div>
-        <div class="seatbelt-card">
-          <div class="seatbelt-card-label">AI 时代的安全带</div>
-          <div class="seatbelt-card-text">
-            <strong>rew 解决的不是 AI 能力的问题，而是信任的问题。</strong>
-            当你知道有一张安全网在兜底，你就敢让 AI 做更大胆的事，你的效率才能真正提升。
-          </div>
-        </div>
-      </div>
+    <div class="features-more reveal">
+      <a href="features.html">查看全部 6 项核心功能 →</a>
     </div>
-  </div>
-</section>
-
-<!-- ─── Demo ───────────────────────────────────────────────────── -->
-<section id="demo">
-  <div class="container">
-    <div class="demo-header">
-      <span class="section-label reveal">产品演示</span>
-      <h2 class="section-title reveal reveal-delay-1" style="margin-top:12px">看看 rew 是如何工作的</h2>
-      <p class="section-sub reveal reveal-delay-2">AI 改坏了文件，30 秒内找回历史版本。</p>
-    </div>
-    <div class="demo-frame reveal reveal-delay-2" id="demo-frame">
-      <div class="demo-play">
-        <svg viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21"/></svg>
-      </div>
-      <div class="demo-placeholder-label">演示视频即将上线 · 敬请期待</div>
-    </div>
-    <p class="demo-caption reveal">实际产品界面 · 三栏布局（时间线 / 文件列表 / Diff 视图）· 支持拖拽调整</p>
   </div>
 </section>
 
 <!-- ─── Download ──────────────────────────────────────────────── -->
-<section id="download">
+<section class="section dl-section" id="download">
   <div class="container">
-    <div class="download-header">
-      <span class="section-label reveal">立即开始</span>
-      <h2 class="section-title reveal reveal-delay-1" style="margin-top:12px">免费下载，今天就给你的文件加上安全带</h2>
-      <p class="section-sub reveal reveal-delay-2">安装即用，后台静默运行，不打扰你的工作流。完全免费，无需账号。</p>
-    </div>
-    <div class="download-grid">
-      <div class="dl-card primary reveal reveal-delay-1">
-        <div class="dl-card-icon">🍎</div>
-        <div class="dl-card-title">macOS</div>
-        <div class="dl-card-sub">需要 macOS 11.0 Big Sur 或更高版本<br/>支持 Apple Silicon 和 Intel Mac</div>
-        <a href="./assets/rew_0.1.0_aarch64.dmg" class="dl-btn primary" download>下载 rew v0.1.0 (.dmg)</a>
+    <span class="label" style="display:block;text-align:center;">立即开始</span>
+    <h2 class="title reveal" style="text-align:center;">免费下载，本地运行</h2>
+    <p class="sub reveal d1">数据完全存储在本地，无需注册，无需联网，无任何隐私顾虑。</p>
+    <div class="dl-grid" style="margin-top:56px;">
+      <!-- macOS -->
+      <div class="dl-card primary reveal d1">
+        <span class="dl-icon"></span>
+        <div class="dl-title">macOS</div>
+        <div class="dl-sub">支持 macOS 12+ · Apple Silicon &amp; Intel<br/>基于 APFS clonefile，备份极速</div>
+        <div class="dl-btn-wrap">
+          <a href="assets/rew.dmg" class="btn btn-primary" id="dl-mac" onclick="handleMacDownload(event)">
+            下载 .dmg 安装包
+          </a>
+        </div>
         <div class="dl-meta">
-          完全免费 · 无需注册 · 数据不出本机<br/>
-          <strong>首次打开提示？</strong>
-          <a href="#gatekeeper">查看安装说明 ↓</a>
+          免费使用 &nbsp;·&nbsp; <a href="#gatekeeper">无法打开？点这里</a>
         </div>
       </div>
-      <div class="dl-card secondary reveal reveal-delay-2">
-        <div class="dl-card-icon">🪟</div>
-        <div class="dl-card-title">Windows</div>
-        <div class="dl-card-sub">正在开发中，即将推出<br/>留下邮箱，发布时第一时间通知</div>
-        <button class="dl-btn secondary" disabled>Windows — 即将推出</button>
-        <div class="win-email">
-          <input type="email" placeholder="your@email.com" id="win-email-input" />
-          <button onclick="handleWinNotify()">订阅</button>
+      <!-- Windows -->
+      <div class="dl-card reveal d2">
+        <span class="dl-icon">🪟</span>
+        <div class="dl-title">Windows</div>
+        <div class="dl-sub">开发中，即将上线<br/>留下邮箱，第一时间通知你</div>
+        <div class="win-form">
+          <input type="email" id="win-email" placeholder="your@email.com"/>
+          <button onclick="handleWinNotify()">通知我</button>
         </div>
-        <div class="win-note" id="win-notify-msg"></div>
+        <p class="win-msg" id="win-msg"></p>
       </div>
     </div>
+
+    <!-- Gatekeeper note -->
     <div class="gk-note reveal" id="gatekeeper">
-      <strong>⚠️ macOS 首次打开说明</strong><br/>
-      rew 目前暂未完成 Apple 公证，macOS 可能提示「无法验证开发者」。按以下步骤即可正常使用：
+      <strong>⚠ 首次打开提示「无法验证开发者」？</strong><br/>
+      这是 macOS Gatekeeper 的安全机制，rew 是完全安全的开源软件。按以下步骤操作：
       <ol class="gk-steps">
-        <li>下载并拖拽 rew.app 到「应用程序」文件夹</li>
-        <li><strong>右键点击</strong> rew.app → 选择「打开」（不要直接双击）</li>
-        <li>在弹出对话框中再次点击「打开」</li>
-        <li>之后正常双击即可启动，无需重复上述步骤</li>
+        <li>在 Finder 中找到 rew.app，<strong>右键 → 打开</strong></li>
+        <li>弹窗中点击「打开」即可永久允许</li>
+        <li>后续启动无需重复此操作</li>
       </ol>
     </div>
   </div>
 </section>
 
-<!-- ─── Footer ─────────────────────────────────────────────────── -->
+<!-- ─── Footer ────────────────────────────────────────────────── -->
 <footer id="footer">
   <div class="container">
     <div class="footer-inner">
       <div class="footer-brand">
         <div class="nav-logo">
-          <div class="nav-logo-mark">r</div>
+          <div class="nav-logo-mark">R</div>
           <span class="nav-logo-name">rew</span>
         </div>
-        <div class="footer-tagline">AI 时代的文件安全网<br/>让人敢用 AI，而不只是 AI 更强</div>
+        <p class="footer-tagline">AI 时代的文件安全网<br/>让人敢用 AI，不只是 AI 更强</p>
       </div>
-      <div class="footer-links">
-        <a href="https://github.com" class="footer-link" target="_blank" rel="noopener">GitHub</a>
-        <a href="mailto:hello@rew.app" class="footer-link">反馈问题</a>
-        <a href="#download" class="footer-link">下载</a>
+      <div>
+        <div class="footer-col-title">产品</div>
+        <ul class="footer-links">
+          <li><a href="features.html">功能详情</a></li>
+          <li><a href="why.html">为什么需要</a></li>
+          <li><a href="#download">立即下载</a></li>
+        </ul>
+      </div>
+      <div>
+        <div class="footer-col-title">资源</div>
+        <ul class="footer-links">
+          <li><a href="why.html#story">真实案例</a></li>
+          <li><a href="why.html#tools">与 Git 的区别</a></li>
+          <li><a href="features.html#howto">三步上手</a></li>
+        </ul>
+      </div>
+      <div>
+        <div class="footer-col-title">关于</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/kuqili" target="_blank" rel="noopener">GitHub</a></li>
+        </ul>
       </div>
     </div>
     <div class="footer-bottom">
-      <div class="footer-copy">© 2026 rew · 保留所有权利</div>
-      <div class="footer-copy">Made with <span class="footer-heart">♥</span> for the AI-coding era</div>
+      <span class="footer-copy">© 2026 rew. 开源免费使用。</span>
+      <span class="footer-copy">数据只在你的设备上，我们看不到。</span>
     </div>
   </div>
 </footer>
 
 <script>
-// Nav scroll effect
-const nav = document.getElementById("nav");
-window.addEventListener("scroll", () => {
-  nav.classList.toggle("scrolled", window.scrollY > 24);
-}, { passive: true });
+  /* ─── Nav scroll ─── */
+  const nav = document.getElementById('nav');
+  const onScroll = () => {
+    nav.classList.toggle('scrolled', window.scrollY > 20);
+  };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
 
-// Scroll reveal
-const observer = new IntersectionObserver(
-  (entries) => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add("visible"); observer.unobserve(e.target); } }),
-  { threshold: 0.08, rootMargin: "0px 0px -36px 0px" }
-);
-document.querySelectorAll(".reveal").forEach(el => observer.observe(el));
+  /* ─── Scroll reveal ─── */
+  const revealEls = document.querySelectorAll('.reveal');
+  const observer = new IntersectionObserver(
+    (entries) => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); } }),
+    { threshold: 0.1, rootMargin: '0px 0px -60px 0px' }
+  );
+  revealEls.forEach(el => observer.observe(el));
 
-// Windows notify
-function handleWinNotify() {
-  const input = document.getElementById("win-email-input");
-  const msg = document.getElementById("win-notify-msg");
-  const email = input.value.trim();
-  if (!email || !email.includes("@")) {
-    msg.textContent = "请输入有效的邮箱地址";
-    msg.style.color = "#ef4444";
-    return;
-  }
-  msg.textContent = "✓ 已订阅！Windows 版本发布时第一时间通知你。";
-  msg.style.color = "#22c55e";
-  input.value = "";
-}
-document.getElementById("win-email-input")?.addEventListener("keydown", e => { if (e.key === "Enter") handleWinNotify(); });
-
-// Demo click
-document.getElementById("demo-frame")?.addEventListener("click", () => {
-  alert("演示视频即将上线，敬请期待！");
-});
-
-// Smooth anchor scroll (with nav offset)
-document.querySelectorAll('a[href^="#"]').forEach(a => {
-  a.addEventListener("click", e => {
-    const id = a.getAttribute("href").slice(1);
-    if (!id) return;
-    const target = document.getElementById(id);
-    if (target) {
-      e.preventDefault();
-      window.scrollTo({ top: target.getBoundingClientRect().top + window.scrollY - 72, behavior: "smooth" });
-    }
+  /* ─── Smooth anchors ─── */
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const target = document.querySelector(a.getAttribute('href'));
+      if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    });
   });
-});
+
+  /* ─── Mac download ─── */
+  function handleMacDownload(e) {
+    const btn = document.getElementById('dl-mac');
+    const original = btn.innerHTML;
+    btn.innerHTML = '✓ 开始下载';
+    setTimeout(() => { btn.innerHTML = original; }, 3000);
+  }
+
+  /* ─── Windows notify ─── */
+  function handleWinNotify() {
+    const email = document.getElementById('win-email').value.trim();
+    const msg = document.getElementById('win-msg');
+    if (!email || !email.includes('@')) { msg.textContent = '请输入有效邮箱'; return; }
+    msg.textContent = '✓ 已记录，上线后第一时间通知你！';
+    document.getElementById('win-email').value = '';
+  }
 </script>
 </body>
 </html>
