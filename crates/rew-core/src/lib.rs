@@ -3,6 +3,7 @@
 //! This crate defines the shared traits, types, configuration, database,
 //! and error handling used by both rew-tauri and rew-cli.
 
+pub mod backup;
 pub mod config;
 pub mod db;
 pub mod detector;
@@ -11,9 +12,12 @@ pub mod launchd;
 pub mod lifecycle;
 pub mod logging;
 pub mod notifier;
+pub mod objects;
 pub mod pipeline;
 pub mod processor;
 pub mod restore;
+pub mod scanner;
+pub mod scope;
 pub mod snapshot;
 pub mod storage;
 pub mod traits;

@@ -16,6 +16,10 @@ pub struct RewConfig {
     /// File/directory patterns to ignore (glob syntax)
     pub ignore_patterns: Vec<String>,
 
+    /// Maximum file size to scan (bytes). Files larger are skipped.
+    /// Default: 100MB. None = no limit.
+    pub max_file_size_bytes: Option<u64>,
+
     /// Anomaly detection rule thresholds
     pub anomaly_rules: AnomalyRulesConfig,
 
@@ -74,15 +78,26 @@ impl Default for RewConfig {
                 home.join("Downloads"),
             ],
             ignore_patterns: vec![
-                "**/node_modules/**".to_string(),
-                "**/.git/**".to_string(),
-                "**/target/**".to_string(),
-                "**/__pycache__/**".to_string(),
+                // OS/editor temporaries
                 "**/.DS_Store".to_string(),
                 "**/Thumbs.db".to_string(),
                 "**/*.swp".to_string(),
                 "**/*~".to_string(),
+                // Applications (not user data)
+                "**/*.app/**".to_string(),
+                // Installers & disk images (can re-download)
+                "**/*.dmg".to_string(),
+                "**/*.pkg".to_string(),
+                "**/*.iso".to_string(),
+                "**/*.msi".to_string(),
+                "**/*.exe".to_string(),
+                // Development artifacts (auto-generated, not user data)
+                "**/node_modules/**".to_string(),
+                "**/.git/**".to_string(),
+                "**/target/**".to_string(),
+                "**/__pycache__/**".to_string(),
             ],
+            max_file_size_bytes: None,
             anomaly_rules: AnomalyRulesConfig::default(),
             retention_policy: RetentionPolicyConfig::default(),
         }

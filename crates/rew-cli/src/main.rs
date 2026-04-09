@@ -63,6 +63,36 @@ enum Commands {
         unpin: bool,
     },
 
+    /// Show details of a specific task (files changed, diff stats)
+    Show {
+        /// Task ID to show
+        id: String,
+    },
+
+    /// Show unified diff for a task's changes
+    Diff {
+        /// Task ID to show diff for
+        id: String,
+    },
+
+    /// Undo a task (restore files to pre-task state)
+    Undo {
+        /// Task ID to undo (if omitted, undo the most recent task)
+        id: Option<String>,
+
+        /// Only undo a specific file within the task
+        #[arg(long)]
+        file: Option<String>,
+
+        /// Preview what would be undone without making changes
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
     /// Initialize rew (create config and database)
     Init,
 
@@ -74,6 +104,24 @@ enum Commands {
 
     /// Run the rew daemon in the foreground
     Daemon,
+
+    /// Hook commands (called by AI tools, not for direct use)
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookAction {
+    /// Record user prompt and create a new task (UserPromptSubmit hook)
+    Prompt,
+    /// Check scope + backup before AI writes (PreToolUse hook)
+    PreTool,
+    /// Record change after AI operation (PostToolUse hook)
+    PostTool,
+    /// Close current task (Stop hook)
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -146,6 +194,29 @@ fn run() -> RewResult<()> {
         Some(Commands::Install) => return commands::install::install(),
         Some(Commands::Uninstall) => return commands::install::uninstall(),
         Some(Commands::Daemon) => return commands::daemon::run(),
+        Some(Commands::Hook { action }) => {
+            match action {
+                HookAction::Prompt => {
+                    commands::hook::handle_prompt()?;
+                    return Ok(());
+                }
+                HookAction::PreTool => {
+                    let exit_code = commands::hook::handle_pre_tool()?;
+                    if exit_code != 0 {
+                        std::process::exit(exit_code);
+                    }
+                    return Ok(());
+                }
+                HookAction::PostTool => {
+                    commands::hook::handle_post_tool()?;
+                    return Ok(());
+                }
+                HookAction::Stop => {
+                    commands::hook::handle_stop()?;
+                    return Ok(());
+                }
+            }
+        }
         _ => {}
     }
 
@@ -166,12 +237,20 @@ fn run() -> RewResult<()> {
         Some(Commands::Pin { snapshot_id, unpin }) => {
             commands::pin::run(&ctx, &snapshot_id, unpin)
         }
+        Some(Commands::Show { id }) => commands::show::run(&ctx, &id),
+        Some(Commands::Diff { id }) => commands::diff::run(&ctx, &id),
+        Some(Commands::Undo { id, file, dry_run, yes }) => {
+            commands::undo::run(&ctx, id.as_deref(), file.as_deref(), dry_run, yes)
+        }
         Some(Commands::Init) => {
             commands::init::run(&ctx);
             Ok(())
         }
         // Already handled above
-        Some(Commands::Install) | Some(Commands::Uninstall) | Some(Commands::Daemon) => {
+        Some(Commands::Install)
+        | Some(Commands::Uninstall)
+        | Some(Commands::Daemon)
+        | Some(Commands::Hook { .. }) => {
             unreachable!()
         }
     }

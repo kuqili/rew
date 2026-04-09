@@ -143,6 +143,8 @@ pub enum AnomalyKind {
     SensitiveConfigModified,
     /// Large non-package modification (RULE-07)
     LargeNonPackageModify,
+    /// Operation outside project scope (RULE-08)
+    OutOfScope,
 }
 
 /// An anomaly signal emitted by the detection engine.
@@ -169,4 +171,161 @@ pub struct RestoreJob {
     pub target_paths: Vec<PathBuf>,
     /// If true, preview changes without applying
     pub dry_run: bool,
+}
+
+// ============================================================
+// Task-level types (V2: Hook-driven task tracking)
+// ============================================================
+
+/// Status of a task (one user prompt = one task).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskStatus {
+    /// Task is currently being executed by the AI
+    Active,
+    /// Task completed normally
+    Completed,
+    /// Task has been fully rolled back
+    RolledBack,
+    /// Some changes in the task were rolled back
+    PartialRolledBack,
+}
+
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskStatus::Active => write!(f, "active"),
+            TaskStatus::Completed => write!(f, "completed"),
+            TaskStatus::RolledBack => write!(f, "rolled-back"),
+            TaskStatus::PartialRolledBack => write!(f, "partial-rolled-back"),
+        }
+    }
+}
+
+impl std::str::FromStr for TaskStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "active" => Ok(TaskStatus::Active),
+            "completed" => Ok(TaskStatus::Completed),
+            "rolled-back" => Ok(TaskStatus::RolledBack),
+            "partial-rolled-back" => Ok(TaskStatus::PartialRolledBack),
+            _ => Err(format!("Unknown task status: {}", s)),
+        }
+    }
+}
+
+/// Risk level assessed for a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RiskLevel {
+    Low,
+    Medium,
+    High,
+}
+
+impl std::fmt::Display for RiskLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RiskLevel::Low => write!(f, "low"),
+            RiskLevel::Medium => write!(f, "medium"),
+            RiskLevel::High => write!(f, "high"),
+        }
+    }
+}
+
+impl std::str::FromStr for RiskLevel {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "low" => Ok(RiskLevel::Low),
+            "medium" => Ok(RiskLevel::Medium),
+            "high" => Ok(RiskLevel::High),
+            _ => Err(format!("Unknown risk level: {}", s)),
+        }
+    }
+}
+
+/// Type of file change within a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChangeType {
+    Created,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+impl std::fmt::Display for ChangeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChangeType::Created => write!(f, "created"),
+            ChangeType::Modified => write!(f, "modified"),
+            ChangeType::Deleted => write!(f, "deleted"),
+            ChangeType::Renamed => write!(f, "renamed"),
+        }
+    }
+}
+
+impl std::str::FromStr for ChangeType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "created" => Ok(ChangeType::Created),
+            "modified" => Ok(ChangeType::Modified),
+            "deleted" => Ok(ChangeType::Deleted),
+            "renamed" => Ok(ChangeType::Renamed),
+            _ => Err(format!("Unknown change type: {}", s)),
+        }
+    }
+}
+
+/// A task represents one user prompt → AI execution cycle.
+///
+/// This is the V2 core data model. Each task contains:
+/// - The user's original prompt (intent)
+/// - Which AI tool was used
+/// - All file changes made during this task
+/// - Status tracking for undo operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Task {
+    /// Unique identifier (nanoid-style short ID)
+    pub id: String,
+    /// User's original prompt text (from UserPromptSubmit hook)
+    pub prompt: Option<String>,
+    /// AI tool name (e.g. "claude-code", "cursor")
+    pub tool: Option<String>,
+    /// When the task started
+    pub started_at: DateTime<Utc>,
+    /// When the task completed (None if still active)
+    pub completed_at: Option<DateTime<Utc>>,
+    /// Current status
+    pub status: TaskStatus,
+    /// Risk level assessment
+    pub risk_level: Option<RiskLevel>,
+    /// AI-generated summary of changes
+    pub summary: Option<String>,
+}
+
+/// A single file change within a task.
+///
+/// Tracks what changed, with content hashes pointing to `.rew/objects/`
+/// for content-addressable backup storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Change {
+    /// Auto-increment ID
+    pub id: Option<i64>,
+    /// Which task this change belongs to
+    pub task_id: String,
+    /// Absolute path of the affected file
+    pub file_path: PathBuf,
+    /// Type of change
+    pub change_type: ChangeType,
+    /// SHA-256 hash of file content before change (in .rew/objects/)
+    pub old_hash: Option<String>,
+    /// SHA-256 hash of file content after change (in .rew/objects/)
+    pub new_hash: Option<String>,
+    /// Unified diff text (for text files only)
+    pub diff_text: Option<String>,
+    /// Lines added
+    pub lines_added: u32,
+    /// Lines removed
+    pub lines_removed: u32,
 }

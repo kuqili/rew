@@ -345,6 +345,54 @@ fn extract_directories(paths: &[PathBuf]) -> Vec<String> {
     dirs
 }
 
+/// RULE-08: AI operated on files outside the project directory -> HIGH
+/// Detects when file operations affect paths outside any watched directory.
+pub struct Rule08OutOfScopeOperation;
+
+impl Rule for Rule08OutOfScopeOperation {
+    fn id(&self) -> &str {
+        "RULE-08"
+    }
+
+    fn evaluate(
+        &self,
+        batch: &EventBatch,
+        _config: &AnomalyRulesConfig,
+        watch_dirs: &[PathBuf],
+    ) -> Option<AnomalySignal> {
+        if watch_dirs.is_empty() {
+            return None;
+        }
+
+        let out_of_scope: Vec<PathBuf> = batch
+            .events
+            .iter()
+            .filter(|e| {
+                // Check if the event path is outside ALL watched directories
+                !watch_dirs.iter().any(|wd| e.path.starts_with(wd))
+            })
+            .map(|e| e.path.clone())
+            .collect();
+
+        if !out_of_scope.is_empty() {
+            let dirs = extract_directories(&out_of_scope);
+            Some(AnomalySignal {
+                kind: AnomalyKind::OutOfScope,
+                severity: AnomalySeverity::High,
+                affected_files: out_of_scope.clone(),
+                detected_at: Utc::now(),
+                description: format!(
+                    "RULE-08: {} file(s) operated outside project scope. Directories: {}",
+                    out_of_scope.len(),
+                    dirs.join(", ")
+                ),
+            })
+        } else {
+            None
+        }
+    }
+}
+
 /// Returns all built-in rules.
 pub fn all_rules() -> Vec<Box<dyn Rule>> {
     vec![
@@ -352,6 +400,7 @@ pub fn all_rules() -> Vec<Box<dyn Rule>> {
         Box::new(Rule01BulkDeleteHigh),    // HIGH
         Box::new(Rule03LargeDeletion),     // HIGH
         Box::new(Rule06SensitiveConfig),   // HIGH
+        Box::new(Rule08OutOfScopeOperation), // HIGH — out of project scope
         Box::new(Rule02BulkDeleteMedium),  // MEDIUM
         Box::new(Rule04BulkModify),        // MEDIUM
         Box::new(Rule07NonPackageModify),  // MEDIUM
@@ -617,7 +666,43 @@ mod tests {
     #[test]
     fn test_all_rules_count() {
         let rules = all_rules();
-        assert_eq!(rules.len(), 7);
+        assert_eq!(rules.len(), 8);
+    }
+
+    #[test]
+    fn test_rule08_out_of_scope() {
+        let rule = Rule08OutOfScopeOperation;
+        let config = default_config();
+        let watch_dirs = vec![PathBuf::from("/Users/alice/project")];
+
+        // File outside project scope
+        let events = vec![make_event(
+            "/Users/alice/Desktop/important.docx",
+            FileEventKind::Deleted,
+            Some(1024),
+        )];
+        let batch = make_batch(events);
+        let signal = rule.evaluate(&batch, &config, &watch_dirs);
+        assert!(signal.is_some());
+        let s = signal.unwrap();
+        assert_eq!(s.severity, AnomalySeverity::High);
+        assert_eq!(s.kind, AnomalyKind::OutOfScope);
+    }
+
+    #[test]
+    fn test_rule08_in_scope_no_fire() {
+        let rule = Rule08OutOfScopeOperation;
+        let config = default_config();
+        let watch_dirs = vec![PathBuf::from("/Users/alice/project")];
+
+        // File inside project scope
+        let events = vec![make_event(
+            "/Users/alice/project/src/main.rs",
+            FileEventKind::Modified,
+            Some(500),
+        )];
+        let batch = make_batch(events);
+        assert!(rule.evaluate(&batch, &config, &watch_dirs).is_none());
     }
 
     #[test]

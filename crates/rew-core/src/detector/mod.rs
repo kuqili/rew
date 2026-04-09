@@ -140,6 +140,7 @@ impl AnomalySignal {
             AnomalyKind::RootDirDeleted => "RootDirDeleted",
             AnomalyKind::SensitiveConfigModified => "SensitiveConfigModified",
             AnomalyKind::LargeNonPackageModify => "LargeNonPackageModify",
+            AnomalyKind::OutOfScope => "OutOfScope",
         }
     }
 

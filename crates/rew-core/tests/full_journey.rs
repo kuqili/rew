@@ -18,6 +18,9 @@ use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+use rew_core::backup::{BackupEngine, BackupJob};
+use tempfile::tempdir;
+use uuid::Uuid;
 
 /// Create a test config with a temp dir as watch directory.
 fn test_config(watch_dir: &Path) -> RewConfig {
@@ -474,4 +477,189 @@ fn test_event_batch_count_by_kind() {
     assert_eq!(batch.count_by_kind(&FileEventKind::Deleted), 2);
     assert_eq!(batch.count_by_kind(&FileEventKind::Modified), 0);
     assert_eq!(batch.total_deleted_size(), 500);
+}
+
+// ========================================================================
+// Integration Test: Backup and Restore
+// ========================================================================
+
+#[test]
+fn test_backup_modified_and_restore() {
+    let temp_dir = tempdir().unwrap();
+    let source_dir = temp_dir.path().join("source");
+    let backup_dir = temp_dir.path().join("backups");
+    fs::create_dir_all(&source_dir).unwrap();
+
+    // Create test files
+    let file1 = source_dir.join("document.txt");
+    fs::write(&file1, "Important document").unwrap();
+
+    // Create a config and backup engine
+    let config = RewConfig::default();
+    let engine = BackupEngine::new(&config).unwrap();
+
+    // Create a backup job
+    let snapshot_id = Uuid::new_v4();
+    let events = vec![FileEvent {
+        path: file1.clone(),
+        kind: FileEventKind::Modified,
+        timestamp: Utc::now(),
+        size_bytes: Some(18),
+    }];
+
+    let job = BackupJob {
+        snapshot_id,
+        events,
+        backup_root: backup_dir.clone(),
+    };
+
+    // Perform backup
+    let backup_result = engine.backup_batch(&job).unwrap();
+    assert_eq!(backup_result.files_backed_up, 1);
+    assert!(backup_result.total_size_bytes > 0);
+
+    // Verify backup file exists
+    let backed_up_file = backup_dir
+        .join(snapshot_id.to_string())
+        .join(file1.strip_prefix("/").unwrap_or(&file1));
+    assert!(backed_up_file.exists());
+
+    // Verify backup content
+    let original_content = fs::read_to_string(&file1).unwrap();
+    let backed_up_content = fs::read_to_string(&backed_up_file).unwrap();
+    assert_eq!(original_content, backed_up_content);
+}
+
+#[test]
+fn test_backup_respects_ignore_patterns() {
+    let temp_dir = tempdir().unwrap();
+    let source_dir = temp_dir.path().join("source");
+    let backup_dir = temp_dir.path().join("backups");
+    fs::create_dir_all(&source_dir).unwrap();
+
+    // Create a .git directory with a file
+    let git_dir = source_dir.join(".git");
+    fs::create_dir(&git_dir).unwrap();
+    let config_file = git_dir.join("config");
+    fs::write(&config_file, "[core]").unwrap();
+
+    // Create regular file
+    let normal_file = source_dir.join("main.rs");
+    fs::write(&normal_file, "fn main() {}").unwrap();
+
+    let config = RewConfig::default();
+    let engine = BackupEngine::new(&config).unwrap();
+
+    let snapshot_id = Uuid::new_v4();
+    let events = vec![
+        FileEvent {
+            path: config_file.clone(),
+            kind: FileEventKind::Modified,
+            timestamp: Utc::now(),
+            size_bytes: Some(7),
+        },
+        FileEvent {
+            path: normal_file.clone(),
+            kind: FileEventKind::Modified,
+            timestamp: Utc::now(),
+            size_bytes: Some(12),
+        },
+    ];
+
+    let job = BackupJob {
+        snapshot_id,
+        events,
+        backup_root: backup_dir.clone(),
+    };
+
+    let backup_result = engine.backup_batch(&job).unwrap();
+    // Should only backup the normal file, git files are ignored
+    assert_eq!(backup_result.files_backed_up, 1);
+}
+
+#[test]
+fn test_deleted_file_handling() {
+    let temp_dir = tempdir().unwrap();
+    let backup_dir = temp_dir.path().join("backups");
+
+    let config = RewConfig::default();
+    let engine = BackupEngine::new(&config).unwrap();
+
+    // Non-existent file event
+    let deleted_file = temp_dir.path().join("never_existed.txt");
+
+    let snapshot_id = Uuid::new_v4();
+    let events = vec![FileEvent {
+        path: deleted_file,
+        kind: FileEventKind::Deleted,
+        timestamp: Utc::now(),
+        size_bytes: None,
+    }];
+
+    let job = BackupJob {
+        snapshot_id,
+        events,
+        backup_root: backup_dir,
+    };
+
+    // Should handle gracefully
+    let backup_result = engine.backup_batch(&job).unwrap();
+    assert_eq!(backup_result.files_backed_up, 0);
+    assert_eq!(backup_result.failed_files.len(), 1);
+}
+
+#[test]
+fn test_backup_respects_ignore_patterns_debug() {
+    let temp_dir = tempdir().unwrap();
+    let source_dir = temp_dir.path().join("source");
+    let backup_dir = temp_dir.path().join("backups");
+    fs::create_dir_all(&source_dir).unwrap();
+
+    // Create a .git directory with a file
+    let git_dir = source_dir.join(".git");
+    fs::create_dir(&git_dir).unwrap();
+    let config_file = git_dir.join("config");
+    fs::write(&config_file, "[core]").unwrap();
+
+    println!("Created git config at: {}", config_file.display());
+
+    // Create regular file
+    let normal_file = source_dir.join("main.rs");
+    fs::write(&normal_file, "fn main() {}").unwrap();
+
+    println!("Created normal file at: {}", normal_file.display());
+
+    let config = RewConfig::default();
+    println!("Ignore patterns: {:?}", config.ignore_patterns);
+    
+    let engine = BackupEngine::new(&config).unwrap();
+
+    let snapshot_id = Uuid::new_v4();
+    let events = vec![
+        FileEvent {
+            path: config_file.clone(),
+            kind: FileEventKind::Modified,
+            timestamp: Utc::now(),
+            size_bytes: Some(7),
+        },
+        FileEvent {
+            path: normal_file.clone(),
+            kind: FileEventKind::Modified,
+            timestamp: Utc::now(),
+            size_bytes: Some(12),
+        },
+    ];
+
+    let job = BackupJob {
+        snapshot_id,
+        events,
+        backup_root: backup_dir.clone(),
+    };
+
+    let backup_result = engine.backup_batch(&job).unwrap();
+    println!("Files backed up: {}", backup_result.files_backed_up);
+    println!("Failed files: {:?}", backup_result.failed_files);
+    
+    // Should only backup the normal file, git files are ignored
+    assert_eq!(backup_result.files_backed_up, 1, "Expected 1 file backed up, got {}", backup_result.files_backed_up);
 }

@@ -40,6 +40,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::list_snapshots,
@@ -52,6 +53,21 @@ pub fn run() {
             commands::check_first_run,
             commands::complete_setup,
             commands::set_paused,
+            // V2: Task commands
+            commands::list_tasks,
+            commands::get_task,
+            commands::get_task_changes,
+            commands::preview_undo,
+            commands::undo_task_cmd,
+            commands::undo_file_cmd,
+            // V3: Scan progress + directory management
+            commands::get_scan_progress,
+            commands::add_watch_dir,
+            commands::remove_watch_dir,
+            commands::update_ignore_config,
+            commands::get_ignore_config,
+            commands::get_storage_info,
+            commands::analyze_directories,
         ])
         .setup(|app| {
             // Set up system tray

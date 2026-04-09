@@ -5,13 +5,14 @@
 
 use crate::config::RewConfig;
 use crate::error::RewResult;
+use crate::objects::ObjectStore;
 use crate::processor::{BatchStats, EventProcessor, ProcessorConfig};
-use crate::types::EventBatch;
+use crate::types::{EventBatch, FileEventKind};
 use crate::watcher::filter::PathFilter;
 use crate::watcher::macos::MacOSWatcher;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, debug, warn};
 
 /// A handle to the running pipeline, used to control and stop it.
 pub struct PipelineHandle {
@@ -85,15 +86,56 @@ pub fn start_pipeline_with_config(
     let mut watcher = MacOSWatcher::new(filter);
     let event_rx = watcher.start(&config.watch_dirs)?;
 
-    // Create event processor
+    // === Shadow mechanism: intercept events before processor ===
+    // When a file is Created or Modified, immediately store its content in objects
+    // so that if it's later Deleted (within the same 30s window), we have the backup.
+    let objects_root = crate::rew_home_dir().join("objects");
+    let (shadow_tx, shadow_rx) = mpsc::unbounded_channel();
+
+    // Shadow task: receives raw events, does immediate backup, forwards to processor
+    // Also writes file→hash mapping so daemon can reference it later
+    let shadow_dir = crate::rew_home_dir().join(".shadow_hashes");
+    let _ = std::fs::create_dir_all(&shadow_dir);
+
+    tokio::spawn(async move {
+        let obj_store = ObjectStore::new(objects_root).ok();
+        let mut event_rx = event_rx;
+
+        while let Some(event) = event_rx.recv().await {
+            // For files that exist right now, immediately store in objects
+            // This includes Renamed — macOS trash is a rename, we need the content before it's gone
+            if event.path.exists() && matches!(event.kind, FileEventKind::Created | FileEventKind::Modified | FileEventKind::Renamed) {
+                if let Some(ref store) = obj_store {
+                    match store.store(&event.path) {
+                        Ok(hash) => {
+                            debug!("Shadow backup: {} → {}", event.path.display(), &hash[..12]);
+                            // Write path→hash mapping for daemon to look up
+                            let key = path_to_shadow_key(&event.path);
+                            let _ = std::fs::write(shadow_dir.join(&key), &hash);
+                        }
+                        Err(e) => {
+                            debug!("Shadow backup failed for {}: {}", event.path.display(), e);
+                        }
+                    }
+                }
+            }
+
+            // Forward event to processor
+            if shadow_tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Create event processor — now receives from shadow channel
     let processor = EventProcessor::new(processor_config);
 
     // Create batch output channel
     let (batch_tx, batch_rx) = mpsc::channel(64);
 
-    // Spawn processor task
+    // Spawn processor task — receives from shadow channel
     let processor_handle = tokio::spawn(async move {
-        processor.run(event_rx, batch_tx).await;
+        processor.run(shadow_rx, batch_tx).await;
     });
 
     info!(
@@ -118,6 +160,26 @@ pub fn start_pipeline_with_window(
         ..Default::default()
     };
     start_pipeline_with_config(config, processor_config)
+}
+
+/// Convert a file path to a stable shadow key (hash of path).
+pub fn path_to_shadow_key(path: &std::path::Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    path.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// Read a shadow hash for a given file path.
+/// Returns the object store hash if the shadow layer backed up this file.
+pub fn read_shadow_hash(path: &std::path::Path) -> Option<String> {
+    let shadow_dir = crate::rew_home_dir().join(".shadow_hashes");
+    let key = path_to_shadow_key(path);
+    std::fs::read_to_string(shadow_dir.join(key))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]

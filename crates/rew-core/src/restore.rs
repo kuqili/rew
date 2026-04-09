@@ -431,6 +431,384 @@ pub mod compat {
     }
 }
 
+// ================================================================
+// Task-level restore engine (V2)
+// ================================================================
+
+/// Preview of what an undo operation would do.
+#[derive(Debug, Clone)]
+pub struct UndoPreview {
+    /// Task being undone
+    pub task_id: String,
+    /// Files that would be restored to previous version
+    pub files_to_restore: Vec<PathBuf>,
+    /// Files that would be deleted (were created by this task)
+    pub files_to_delete: Vec<PathBuf>,
+    /// Files that would be renamed back
+    pub files_to_rename: Vec<(PathBuf, PathBuf)>,
+    /// Total number of changes
+    pub total_changes: usize,
+}
+
+/// Result of an undo operation.
+#[derive(Debug, Clone)]
+pub struct UndoResult {
+    /// How many files were successfully restored
+    pub files_restored: usize,
+    /// How many files were deleted (created files removed)
+    pub files_deleted: usize,
+    /// Failures: (path, error)
+    pub failures: Vec<(PathBuf, String)>,
+}
+
+/// Task-level restore engine.
+///
+/// Works with `ObjectStore` (content-addressable backup) and `Database`
+/// to undo changes at the task granularity.
+///
+/// Restore strategy per change type:
+/// - **Created** → delete the file (it didn't exist before the task)
+/// - **Modified** → restore from `.rew/objects/{old_hash}`
+/// - **Deleted** → restore from `.rew/objects/{old_hash}`
+/// - **Renamed** → rename back (not yet implemented, treated as modified)
+pub struct TaskRestoreEngine {
+    objects_root: PathBuf,
+}
+
+impl TaskRestoreEngine {
+    /// Create a new TaskRestoreEngine.
+    /// `objects_root` is typically `.rew/objects/`.
+    pub fn new(objects_root: PathBuf) -> Self {
+        Self { objects_root }
+    }
+
+    /// Preview what an undo would do without making changes.
+    pub fn preview_undo(
+        &self,
+        db: &crate::db::Database,
+        task_id: &str,
+    ) -> RewResult<UndoPreview> {
+        let task = db
+            .get_task(task_id)?
+            .ok_or_else(|| RewError::Snapshot(format!("Task '{}' not found", task_id)))?;
+
+        if task.status == crate::types::TaskStatus::RolledBack {
+            return Err(RewError::Snapshot(format!(
+                "Task '{}' is already rolled back",
+                task_id
+            )));
+        }
+
+        let changes = db.get_changes_for_task(task_id)?;
+
+        let mut files_to_restore = Vec::new();
+        let mut files_to_delete = Vec::new();
+        let files_to_rename = Vec::new();
+
+        for change in &changes {
+            match change.change_type {
+                crate::types::ChangeType::Created => {
+                    files_to_delete.push(change.file_path.clone());
+                }
+                crate::types::ChangeType::Modified | crate::types::ChangeType::Deleted => {
+                    if change.old_hash.is_some() {
+                        files_to_restore.push(change.file_path.clone());
+                    }
+                }
+                crate::types::ChangeType::Renamed => {
+                    // TODO: track old_path for proper rename reversal
+                    if change.old_hash.is_some() {
+                        files_to_restore.push(change.file_path.clone());
+                    }
+                }
+            }
+        }
+
+        Ok(UndoPreview {
+            task_id: task_id.to_string(),
+            total_changes: changes.len(),
+            files_to_restore,
+            files_to_delete,
+            files_to_rename,
+        })
+    }
+
+    /// Execute undo for an entire task.
+    ///
+    /// Processes changes in reverse order (last change first).
+    /// On success, marks the task as `RolledBack`.
+    pub fn undo_task(
+        &self,
+        db: &crate::db::Database,
+        task_id: &str,
+    ) -> RewResult<UndoResult> {
+        let task = db
+            .get_task(task_id)?
+            .ok_or_else(|| RewError::Snapshot(format!("Task '{}' not found", task_id)))?;
+
+        if task.status == crate::types::TaskStatus::RolledBack {
+            return Err(RewError::Snapshot(format!(
+                "Task '{}' is already rolled back",
+                task_id
+            )));
+        }
+
+        let mut changes = db.get_changes_for_task(task_id)?;
+
+        // Deduplicate: for the same file with multiple changes in one batch,
+        // keep only the one that matters most for undo.
+        // Priority: Deleted (with old_hash) > Modified (with old_hash) > Created > others
+        let mut seen: std::collections::HashMap<PathBuf, crate::types::Change> = std::collections::HashMap::new();
+        for change in &changes {
+            if let Some(existing) = seen.get(&change.file_path) {
+                // Decide which change to keep
+                let dominated = match (&change.change_type, &existing.change_type) {
+                    // Deleted/Renamed with old_hash always wins — we can restore the file
+                    (crate::types::ChangeType::Deleted, _) if change.old_hash.is_some() => true,
+                    (crate::types::ChangeType::Renamed, _) if change.old_hash.is_some() => true,
+                    // Modified with old_hash beats Created
+                    (crate::types::ChangeType::Modified, crate::types::ChangeType::Created) if change.old_hash.is_some() => true,
+                    // Keep existing otherwise
+                    _ => false,
+                };
+                if dominated {
+                    seen.insert(change.file_path.clone(), change.clone());
+                }
+            } else {
+                seen.insert(change.file_path.clone(), change.clone());
+            }
+        }
+
+        changes = seen.into_values().collect();
+
+        let mut files_restored = 0;
+        let mut files_deleted = 0;
+        let mut failures = Vec::new();
+
+        for change in &changes {
+            match self.undo_single_change(change) {
+                Ok(UndoAction::Restored) => files_restored += 1,
+                Ok(UndoAction::Deleted) => files_deleted += 1,
+                Ok(UndoAction::Skipped) => {}
+                Err(e) => {
+                    failures.push((change.file_path.clone(), e));
+                }
+            }
+        }
+
+        // Update task status
+        if failures.is_empty() {
+            db.update_task_status(
+                task_id,
+                &crate::types::TaskStatus::RolledBack,
+                Some(chrono::Utc::now()),
+            )?;
+        } else if files_restored > 0 || files_deleted > 0 {
+            db.update_task_status(
+                task_id,
+                &crate::types::TaskStatus::PartialRolledBack,
+                Some(chrono::Utc::now()),
+            )?;
+        }
+
+        info!(
+            "Undo task '{}': restored={}, deleted={}, failures={}",
+            task_id, files_restored, files_deleted, failures.len()
+        );
+
+        Ok(UndoResult {
+            files_restored,
+            files_deleted,
+            failures,
+        })
+    }
+
+    /// Undo a single file within a task.
+    pub fn undo_file(
+        &self,
+        db: &crate::db::Database,
+        task_id: &str,
+        file_path: &Path,
+    ) -> RewResult<UndoResult> {
+        let changes = db.get_changes_for_task(task_id)?;
+
+        let change = changes
+            .iter()
+            .find(|c| c.file_path == file_path)
+            .ok_or_else(|| {
+                RewError::Snapshot(format!(
+                    "No change for '{}' in task '{}'",
+                    file_path.display(),
+                    task_id
+                ))
+            })?;
+
+        let mut failures = Vec::new();
+        let (mut files_restored, mut files_deleted) = (0, 0);
+
+        match self.undo_single_change(change) {
+            Ok(UndoAction::Restored) => files_restored = 1,
+            Ok(UndoAction::Deleted) => files_deleted = 1,
+            Ok(UndoAction::Skipped) => {}
+            Err(e) => failures.push((file_path.to_path_buf(), e)),
+        }
+
+        Ok(UndoResult {
+            files_restored,
+            files_deleted,
+            failures,
+        })
+    }
+
+    /// Undo a single change, returning what action was taken.
+    fn undo_single_change(
+        &self,
+        change: &crate::types::Change,
+    ) -> Result<UndoAction, String> {
+        use crate::types::ChangeType;
+
+        match change.change_type {
+            ChangeType::Created => {
+                // File was created by AI → delete it
+                if change.file_path.exists() {
+                    std::fs::remove_file(&change.file_path)
+                        .map_err(|e| format!("Failed to delete {}: {}", change.file_path.display(), e))?;
+                    Ok(UndoAction::Deleted)
+                } else {
+                    Ok(UndoAction::Skipped) // Already gone
+                }
+            }
+            ChangeType::Modified => {
+                if let Some(ref hash) = change.old_hash {
+                    self.restore_from_object(hash, &change.file_path)?;
+                    Ok(UndoAction::Restored)
+                } else {
+                    // Try scan manifest fallback
+                    self.restore_from_manifest(&change.file_path)
+                }
+            }
+            ChangeType::Deleted => {
+                if let Some(ref hash) = change.old_hash {
+                    self.restore_from_object(hash, &change.file_path)?;
+                    Ok(UndoAction::Restored)
+                } else {
+                    // Try scan manifest fallback
+                    self.restore_from_manifest(&change.file_path)
+                }
+            }
+            ChangeType::Renamed => {
+                if let Some(ref hash) = change.old_hash {
+                    self.restore_from_object(hash, &change.file_path)?;
+                    Ok(UndoAction::Restored)
+                } else {
+                    self.restore_from_manifest(&change.file_path)
+                }
+            }
+        }
+    }
+
+    /// Try to restore a file from the scan manifest's fast key.
+    /// This is the fallback when old_hash is empty but scanner has a backup.
+    fn restore_from_manifest(&self, file_path: &Path) -> Result<UndoAction, String> {
+        let manifest_path = crate::rew_home_dir().join(".scan_manifest.json");
+        let manifest_str = std::fs::read_to_string(&manifest_path)
+            .map_err(|_| format!(
+                "该文件没有备份记录（old_hash 为空）。\n\n\
+                 可能原因：文件在 rew 启动前从未被修改过，因此没有被备份。\n\
+                 下次启动 rew 后，后台全量扫描会自动备份所有文件，\n\
+                 之后删除的文件都可以恢复。\n\n\
+                 建议：检查废纸篓是否还有该文件。"
+            ))?;
+
+        let manifest: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_str(&manifest_str).map_err(|e| format!("Manifest parse error: {}", e))?;
+
+        let path_key = file_path.to_string_lossy().to_string();
+        let entry = manifest.get(&path_key).ok_or_else(|| format!(
+            "该文件没有备份记录（old_hash 为空）。\n\n\
+             可能原因：文件在 rew 启动前从未被修改过，因此没有被备份。\n\
+             下次启动 rew 后，后台全量扫描会自动备份所有文件，\n\
+             之后删除的文件都可以恢复。\n\n\
+             建议：检查废纸篓是否还有该文件。"
+        ))?;
+
+        let hash = entry.get("hash")
+            .and_then(|h| h.as_str())
+            .ok_or("Manifest entry has no hash")?;
+
+        // Try to restore from this key (could be SHA-256 or fast key)
+        self.restore_from_object(hash, file_path)?;
+        Ok(UndoAction::Restored)
+    }
+
+    /// Restore a file from the object store.
+    /// Falls back to scan manifest if the hash-based object is not found.
+    fn restore_from_object(
+        &self,
+        hash: &str,
+        target: &Path,
+    ) -> Result<(), String> {
+        let obj_path = self.object_path(hash);
+
+        if !obj_path.exists() {
+            // Hash-based object not found — try manifest fallback (fast key)
+            return match self.restore_from_manifest(target) {
+                Ok(UndoAction::Restored) => Ok(()),
+                Ok(_) => Err(format!(
+                    "Object {} not found and manifest fallback failed for {}",
+                    &hash[..12.min(hash.len())],
+                    target.display()
+                )),
+                Err(e) => Err(e),
+            };
+        }
+
+        // Create parent dir if needed
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create dir {}: {}", parent.display(), e))?;
+        }
+
+        // Copy object to target
+        std::fs::copy(&obj_path, target)
+            .map_err(|e| format!("Failed to restore {}: {}", target.display(), e))?;
+
+        Ok(())
+    }
+
+    fn object_path(&self, hash: &str) -> PathBuf {
+        if hash.len() < 4 {
+            return self.objects_root.join(hash);
+        }
+        self.objects_root.join(&hash[..2]).join(&hash[2..])
+    }
+}
+
+enum UndoAction {
+    Restored,
+    Deleted,
+    Skipped,
+}
+
+/// Restore a file from the most recent APFS snapshot.
+///
+/// NOTE: On macOS, `mount_apfs -s` on the root volume always fails with
+/// "Resource busy" because the volume is in use. This L0 fallback is
+/// unreliable. The primary restore path is via ObjectStore (shadow + full scan).
+///
+/// This function is kept as a last-resort attempt but users should not
+/// depend on it.
+fn restore_from_apfs_snapshot(file_path: &Path) -> Result<(), String> {
+    // Inform the user clearly about why this file can't be restored
+    Err(format!(
+        "该文件没有备份记录（old_hash 为空）。\n\n\
+         可能原因：文件在 rew 启动前从未被修改过，因此没有被备份。\n\
+         下次启动 rew 后，后台全量扫描会自动备份所有文件，\n\
+         之后删除的文件都可以恢复。\n\n\
+         建议：检查废纸篓是否还有该文件。"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,5 +1135,297 @@ mod tests {
 
         assert_eq!(restore.restore_timeout, Duration::from_secs(30));
         assert_eq!(restore.max_retries, 5);
+    }
+
+    // ================================================================
+    // TaskRestoreEngine tests
+    // ================================================================
+
+    use crate::objects::ObjectStore;
+    use crate::types::{Change, ChangeType, Task, TaskStatus};
+
+    fn setup_task_restore(
+        dir: &std::path::Path,
+    ) -> (Database, ObjectStore, TaskRestoreEngine) {
+        let db = Database::open(&dir.join("test.db")).unwrap();
+        db.initialize().unwrap();
+
+        let objects_dir = dir.join("objects");
+        let obj_store = ObjectStore::new(objects_dir.clone()).unwrap();
+        let engine = TaskRestoreEngine::new(objects_dir);
+
+        (db, obj_store, engine)
+    }
+
+    fn create_test_task(db: &Database, task_id: &str) {
+        let task = Task {
+            id: task_id.to_string(),
+            prompt: Some("test prompt".to_string()),
+            tool: Some("test-tool".to_string()),
+            started_at: Utc::now(),
+            completed_at: None,
+            status: TaskStatus::Active,
+            risk_level: None,
+            summary: None,
+        };
+        db.create_task(&task).unwrap();
+    }
+
+    #[test]
+    fn test_undo_created_file() {
+        let dir = tempdir().unwrap();
+        let (db, _obj, engine) = setup_task_restore(dir.path());
+
+        create_test_task(&db, "t001");
+
+        // Simulate: AI created a file
+        let created_file = dir.path().join("new_file.rs");
+        std::fs::write(&created_file, "fn main() {}").unwrap();
+
+        let change = Change {
+            id: None,
+            task_id: "t001".to_string(),
+            file_path: created_file.clone(),
+            change_type: ChangeType::Created,
+            old_hash: None,
+            new_hash: Some("abc".to_string()),
+            diff_text: None,
+            lines_added: 1,
+            lines_removed: 0,
+        };
+        db.insert_change(&change).unwrap();
+
+        // Undo → should delete the file
+        let result = engine.undo_task(&db, "t001").unwrap();
+        assert_eq!(result.files_deleted, 1);
+        assert_eq!(result.failures.len(), 0);
+        assert!(!created_file.exists());
+
+        // Task should be rolled back
+        let task = db.get_task("t001").unwrap().unwrap();
+        assert_eq!(task.status, TaskStatus::RolledBack);
+    }
+
+    #[test]
+    fn test_undo_modified_file() {
+        let dir = tempdir().unwrap();
+        let (db, obj_store, engine) = setup_task_restore(dir.path());
+
+        create_test_task(&db, "t002");
+
+        // Create original file and store it in objects
+        let target_file = dir.path().join("app.rs");
+        std::fs::write(&target_file, "original content").unwrap();
+        let old_hash = obj_store.store(&target_file).unwrap();
+
+        // Simulate: AI modified the file
+        std::fs::write(&target_file, "AI modified content").unwrap();
+
+        let change = Change {
+            id: None,
+            task_id: "t002".to_string(),
+            file_path: target_file.clone(),
+            change_type: ChangeType::Modified,
+            old_hash: Some(old_hash),
+            new_hash: Some("newhash".to_string()),
+            diff_text: None,
+            lines_added: 1,
+            lines_removed: 1,
+        };
+        db.insert_change(&change).unwrap();
+
+        // Undo → should restore original content
+        let result = engine.undo_task(&db, "t002").unwrap();
+        assert_eq!(result.files_restored, 1);
+        assert_eq!(result.failures.len(), 0);
+        assert_eq!(
+            std::fs::read_to_string(&target_file).unwrap(),
+            "original content"
+        );
+    }
+
+    #[test]
+    fn test_undo_deleted_file() {
+        let dir = tempdir().unwrap();
+        let (db, obj_store, engine) = setup_task_restore(dir.path());
+
+        create_test_task(&db, "t003");
+
+        // Create original file and store it
+        let target_file = dir.path().join("important.txt");
+        std::fs::write(&target_file, "important data").unwrap();
+        let old_hash = obj_store.store(&target_file).unwrap();
+
+        // Simulate: AI deleted the file
+        std::fs::remove_file(&target_file).unwrap();
+
+        let change = Change {
+            id: None,
+            task_id: "t003".to_string(),
+            file_path: target_file.clone(),
+            change_type: ChangeType::Deleted,
+            old_hash: Some(old_hash),
+            new_hash: None,
+            diff_text: None,
+            lines_added: 0,
+            lines_removed: 5,
+        };
+        db.insert_change(&change).unwrap();
+
+        // Undo → should restore the file
+        let result = engine.undo_task(&db, "t003").unwrap();
+        assert_eq!(result.files_restored, 1);
+        assert!(target_file.exists());
+        assert_eq!(
+            std::fs::read_to_string(&target_file).unwrap(),
+            "important data"
+        );
+    }
+
+    #[test]
+    fn test_undo_mixed_changes() {
+        let dir = tempdir().unwrap();
+        let (db, obj_store, engine) = setup_task_restore(dir.path());
+
+        create_test_task(&db, "t004");
+
+        // File 1: created by AI (will be deleted on undo)
+        let f1 = dir.path().join("new.rs");
+        std::fs::write(&f1, "new file").unwrap();
+
+        // File 2: modified by AI (will be restored on undo)
+        let f2 = dir.path().join("existing.rs");
+        std::fs::write(&f2, "original").unwrap();
+        let f2_hash = obj_store.store(&f2).unwrap();
+        std::fs::write(&f2, "modified by AI").unwrap();
+
+        // File 3: deleted by AI (will be restored on undo)
+        let f3 = dir.path().join("deleted.rs");
+        std::fs::write(&f3, "will be deleted").unwrap();
+        let f3_hash = obj_store.store(&f3).unwrap();
+        std::fs::remove_file(&f3).unwrap();
+
+        db.insert_change(&Change {
+            id: None, task_id: "t004".to_string(),
+            file_path: f1.clone(), change_type: ChangeType::Created,
+            old_hash: None, new_hash: Some("x".into()),
+            diff_text: None, lines_added: 1, lines_removed: 0,
+        }).unwrap();
+        db.insert_change(&Change {
+            id: None, task_id: "t004".to_string(),
+            file_path: f2.clone(), change_type: ChangeType::Modified,
+            old_hash: Some(f2_hash), new_hash: Some("y".into()),
+            diff_text: None, lines_added: 1, lines_removed: 1,
+        }).unwrap();
+        db.insert_change(&Change {
+            id: None, task_id: "t004".to_string(),
+            file_path: f3.clone(), change_type: ChangeType::Deleted,
+            old_hash: Some(f3_hash), new_hash: None,
+            diff_text: None, lines_added: 0, lines_removed: 3,
+        }).unwrap();
+
+        let result = engine.undo_task(&db, "t004").unwrap();
+        assert_eq!(result.files_deleted, 1);  // f1 deleted
+        assert_eq!(result.files_restored, 2);  // f2 + f3 restored
+        assert_eq!(result.failures.len(), 0);
+
+        assert!(!f1.exists());
+        assert_eq!(std::fs::read_to_string(&f2).unwrap(), "original");
+        assert_eq!(std::fs::read_to_string(&f3).unwrap(), "will be deleted");
+    }
+
+    #[test]
+    fn test_undo_single_file() {
+        let dir = tempdir().unwrap();
+        let (db, obj_store, engine) = setup_task_restore(dir.path());
+
+        create_test_task(&db, "t005");
+
+        let f1 = dir.path().join("a.rs");
+        let f2 = dir.path().join("b.rs");
+        std::fs::write(&f1, "orig a").unwrap();
+        let f1_hash = obj_store.store(&f1).unwrap();
+        std::fs::write(&f1, "modified a").unwrap();
+        std::fs::write(&f2, "orig b").unwrap();
+        let f2_hash = obj_store.store(&f2).unwrap();
+        std::fs::write(&f2, "modified b").unwrap();
+
+        db.insert_change(&Change {
+            id: None, task_id: "t005".to_string(),
+            file_path: f1.clone(), change_type: ChangeType::Modified,
+            old_hash: Some(f1_hash), new_hash: Some("x".into()),
+            diff_text: None, lines_added: 1, lines_removed: 1,
+        }).unwrap();
+        db.insert_change(&Change {
+            id: None, task_id: "t005".to_string(),
+            file_path: f2.clone(), change_type: ChangeType::Modified,
+            old_hash: Some(f2_hash), new_hash: Some("y".into()),
+            diff_text: None, lines_added: 1, lines_removed: 1,
+        }).unwrap();
+
+        // Only undo f1
+        let result = engine.undo_file(&db, "t005", &f1).unwrap();
+        assert_eq!(result.files_restored, 1);
+
+        assert_eq!(std::fs::read_to_string(&f1).unwrap(), "orig a");
+        assert_eq!(std::fs::read_to_string(&f2).unwrap(), "modified b"); // unchanged
+    }
+
+    #[test]
+    fn test_preview_undo() {
+        let dir = tempdir().unwrap();
+        let (db, _obj, engine) = setup_task_restore(dir.path());
+
+        create_test_task(&db, "t006");
+
+        db.insert_change(&Change {
+            id: None, task_id: "t006".to_string(),
+            file_path: PathBuf::from("/tmp/created.rs"), change_type: ChangeType::Created,
+            old_hash: None, new_hash: Some("x".into()),
+            diff_text: None, lines_added: 10, lines_removed: 0,
+        }).unwrap();
+        db.insert_change(&Change {
+            id: None, task_id: "t006".to_string(),
+            file_path: PathBuf::from("/tmp/modified.rs"), change_type: ChangeType::Modified,
+            old_hash: Some("oldhash".into()), new_hash: Some("y".into()),
+            diff_text: None, lines_added: 5, lines_removed: 3,
+        }).unwrap();
+
+        let preview = engine.preview_undo(&db, "t006").unwrap();
+        assert_eq!(preview.total_changes, 2);
+        assert_eq!(preview.files_to_delete.len(), 1);
+        assert_eq!(preview.files_to_restore.len(), 1);
+    }
+
+    #[test]
+    fn test_undo_already_rolled_back() {
+        let dir = tempdir().unwrap();
+        let (db, _obj, engine) = setup_task_restore(dir.path());
+
+        let task = Task {
+            id: "t007".to_string(),
+            prompt: None,
+            tool: None,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            status: TaskStatus::RolledBack,
+            risk_level: None,
+            summary: None,
+        };
+        db.create_task(&task).unwrap();
+
+        let result = engine.undo_task(&db, "t007");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already rolled back"));
+    }
+
+    #[test]
+    fn test_undo_nonexistent_task() {
+        let dir = tempdir().unwrap();
+        let (db, _obj, engine) = setup_task_restore(dir.path());
+
+        let result = engine.undo_task(&db, "nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 }

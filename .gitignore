@@ -22,3 +22,9 @@ Thumbs.db
 # Env files
 .env
 .env.local
+
+# Claude Code
+.claude/
+
+# Graphify
+graphify-out/

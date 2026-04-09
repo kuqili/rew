@@ -1,0 +1,161 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --timeline-blue: #0052cc;
+  --timeline-line: #c8d1da;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #ffffff;
+  color: #24292f;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* macOS native scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #c1c7cd; border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: #959da5; }
+
+/* Window drag */
+[data-tauri-drag-region] { -webkit-app-region: drag; }
+button, [role="button"], input, a { -webkit-app-region: no-drag; }
+
+/* Timeline graph line */
+.timeline-dot {
+  position: relative;
+  z-index: 2;
+}
+.timeline-dot::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--timeline-blue);
+}
+.timeline-line {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--timeline-line);
+  transform: translateX(-50%);
+  z-index: 1;
+}
+
+/* Row hover highlight like Sourcetree */
+.task-row {
+  transition: background-color 80ms ease;
+}
+.task-row:hover {
+  background-color: #f0f4ff;
+}
+.task-row.selected {
+  background-color: #deebff;
+}
+
+/* Sidebar nav item */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 13px;
+  color: #24292f;
+  border-radius: 6px;
+  margin: 1px 8px;
+  transition: background 80ms;
+  cursor: pointer;
+  user-select: none;
+}
+.nav-item:hover { background: #e1e4e8; }
+.nav-item.active { background: #0052cc; color: white; }
+.nav-item .nav-icon { width: 16px; text-align: center; font-size: 14px; opacity: 0.7; }
+.nav-item.active .nav-icon { opacity: 1; }
+
+/* Table header like Sourcetree */
+.table-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid #d1d5da;
+  background: #f6f8fa;
+  font-size: 11px;
+  font-weight: 600;
+  color: #57606a;
+  text-transform: none;
+  letter-spacing: 0;
+  user-select: none;
+}
+
+/* Status badge */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/* Modal overlay */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(2px);
+}
+
+/* Diff line coloring */
+.diff-add { background: #dafbe1; color: #1a7f37; }
+.diff-del { background: #ffebe9; color: #cf222e; }
+.diff-hunk { background: #ddf4ff; color: #0550ae; }
+
+/* File change type icons */
+.change-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+/* Toolbar button */
+.toolbar-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: #57606a;
+  cursor: pointer;
+  transition: background 80ms;
+  user-select: none;
+}
+.toolbar-btn:hover { background: #e1e4e8; }
+.toolbar-btn .toolbar-icon { font-size: 18px; }

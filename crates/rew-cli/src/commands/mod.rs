@@ -1,8 +1,12 @@
 pub mod config;
 pub mod daemon;
+pub mod diff;
+pub mod hook;
 pub mod init;
 pub mod install;
 pub mod list;
 pub mod pin;
 pub mod restore;
+pub mod show;
 pub mod status;
+pub mod undo;
