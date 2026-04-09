@@ -1,0 +1,54 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# rew website — deploy to GitHub Pages
+#
+# Trigger: push to main branch that touches website/**
+#
+# The website will be live at:
+#   https://OWNER.github.io/rew/
+#
+# To enable:
+#   GitHub repo → Settings → Pages → Source: "GitHub Actions"
+# ─────────────────────────────────────────────────────────────────────────────
+name: Deploy Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:   # allow manual trigger from GitHub Actions UI
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deployment at a time; cancel in-progress if a newer push arrives
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to GitHub Pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload website artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website   # the folder containing index.html / why.html / features.html
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

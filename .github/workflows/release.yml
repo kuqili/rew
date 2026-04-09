@@ -1,0 +1,112 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# rew release pipeline
+#
+# Trigger: push a semver tag, e.g.
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# What it does:
+#   1. Builds the Tauri app for macOS (arm64 + x86_64)
+#   2. Creates a GitHub Release with the tag name as title
+#   3. Uploads the .dmg as a release asset (direct download link)
+#
+# The download URL will be stable and predictable:
+#   https://github.com/OWNER/rew/releases/latest/download/rew_VERSION_aarch64.dmg
+#   https://github.com/OWNER/rew/releases/latest/download/rew_VERSION_x64.dmg
+# ─────────────────────────────────────────────────────────────────────────────
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'   # v0.1.0, v1.0.0-beta.1, etc.
+
+permissions:
+  contents: write   # needed to create releases and upload assets
+
+jobs:
+  build-macos:
+    name: Build macOS DMG
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin    # Apple Silicon
+            arch_label: arm64
+          - target: x86_64-apple-darwin     # Intel
+            arch_label: x64
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Rust toolchain ──────────────────────────────────────────
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      # ── Node / pnpm ─────────────────────────────────────────────
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: gui/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        run: pnpm install
+        working-directory: gui
+
+      # ── Build ────────────────────────────────────────────────────
+      - name: Build Tauri app (.dmg)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Code signing is disabled (signingIdentity is null in tauri.conf.json).
+          # Users will need to right-click → Open on first launch (Gatekeeper bypass).
+          # To enable signing, set these secrets in GitHub repo settings:
+          #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
+          #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'rew ${{ github.ref_name }}'
+          releaseBody: |
+            ## rew ${{ github.ref_name }}
+
+            ### 下载
+            - **Apple Silicon (M1/M2/M3)**：下载 `rew_*_aarch64.dmg`
+            - **Intel Mac**：下载 `rew_*_x64.dmg`
+
+            ### 首次打开说明（Gatekeeper）
+            由于 rew 暂未完成 Apple 公证，首次打开时 macOS 会提示「无法验证开发者」：
+            1. 在 Finder 中找到 rew.app，**右键 → 打开**
+            2. 弹窗中点击「打开」即可永久允许
+            3. 后续启动无需重复此操作
+
+            ### 更新日志
+            <!-- 在这里手动填写本版本的变更内容 -->
+
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}   # v1.0.0-beta → prerelease
+          args: --target ${{ matrix.target }}
+
+  # ── (Optional) Notify website to refresh download link ──────────
+  # Uncomment if you add a webhook or Vercel deploy hook
+  # notify-website:
+  #   needs: build-macos
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Trigger website redeploy
+  #       run: curl -X POST ${{ secrets.VERCEL_DEPLOY_HOOK }}

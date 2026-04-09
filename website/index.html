@@ -477,25 +477,43 @@
     <h2 class="title reveal" style="text-align:center;">免费下载，本地运行</h2>
     <p class="sub reveal d1">数据完全存储在本地，无需注册，无需联网，无任何隐私顾虑。</p>
     <div class="dl-grid" style="margin-top:56px;">
-      <!-- macOS -->
+      <!-- macOS arm64 -->
       <div class="dl-card primary reveal d1">
         <span class="dl-icon"></span>
-        <div class="dl-title">macOS</div>
-        <div class="dl-sub">支持 macOS 12+ · Apple Silicon &amp; Intel<br/>基于 APFS clonefile，备份极速</div>
+        <div class="dl-title">macOS · Apple Silicon</div>
+        <div class="dl-sub">M1 / M2 / M3 · macOS 12+<br/>基于 APFS clonefile，备份极速</div>
         <div class="dl-btn-wrap">
-          <a href="assets/rew.dmg" class="btn btn-primary" id="dl-mac" onclick="handleMacDownload(event)">
-            下载 .dmg 安装包
+          <a id="dl-arm64"
+             href="https://github.com/kuqili/rew/releases/latest/download/rew_aarch64.dmg"
+             class="btn btn-primary"
+             onclick="trackDownload('arm64')">
+            下载 .dmg（Apple Silicon）
           </a>
         </div>
         <div class="dl-meta">
-          免费使用 &nbsp;·&nbsp; <a href="#gatekeeper">无法打开？点这里</a>
+          免费使用 &nbsp;·&nbsp;
+          <a href="https://github.com/kuqili/rew/releases/latest" target="_blank" rel="noopener">查看所有版本 →</a>
+          &nbsp;·&nbsp; <a href="#gatekeeper">无法打开？</a>
         </div>
       </div>
-      <!-- Windows -->
+      <!-- macOS x64 + Windows -->
       <div class="dl-card reveal d2">
-        <span class="dl-icon">🪟</span>
-        <div class="dl-title">Windows</div>
-        <div class="dl-sub">开发中，即将上线<br/>留下邮箱，第一时间通知你</div>
+        <span class="dl-icon"></span>
+        <div class="dl-title">macOS · Intel</div>
+        <div class="dl-sub">x86_64 · macOS 12+<br/>适用于 Intel 芯片 Mac</div>
+        <div class="dl-btn-wrap">
+          <a id="dl-x64"
+             href="https://github.com/kuqili/rew/releases/latest/download/rew_x64.dmg"
+             class="btn btn-ghost"
+             style="width:100%;justify-content:center;"
+             onclick="trackDownload('x64')">
+            下载 .dmg（Intel）
+          </a>
+        </div>
+        <div class="dl-meta" style="margin-top:24px;padding-top:20px;border-top:1px solid rgba(255,255,255,.07);">
+          <strong style="color:var(--text-2);">🪟 Windows — 即将上线</strong><br/>
+          留下邮箱，上线后第一时间通知你
+        </div>
         <div class="win-form">
           <input type="email" id="win-email" placeholder="your@email.com"/>
           <button onclick="handleWinNotify()">通知我</button>
@@ -504,15 +522,26 @@
       </div>
     </div>
 
+    <!-- Version badge -->
+    <div style="text-align:center;margin-top:20px;" class="reveal">
+      <a href="https://github.com/kuqili/rew/releases/latest" target="_blank" rel="noopener"
+         style="display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--text-3);padding:7px 16px;border:1px solid var(--border);border-radius:100px;transition:color .15s,border-color .15s;"
+         onmouseover="this.style.color='var(--text-2)';this.style.borderColor='var(--border-hi)'"
+         onmouseout="this.style.color='var(--text-3)';this.style.borderColor='var(--border)'">
+        <span id="latest-version">🏷 查看最新版本 →</span>
+      </a>
+    </div>
+
     <!-- Gatekeeper note -->
     <div class="gk-note reveal" id="gatekeeper">
       <strong>⚠ 首次打开提示「无法验证开发者」？</strong><br/>
-      这是 macOS Gatekeeper 的安全机制，rew 是完全安全的开源软件。按以下步骤操作：
+      这是 macOS Gatekeeper 的安全机制，rew 是完全安全的开源软件，代码完全公开。按以下步骤操作：
       <ol class="gk-steps">
-        <li>在 Finder 中找到 rew.app，<strong>右键 → 打开</strong></li>
-        <li>弹窗中点击「打开」即可永久允许</li>
+        <li>在 Finder 中找到 rew.app，<strong>右键 → 打开</strong>（不是双击）</li>
+        <li>弹窗中点击「打开」，系统会永久记住你的选择</li>
         <li>后续启动无需重复此操作</li>
       </ol>
+      或在终端执行：<code style="font-size:12px;color:var(--orange);background:rgba(249,115,22,.08);padding:2px 6px;border-radius:4px;">xattr -cr /Applications/rew.app</code>，然后正常双击打开。
     </div>
   </div>
 </section>
@@ -583,13 +612,41 @@
     });
   });
 
-  /* ─── Mac download ─── */
-  function handleMacDownload(e) {
-    const btn = document.getElementById('dl-mac');
+  /* ─── Download tracking ─── */
+  function trackDownload(arch) {
+    const btn = document.getElementById('dl-' + arch);
+    if (!btn) return;
     const original = btn.innerHTML;
     btn.innerHTML = '✓ 开始下载';
-    setTimeout(() => { btn.innerHTML = original; }, 3000);
+    btn.style.opacity = '.8';
+    setTimeout(() => { btn.innerHTML = original; btn.style.opacity = ''; }, 3000);
   }
+
+  /* ─── Fetch latest release version from GitHub API ─── */
+  (function fetchLatestVersion() {
+    const REPO = 'kuqili/rew';
+    const el = document.getElementById('latest-version');
+    fetch('https://api.github.com/repos/' + REPO + '/releases/latest', {
+      headers: { 'Accept': 'application/vnd.github+json' }
+    })
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data || !data.tag_name) return;
+      const ver = data.tag_name; // e.g. "v0.1.0"
+      el.textContent = '🏷 最新版本 ' + ver + ' →';
+
+      // Update download links with the exact version filename Tauri generates:
+      // e.g. rew_0.1.0_aarch64.dmg
+      const numVer = ver.replace(/^v/, '');
+      const arm64Url = 'https://github.com/' + REPO + '/releases/download/' + ver + '/rew_' + numVer + '_aarch64.dmg';
+      const x64Url   = 'https://github.com/' + REPO + '/releases/download/' + ver + '/rew_' + numVer + '_x64.dmg';
+      const arm64Btn = document.getElementById('dl-arm64');
+      const x64Btn   = document.getElementById('dl-x64');
+      if (arm64Btn) arm64Btn.href = arm64Url;
+      if (x64Btn)   x64Btn.href   = x64Url;
+    })
+    .catch(() => { /* silent — fallback links still work */ });
+  })();
 
   /* ─── Windows notify ─── */
   function handleWinNotify() {
