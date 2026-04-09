@@ -499,7 +499,10 @@ impl TaskRestoreEngine {
             )));
         }
 
-        let changes = db.get_changes_for_task(task_id)?;
+        let changes: Vec<_> = db.get_changes_for_task(task_id)?
+            .into_iter()
+            .filter(|c| !is_temp_file(&c.file_path))
+            .collect();
 
         let mut files_to_restore = Vec::new();
         let mut files_to_delete = Vec::new();
@@ -554,6 +557,10 @@ impl TaskRestoreEngine {
         }
 
         let mut changes = db.get_changes_for_task(task_id)?;
+
+        // Strip temp/system files that should never be restored.
+        // These can appear in old DB records created before the filter was added.
+        changes.retain(|c| !is_temp_file(&c.file_path));
 
         // Deduplicate: for the same file with multiple changes in one batch,
         // keep only the one that matters most for undo.
@@ -1428,4 +1435,36 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
+}
+
+// ================================================================
+// Temp-file helpers
+// ================================================================
+
+/// Returns true if this path represents a temporary/system file that should
+/// never be recorded or restored (e.g. macOS safe-save intermediates).
+fn is_temp_file(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    // macOS safe-save temp files: "original.sb-XXXXXXXX-YYYYYY"
+    if let Some(idx) = name.find(".sb-") {
+        // ".sb-" must not be the very start (would be a dotfile with that name)
+        if idx > 0 {
+            return true;
+        }
+    }
+
+    // Common editor/OS temp patterns
+    if name.ends_with(".tmp") || name.ends_with(".temp") {
+        return true;
+    }
+    // Emacs lock files
+    if name.starts_with(".#") {
+        return true;
+    }
+
+    false
 }

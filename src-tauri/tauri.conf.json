@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.rew.app",
   "build": {
-    "frontendDist": "../dist",
+    "frontendDist": "../gui/dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build"
+    "beforeDevCommand": "cd gui && pnpm dev",
+    "beforeBuildCommand": "cd gui && pnpm build"
   },
   "app": {
     "windows": [

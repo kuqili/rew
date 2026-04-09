@@ -5,6 +5,7 @@
 
 use crate::error::RewResult;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Top-level rew configuration.
@@ -20,11 +21,33 @@ pub struct RewConfig {
     /// Default: 100MB. None = no limit.
     pub max_file_size_bytes: Option<u64>,
 
+    /// How many seconds of file-monitoring events to group into one timeline
+    /// checkpoint. Events within the same window are merged into a single
+    /// "监听窗口" task so the timeline stays readable.
+    /// Default: 600 (10 minutes). Valid range: 60–7200.
+    #[serde(default = "RewConfig::default_monitoring_window_secs")]
+    pub monitoring_window_secs: u64,
+
+    /// Per-directory ignore rules. Key = watch dir absolute path.
+    #[serde(default)]
+    pub dir_ignore: HashMap<String, DirIgnoreConfig>,
+
     /// Anomaly detection rule thresholds
     pub anomaly_rules: AnomalyRulesConfig,
 
     /// Snapshot retention policy
     pub retention_policy: RetentionPolicyConfig,
+}
+
+/// Per-directory ignore configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DirIgnoreConfig {
+    /// Sub-directory names to exclude (e.g., "build", "dist", ".cache")
+    #[serde(default)]
+    pub exclude_dirs: Vec<String>,
+    /// File extensions to exclude, without dot (e.g., "log", "tmp", "bak")
+    #[serde(default)]
+    pub exclude_extensions: Vec<String>,
 }
 
 /// Thresholds for anomaly detection rules.
@@ -68,36 +91,67 @@ pub struct RetentionPolicyConfig {
     pub anomaly_retention_multiplier: u32,
 }
 
+impl RewConfig {
+    /// The canonical set of default ignore patterns.
+    ///
+    /// Kept as a standalone function so both `Default` and `load()` can use it
+    /// to ensure existing configs on disk are always up-to-date.
+    pub fn default_ignore_patterns() -> Vec<String> {
+        vec![
+            // OS/editor temporaries
+            "**/.DS_Store".to_string(),
+            "**/Thumbs.db".to_string(),
+            "**/*.swp".to_string(),
+            "**/*~".to_string(),
+            "**/.#*".to_string(),       // Emacs lock files
+            "**/*.tmp".to_string(),
+            "**/*.temp".to_string(),
+            // macOS safe-save (atomic write) temp files.
+            // Apps write to a ".sb-XXXXXXXX-YYYYYY" file, atomically swap it
+            // with the original, then delete the temp. These intermediate events
+            // are noise and should never be recorded or restored.
+            "**/*.sb-*".to_string(),
+            // Applications (not user data)
+            "**/*.app/**".to_string(),
+            // Installers & disk images (can re-download)
+            "**/*.dmg".to_string(),
+            "**/*.pkg".to_string(),
+            "**/*.iso".to_string(),
+            "**/*.msi".to_string(),
+            "**/*.exe".to_string(),
+            // Development artifacts (auto-generated, not user data)
+            "**/node_modules/**".to_string(),
+            "**/.git/**".to_string(),
+            "**/target/**".to_string(),
+            "**/__pycache__/**".to_string(),
+        ]
+    }
+
+    pub fn default_monitoring_window_secs() -> u64 {
+        600
+    }
+
+    /// Merge any missing default patterns into this config.
+    ///
+    /// Called after loading a config from disk so that configs created before
+    /// a new default pattern was added automatically receive the update.
+    pub fn ensure_default_patterns(&mut self) {
+        for pattern in Self::default_ignore_patterns() {
+            if !self.ignore_patterns.contains(&pattern) {
+                self.ignore_patterns.push(pattern);
+            }
+        }
+    }
+}
+
 impl Default for RewConfig {
     fn default() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
         Self {
-            watch_dirs: vec![
-                home.join("Desktop"),
-                home.join("Documents"),
-                home.join("Downloads"),
-            ],
-            ignore_patterns: vec![
-                // OS/editor temporaries
-                "**/.DS_Store".to_string(),
-                "**/Thumbs.db".to_string(),
-                "**/*.swp".to_string(),
-                "**/*~".to_string(),
-                // Applications (not user data)
-                "**/*.app/**".to_string(),
-                // Installers & disk images (can re-download)
-                "**/*.dmg".to_string(),
-                "**/*.pkg".to_string(),
-                "**/*.iso".to_string(),
-                "**/*.msi".to_string(),
-                "**/*.exe".to_string(),
-                // Development artifacts (auto-generated, not user data)
-                "**/node_modules/**".to_string(),
-                "**/.git/**".to_string(),
-                "**/target/**".to_string(),
-                "**/__pycache__/**".to_string(),
-            ],
+            watch_dirs: vec![],
+            ignore_patterns: Self::default_ignore_patterns(),
             max_file_size_bytes: None,
+            monitoring_window_secs: Self::default_monitoring_window_secs(),
+            dir_ignore: HashMap::new(),
             anomaly_rules: AnomalyRulesConfig::default(),
             retention_policy: RetentionPolicyConfig::default(),
         }
@@ -138,10 +192,34 @@ impl Default for RetentionPolicyConfig {
 
 impl RewConfig {
     /// Load configuration from a TOML file.
+    ///
+    /// After loading, missing default patterns are automatically merged in so
+    /// that existing configs on disk stay compatible when new defaults are added.
+    /// Also deduplicates watch_dirs to remove redundant sub-directories.
     pub fn load(path: &Path) -> RewResult<Self> {
         let content = std::fs::read_to_string(path)?;
-        let config: RewConfig = toml::from_str(&content)?;
+        let mut config: RewConfig = toml::from_str(&content)?;
+        config.ensure_default_patterns();
+        config.dedup_watch_dirs();
         Ok(config)
+    }
+
+    /// Remove redundant sub-directories from watch_dirs.
+    ///
+    /// If directory A is an ancestor of directory B, B is removed because A
+    /// already covers it. For example, [~/Desktop, ~/Desktop/project] → [~/Desktop].
+    pub fn dedup_watch_dirs(&mut self) {
+        // Sort by depth (shorter paths first) so parents are processed before children
+        self.watch_dirs.sort_by_key(|p| p.components().count());
+        let mut kept: Vec<std::path::PathBuf> = Vec::new();
+        for candidate in self.watch_dirs.drain(..) {
+            // If any already-kept dir is a prefix of candidate, candidate is redundant
+            let is_covered = kept.iter().any(|k| candidate.starts_with(k));
+            if !is_covered {
+                kept.push(candidate);
+            }
+        }
+        self.watch_dirs = kept;
     }
 
     /// Save configuration to a TOML file.

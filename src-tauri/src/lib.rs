@@ -51,12 +51,19 @@ pub fn run() {
             commands::restore_snapshot,
             commands::get_restore_preview,
             commands::check_first_run,
+            commands::get_home_dir,
             commands::complete_setup,
             commands::set_paused,
             // V2: Task commands
             commands::list_tasks,
             commands::get_task,
             commands::get_task_changes,
+            commands::get_change_diff,
+            // Rollback (V3 canonical names)
+            commands::preview_rollback,
+            commands::rollback_task_cmd,
+            commands::restore_file_cmd,
+            // Legacy aliases
             commands::preview_undo,
             commands::undo_task_cmd,
             commands::undo_file_cmd,
@@ -68,6 +75,17 @@ pub fn run() {
             commands::get_ignore_config,
             commands::get_storage_info,
             commands::analyze_directories,
+            // Per-directory ignore config
+            commands::get_dir_ignore_config,
+            commands::update_dir_ignore_config,
+            commands::list_subdirs,
+            commands::list_dir_contents,
+            commands::rescan_watch_dir,
+            // Monitoring window config
+            commands::get_monitoring_window,
+            commands::set_monitoring_window,
+            // Manual snapshot
+            commands::create_manual_snapshot,
         ])
         .setup(|app| {
             // Set up system tray
@@ -75,6 +93,62 @@ pub fn run() {
 
             // Start background daemon
             daemon::start_daemon(app.handle());
+
+            // Background timer: proactively seal monitoring windows that have
+            // exceeded their configured duration, instead of waiting for the
+            // next file event to trigger the check. Checks every 10 seconds;
+            // seals the window at exactly started_at + window_secs.
+            {
+                let handle_for_sealer = app.handle().clone();
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+
+                        let state: tauri::State<AppState> = handle_for_sealer.state();
+                        let now = chrono::Utc::now();
+
+                        let window_secs = state.config
+                            .lock()
+                            .map(|c| c.monitoring_window_secs)
+                            .unwrap_or(600);
+
+                        // Determine if the current window has expired
+                        let expired = {
+                            let guard = match state.fs_window_task.lock() {
+                                Ok(g) => g,
+                                Err(_) => continue,
+                            };
+                            guard.as_ref().and_then(|w| {
+                                let elapsed = (now - w.started_at).num_seconds() as u64;
+                                if elapsed >= window_secs {
+                                    // Ideal seal time = started_at + window_secs.
+                                    // Clamp to `now` in case window_secs was reduced
+                                    // after the window opened (would produce a past ts).
+                                    let ideal = w.started_at
+                                        + chrono::Duration::seconds(window_secs as i64);
+                                    let seal_time = ideal.min(now);
+                                    Some((w.task_id.clone(), seal_time))
+                                } else {
+                                    None
+                                }
+                            })
+                        };
+
+                        if let Some((task_id, seal_time)) = expired {
+                            // Clear the active window so the next event starts fresh
+                            if let Ok(mut guard) = state.fs_window_task.lock() {
+                                if guard.as_ref().map(|w| w.task_id == task_id).unwrap_or(false) {
+                                    *guard = None;
+                                }
+                            }
+                            // Write the precise seal timestamp to DB
+                            if let Ok(db) = state.db.lock() {
+                                let _ = db.update_task_completed_at(&task_id, seal_time);
+                            }
+                        }
+                    }
+                });
+            }
 
             // Window starts hidden (set in tauri.conf.json),
             // frontend will show it after checking first-run state

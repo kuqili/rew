@@ -2,14 +2,14 @@ import { useState, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { listTasks, getTaskChanges, getStatus, type TaskInfo, type ChangeInfo, type StatusInfo } from "../lib/tauri";
 
-export function useTasks() {
+export function useTasks(dirFilter?: string | null) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const data = await listTasks();
+      const data = await listTasks(dirFilter ?? undefined);
       setTasks(data || []);
       setError(null);
     } catch (e) {
@@ -18,15 +18,14 @@ export function useTasks() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [dirFilter]);
 
   useEffect(() => {
+    setLoading(true);
     refresh();
 
-    // Poll every 5 seconds
     const timer = setInterval(refresh, 5000);
 
-    // Also refresh on snapshot/task events
     const unlistenSnap = listen("snapshot-created", () => refresh());
     const unlistenTask = listen("task-updated", () => refresh());
 
@@ -40,24 +39,27 @@ export function useTasks() {
   return { tasks, loading, error, refresh };
 }
 
-export function useTaskChanges(taskId: string | null) {
+export function useTaskChanges(taskId: string | null, dirFilter?: string | null) {
   const [changes, setChanges] = useState<ChangeInfo[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    if (!taskId) { setChanges([]); return; }
+    getTaskChanges(taskId, dirFilter ?? undefined)
+      .then(setChanges)
+      .catch(() => {});
+  }, [taskId, dirFilter]);
 
   useEffect(() => {
-    if (!taskId) {
-      setChanges([]);
-      return;
-    }
-
-    setLoading(true);
-    getTaskChanges(taskId)
+    setInitialLoading(true);
+    if (!taskId) { setChanges([]); setInitialLoading(false); return; }
+    getTaskChanges(taskId, dirFilter ?? undefined)
       .then(setChanges)
       .catch(() => setChanges([]))
-      .finally(() => setLoading(false));
-  }, [taskId]);
+      .finally(() => setInitialLoading(false));
+  }, [taskId, dirFilter]);
 
-  return { changes, loading };
+  return { changes, loading: initialLoading, refresh };
 }
 
 export function useStatus() {

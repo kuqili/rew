@@ -6,10 +6,11 @@ control.json
 
 # Build outputs
 /target/
-/dist/
+/gui/dist/
 
 # Dependencies
 /node_modules/
+/gui/node_modules/
 
 # OS files
 .DS_Store
@@ -28,3 +29,6 @@ Thumbs.db
 
 # Graphify
 graphify-out/
+
+# pnpm local store
+.pnpm-store/

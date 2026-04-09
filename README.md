@@ -6,59 +6,65 @@ rew 实时监控你的文件，在 AI 工具（Claude Code、Cursor 等）操作
 
 ```
 rew/
-├── src/                    # 前端 React + Tailwind (Sourcetree 风格 GUI)
-│   ├── components/         #   UI 组件 (Sidebar, Timeline, Settings...)
-│   ├── hooks/              #   React hooks (useTasks, useScanProgress)
-│   ├── lib/                #   工具函数 + Tauri IPC 封装
-│   ├── App.tsx             #   入口组件
-│   └── index.css           #   Tailwind + 主题样式
-├── src-tauri/              # Tauri 2 桌面应用后端
-│   ├── src/
-│   │   ├── commands.rs     #   IPC 命令 (15个: task/scan/analyze...)
-│   │   ├── daemon.rs       #   后台守护 (FSEvents + 扫描 + 异常检测)
-│   │   ├── state.rs        #   共享状态 (ScanProgress, AppState)
-│   │   ├── lib.rs          #   Tauri 启动 + 插件注册
-│   │   └── tray.rs         #   系统托盘
-│   └── capabilities/       #   Tauri 2 权限配置
+├── Cargo.toml              # Rust workspace（rew-core / rew-cli / src-tauri）
+│
 ├── crates/
-│   ├── rew-core/           # 核心库 (无 Tauri 依赖)
-│   │   ├── src/
-│   │   │   ├── objects.rs  #   Content-addressable 对象存储 (SHA-256 + fast key)
-│   │   │   ├── scanner.rs  #   全量扫描器 (store_fast, 增量 manifest)
-│   │   │   ├── restore.rs  #   撤销引擎 (TaskRestoreEngine)
-│   │   │   ├── pipeline.rs #   FSEvents → 批处理 Pipeline + Shadow 机制
-│   │   │   ├── scope.rs    #   .rewscope 规则引擎
-│   │   │   ├── backup/     #   clonefile FFI + BackupEngine
-│   │   │   ├── db.rs       #   SQLite (tasks, changes, snapshots)
-│   │   │   ├── config.rs   #   配置管理 (~/.rew/config.toml)
-│   │   │   ├── detector/   #   异常检测规则 (8 条)
-│   │   │   └── types.rs    #   核心类型 (Task, Change, Snapshot...)
-│   │   └── tests/          #   集成测试
-│   └── rew-cli/            # CLI 工具
-│       └── src/commands/   #   hook, install, undo, list, show, diff
-├── docs/                   # 产品文档 (调研/需求/技术方案)
-├── resources/              # LaunchAgent plist
+│   ├── rew-core/           # 核心库（无 Tauri 依赖，可独立测试）
+│   │   └── src/
+│   │       ├── types.rs    #   核心类型（Task, Change, Snapshot…）
+│   │       ├── db.rs       #   SQLite（tasks / changes / snapshots）
+│   │       ├── objects.rs  #   内容寻址对象存储（SHA-256 + clonefile）
+│   │       ├── scanner.rs  #   启动时全量扫描器（增量 manifest）
+│   │       ├── pipeline.rs #   FSEvents → Shadow → EventProcessor 流水线
+│   │       ├── restore.rs  #   撤销引擎（TaskRestoreEngine）
+│   │       ├── scope.rs    #   .rewscope 作用域规则引擎
+│   │       ├── detector/   #   异常检测规则（8 条）
+│   │       ├── backup/     #   clonefile FFI + BackupEngine
+│   │       └── config.rs   #   配置管理（~/.rew/config.toml）
+│   │
+│   └── rew-cli/            # CLI 工具（rew install / hook / undo / list…）
+│       └── src/commands/   #   hook, install, status, list, show, diff, undo
+│
+├── src-tauri/              # Tauri 2 桌面端后端（Rust）
+│   └── src/
+│       ├── commands.rs     #   Tauri IPC 命令（task / scan / analyze…）
+│       ├── daemon.rs       #   后台守护（FSEvents + 扫描 + 异常检测）
+│       ├── state.rs        #   共享状态（ScanProgress, AppState）
+│       └── tray.rs         #   系统托盘
+│
+├── gui/                    # 前端 GUI（React + Vite + Tailwind）
+│   ├── src/
+│   │   ├── components/     #   UI 组件（Sidebar, TaskTimeline, DiffViewer…）
+│   │   ├── hooks/          #   React hooks（useTasks, useScanProgress）
+│   │   └── lib/            #   工具函数 + Tauri IPC 封装
+│   ├── index.html          #   WebView 入口
+│   ├── vite.config.ts      #   Vite 构建配置
+│   ├── tailwind.config.js  #   Tailwind 主题（Sourcetree 配色）
+│   └── package.json        #   前端依赖（React / Tailwind / Tauri API）
+│
+├── launchagent/            # macOS LaunchAgent plist 模板
 ├── tests/                  # 跨 crate 集成测试
-├── Cargo.toml              # Rust workspace 配置
-├── package.json            # Node 依赖 (React, Tailwind, Tauri API)
-├── tailwind.config.js      # Tailwind 主题 (Sourcetree 配色)
-├── vite.config.ts          # Vite 构建配置
-└── index.html              # Tauri WebView 入口
+├── docs/                   # 产品文档（调研 / 需求 / 技术方案）
+│
+└── package.json            # 根级脚本（pnpm dev / pnpm build → tauri）
 ```
 
 ## 快速开始
 
 ```bash
-# 安装依赖
+# 1. 安装前端依赖
+cd gui && pnpm install && cd ..
+
+# 2. 安装根级 Tauri CLI
 pnpm install
 
-# 开发模式 (热重载)
-pnpm tauri dev
+# 3. 开发模式（热重载）
+pnpm dev          # 等同于 tauri dev，自动启动 gui/ 的 Vite 服务
 
-# 构建桌面应用
-pnpm tauri build
+# 4. 构建桌面应用
+pnpm build
 
-# 构建 CLI
+# 5. 构建 CLI 工具
 cargo build -p rew-cli --release
 ```
 

@@ -5,6 +5,7 @@
 
 pub mod backup;
 pub mod config;
+pub mod diff;
 pub mod db;
 pub mod detector;
 pub mod error;

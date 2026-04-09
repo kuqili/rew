@@ -1,8 +1,30 @@
 //! Shared application state managed by Tauri.
 
+use chrono::{DateTime, Utc};
 use rew_core::config::RewConfig;
 use rew_core::db::Database;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+/// Commands sent from Tauri commands → running daemon pipeline.
+pub enum PipelineCmd {
+    AddPath(PathBuf),
+    RemovePath(PathBuf),
+}
+
+/// Tracks the currently-open file-monitoring time window.
+///
+/// Multiple 30-second event batches are merged into a single timeline Task
+/// until the window expires (`now - started_at > monitoring_window_secs`).
+#[derive(Debug, Clone)]
+pub struct FsWindowTask {
+    /// Task ID of the open window in the DB
+    pub task_id: String,
+    /// When the first event in this window arrived
+    pub started_at: DateTime<Utc>,
+}
 
 /// Per-directory scan completion status.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -49,6 +71,20 @@ pub struct AppState {
     pub has_warning: Mutex<bool>,
     /// Live scan progress — Arc so scanner thread can update independently.
     pub scan_progress: Arc<Mutex<ScanProgress>>,
+    /// Currently-open file-monitoring time window (None if no events yet).
+    pub fs_window_task: Mutex<Option<FsWindowTask>>,
+    /// Set to true while a rollback is executing to suppress the file events
+    /// it generates from being recorded as new timeline entries.
+    pub rolling_back: Mutex<bool>,
+    /// Path-level suppression: file paths recently written by GUI operations
+    /// (single-file restore or task rollback). The daemon skips FSEvents for
+    /// these paths for 60 seconds after the GUI write, regardless of the global
+    /// `rolling_back` flag. This handles async FSEvent delivery that arrives
+    /// after `rolling_back` has already been cleared.
+    pub suppressed_paths: Mutex<HashMap<PathBuf, Instant>>,
+    /// Channel to send hot-update commands (add/remove path) to the running daemon pipeline.
+    /// Set by the daemon after the pipeline starts; None if daemon not yet running.
+    pub pipeline_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<PipelineCmd>>>,
 }
 
 impl AppState {
@@ -62,6 +98,10 @@ impl AppState {
             paused: Mutex::new(false),
             has_warning: Mutex::new(false),
             scan_progress: Arc::new(Mutex::new(scan_progress)),
+            fs_window_task: Mutex::new(None),
+            rolling_back: Mutex::new(false),
+            suppressed_paths: Mutex::new(HashMap::new()),
+            pipeline_tx: Mutex::new(None),
         }
     }
 }

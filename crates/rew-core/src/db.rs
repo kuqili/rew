@@ -8,7 +8,7 @@ use crate::types::{
     Change, Snapshot, SnapshotTrigger, Task, TaskStatus,
 };
 use chrono::{DateTime, NaiveDateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -113,6 +113,14 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_changes_file_path
                 ON changes(file_path);",
         )?;
+
+        // V3 migration: add restored_at column if this is an existing DB.
+        // ALTER TABLE ADD COLUMN is a no-op error when the column already exists — safe to ignore.
+        let _ = self.conn.execute(
+            "ALTER TABLE changes ADD COLUMN restored_at TEXT",
+            [],
+        );
+
         Ok(())
     }
 
@@ -280,10 +288,14 @@ impl Database {
     }
 
     /// List all tasks ordered by started_at descending.
+    /// In-progress monitoring windows (tool='文件监听' with NULL completed_at) are excluded
+    /// so users only see fully-sealed archive entries.
     pub fn list_tasks(&self) -> RewResult<Vec<Task>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, prompt, tool, started_at, completed_at, status, risk_level, summary
-             FROM tasks ORDER BY started_at DESC",
+             FROM tasks
+             WHERE (tool != '文件监听' OR completed_at IS NOT NULL)
+             ORDER BY started_at DESC",
         )?;
 
         let mut tasks = Vec::new();
@@ -311,6 +323,49 @@ impl Database {
                 completed_at.map(|t| t.to_rfc3339()),
                 id,
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Return the single most-recently-started monitoring window (fs_* task).
+    ///
+    /// Used on startup to decide whether to resume or abandon the previous window.
+    pub fn get_latest_monitoring_window(&self) -> RewResult<Option<Task>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, prompt, tool, started_at, completed_at, status, risk_level, summary
+             FROM tasks WHERE id LIKE 'fs_%' ORDER BY started_at DESC LIMIT 1",
+        )?;
+        let result = stmt.query_row([], |row| Ok(Self::row_to_task(row)));
+        match result {
+            Ok(task) => Ok(Some(task.map_err(|e| {
+                RewError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                    std::io::Error::new(std::io::ErrorKind::Other, e),
+                )))
+            })?)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(RewError::Database(e)),
+        }
+    }
+
+    /// Seal any monitoring windows that still have `completed_at IS NULL`.
+    ///
+    /// Only needed for the rare crash-before-first-update edge case.
+    pub fn seal_null_monitoring_windows(&self, completed_at: DateTime<Utc>) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE tasks SET completed_at = ?1
+             WHERE id LIKE 'fs_%' AND completed_at IS NULL",
+            params![completed_at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Seal a file-monitoring time window by setting its `completed_at` timestamp.
+    ///
+    /// Called when a new window opens to close the previous one.
+    pub fn update_task_completed_at(&self, id: &str, completed_at: DateTime<Utc>) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE tasks SET completed_at = ?1 WHERE id = ?2",
+            params![completed_at.to_rfc3339(), id],
         )?;
         Ok(())
     }
@@ -369,10 +424,49 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Insert or update a change record for (task_id, file_path).
+    ///
+    /// Guarantees one record per file per task:
+    /// - If no existing record → INSERT (same as insert_change)
+    /// - If record exists → UPDATE, keeping the original `old_hash` (state before
+    ///   the task started) while updating `change_type`, `new_hash`, and stats
+    ///   to reflect the latest operation on this file.
+    pub fn upsert_change(&self, change: &Change) -> RewResult<i64> {
+        let path_str = change.file_path.to_string_lossy().to_string();
+
+        let existing = self.conn.query_row(
+            "SELECT id, old_hash FROM changes WHERE task_id = ?1 AND file_path = ?2",
+            params![change.task_id, path_str],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        ).optional()?;
+
+        if let Some((existing_id, existing_old_hash)) = existing {
+            // Keep the earliest old_hash (what the file looked like before this task)
+            let preserved_old_hash = existing_old_hash.or(change.old_hash.clone());
+            self.conn.execute(
+                "UPDATE changes SET change_type=?1, old_hash=?2, new_hash=?3,
+                 diff_text=?4, lines_added=?5, lines_removed=?6
+                 WHERE id=?7",
+                params![
+                    change.change_type.to_string(),
+                    preserved_old_hash,
+                    change.new_hash,
+                    change.diff_text,
+                    change.lines_added,
+                    change.lines_removed,
+                    existing_id,
+                ],
+            )?;
+            Ok(existing_id)
+        } else {
+            self.insert_change(change)
+        }
+    }
+
     /// Get all changes for a task.
     pub fn get_changes_for_task(&self, task_id: &str) -> RewResult<Vec<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at
              FROM changes WHERE task_id = ?1 ORDER BY id ASC",
         )?;
 
@@ -387,10 +481,123 @@ impl Database {
         Ok(changes)
     }
 
+    /// List tasks that have at least one change under `dir_prefix`.
+    pub fn list_tasks_by_dir(&self, dir_prefix: &str) -> RewResult<Vec<Task>> {
+        let like_pattern = format!("{}/%", dir_prefix);
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
+                    t.status, t.risk_level, t.summary
+             FROM tasks t
+             JOIN changes c ON c.task_id = t.id
+             WHERE c.file_path LIKE ?1
+               AND (t.tool != '文件监听' OR t.completed_at IS NOT NULL)
+             ORDER BY t.started_at DESC",
+        )?;
+
+        let mut tasks = Vec::new();
+        let mut rows = stmt.query(params![like_pattern])?;
+        while let Some(row) = rows.next()? {
+            let task = Self::row_to_task(row)
+                .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)),
+                )))?;
+            tasks.push(task);
+        }
+
+        Ok(tasks)
+    }
+
+    /// Filter tasks to those containing a specific file change (exact path match).
+    pub fn list_tasks_by_file(&self, file_path: &str) -> RewResult<Vec<Task>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
+                    t.status, t.risk_level, t.summary
+             FROM tasks t
+             JOIN changes c ON c.task_id = t.id
+             WHERE c.file_path = ?1
+               AND (t.tool != '文件监听' OR t.completed_at IS NOT NULL)
+             ORDER BY t.started_at DESC",
+        )?;
+
+        let mut tasks = Vec::new();
+        let mut rows = stmt.query(params![file_path])?;
+        while let Some(row) = rows.next()? {
+            let task = Self::row_to_task(row)
+                .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)),
+                )))?;
+            tasks.push(task);
+        }
+
+        Ok(tasks)
+    }
+
+    /// Count changes for a task that fall under `dir_prefix`.
+    pub fn count_changes_in_dir(&self, task_id: &str, dir_prefix: &str) -> RewResult<usize> {
+        let like_pattern = format!("{}/%", dir_prefix);
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM changes WHERE task_id = ?1 AND file_path LIKE ?2",
+            params![task_id, like_pattern],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Count changes for a task matching a specific file path exactly.
+    pub fn count_changes_for_file(&self, task_id: &str, file_path: &str) -> RewResult<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM changes WHERE task_id = ?1 AND file_path = ?2",
+            params![task_id, file_path],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Get changes for a task filtered to a specific directory prefix.
+    pub fn get_changes_for_task_in_dir(&self, task_id: &str, dir_prefix: &str) -> RewResult<Vec<Change>> {
+        let like_pattern = format!("{}/%", dir_prefix);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at
+             FROM changes WHERE task_id = ?1 AND file_path LIKE ?2 ORDER BY id ASC",
+        )?;
+
+        let mut changes = Vec::new();
+        let mut rows = stmt.query(params![task_id, like_pattern])?;
+        while let Some(row) = rows.next()? {
+            let change = Self::row_to_change(row)
+                .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)),
+                )))?;
+            changes.push(change);
+        }
+
+        Ok(changes)
+    }
+
+    /// Get changes for a task matching a specific file path exactly.
+    pub fn get_changes_for_task_by_file(&self, task_id: &str, file_path: &str) -> RewResult<Vec<Change>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at
+             FROM changes WHERE task_id = ?1 AND file_path = ?2 ORDER BY id ASC",
+        )?;
+
+        let mut changes = Vec::new();
+        let mut rows = stmt.query(params![task_id, file_path])?;
+        while let Some(row) = rows.next()? {
+            let change = Self::row_to_change(row)
+                .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)),
+                )))?;
+            changes.push(change);
+        }
+
+        Ok(changes)
+    }
+
     /// Get the most recent change for a specific file path (for shadow lookup).
     pub fn get_latest_change_for_file(&self, file_path: &Path) -> RewResult<Option<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at
              FROM changes WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
         )?;
 
@@ -408,6 +615,12 @@ impl Database {
         let change_type_str: String = row.get(3).map_err(|e| e.to_string())?;
         let file_path_str: String = row.get(2).map_err(|e| e.to_string())?;
 
+        let restored_at: Option<String> = row.get(9).map_err(|e| e.to_string())?;
+        let restored_at = restored_at
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+
         Ok(Change {
             id: row.get(0).map_err(|e| e.to_string())?,
             task_id: row.get(1).map_err(|e| e.to_string())?,
@@ -418,7 +631,24 @@ impl Database {
             diff_text: row.get(6).map_err(|e| e.to_string())?,
             lines_added: row.get(7).map_err(|e| e.to_string())?,
             lines_removed: row.get(8).map_err(|e| e.to_string())?,
+            restored_at,
         })
+    }
+
+    /// Mark a single file change as individually restored.
+    /// Idempotent: calling again just updates the timestamp.
+    pub fn mark_change_restored(
+        &self,
+        task_id: &str,
+        file_path: &std::path::Path,
+        restored_at: chrono::DateTime<chrono::Utc>,
+    ) -> RewResult<()> {
+        let path_str = file_path.to_string_lossy().to_string();
+        self.conn.execute(
+            "UPDATE changes SET restored_at = ?1 WHERE task_id = ?2 AND file_path = ?3",
+            params![restored_at.to_rfc3339(), task_id, path_str],
+        )?;
+        Ok(())
     }
 }
 
@@ -554,6 +784,7 @@ mod tests {
             diff_text: Some("+pub fn authenticate() {}".to_string()),
             lines_added: 1,
             lines_removed: 0,
+            restored_at: None,
         };
         let id1 = db.insert_change(&change1).unwrap();
         assert!(id1 > 0);
@@ -568,6 +799,7 @@ mod tests {
             diff_text: Some("-use old;\n+use auth;".to_string()),
             lines_added: 1,
             lines_removed: 1,
+            restored_at: None,
         };
         db.insert_change(&change2).unwrap();
 

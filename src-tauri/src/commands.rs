@@ -6,7 +6,7 @@ use rew_core::types::{Snapshot, SnapshotTrigger};
 use rew_core::rew_home_dir;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Snapshot data sent to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,6 +287,13 @@ pub async fn check_first_run() -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub async fn get_home_dir() -> Result<String, String> {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| "无法获取 home 目录".to_string())
+}
+
+#[tauri::command]
 pub async fn complete_setup(
     state: State<'_, AppState>,
     watch_dirs: Vec<String>,
@@ -341,6 +348,8 @@ pub struct ChangeInfo {
     pub diff_text: Option<String>,
     pub lines_added: u32,
     pub lines_removed: u32,
+    /// ISO-8601 timestamp set when this file was individually restored. None = not restored.
+    pub restored_at: Option<String>,
 }
 
 /// Undo preview info for the frontend.
@@ -361,17 +370,57 @@ pub struct UndoResultInfo {
 }
 
 #[tauri::command]
-pub async fn list_tasks(state: State<'_, AppState>) -> Result<Vec<TaskInfo>, String> {
-    let db = state.db.lock().map_err(|e| format!("DB lock error: {}", e))?;
-    let tasks = db.list_tasks().map_err(|e| format!("list_tasks error: {}", e))?;
+pub async fn list_tasks(
+    state: State<'_, AppState>,
+    dir_filter: Option<String>,
+) -> Result<Vec<TaskInfo>, String> {
+    // Exclude the currently-accumulating monitoring window: the daemon calls
+    // update_task_completed_at on every event, so completed_at is always set
+    // even for in-progress windows. The only reliable way to hide it is to
+    // compare against the live FsWindowTask id stored in AppState.
+    let active_window_id: Option<String> = state
+        .fs_window_task
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|w| w.task_id.clone()));
 
-    tracing::info!("list_tasks: found {} tasks in DB", tasks.len());
+    let db = state.db.lock().map_err(|e| format!("DB lock error: {}", e))?;
+
+    // Determine if dir_filter is a file or directory path
+    let is_file_filter = dir_filter.as_ref()
+        .map(|p| !Path::new(p).is_dir())
+        .unwrap_or(false);
+
+    let mut tasks = if let Some(ref path) = dir_filter {
+        if is_file_filter {
+            db.list_tasks_by_file(path).map_err(|e| format!("list_tasks_by_file error: {}", e))?
+        } else {
+            db.list_tasks_by_dir(path).map_err(|e| format!("list_tasks_by_dir error: {}", e))?
+        }
+    } else {
+        db.list_tasks().map_err(|e| format!("list_tasks error: {}", e))?
+    };
+
+    // Remove the active window so the frontend never sees an in-progress entry
+    if let Some(ref id) = active_window_id {
+        tasks.retain(|t| &t.id != id);
+    }
+
+    tracing::info!("list_tasks: found {} tasks in DB (dir_filter={:?})", tasks.len(), dir_filter);
 
     let mut result = Vec::new();
     for task in tasks {
-        let changes_count = db.get_changes_for_task(&task.id)
-            .map(|c| c.len())
-            .unwrap_or(0);
+        let changes_count = if let Some(ref path) = dir_filter {
+            if is_file_filter {
+                db.count_changes_for_file(&task.id, path).unwrap_or(0)
+            } else {
+                db.count_changes_in_dir(&task.id, path).unwrap_or(0)
+            }
+        } else {
+            db.get_changes_for_task(&task.id)
+                .map(|c| c.len())
+                .unwrap_or(0)
+        };
 
         result.push(TaskInfo {
             id: task.id,
@@ -415,9 +464,24 @@ pub async fn get_task(state: State<'_, AppState>, task_id: String) -> Result<Tas
 }
 
 #[tauri::command]
-pub async fn get_task_changes(state: State<'_, AppState>, task_id: String) -> Result<Vec<ChangeInfo>, String> {
+pub async fn get_task_changes(
+    state: State<'_, AppState>,
+    task_id: String,
+    dir_filter: Option<String>,
+) -> Result<Vec<ChangeInfo>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let changes = db.get_changes_for_task(&task_id).map_err(|e| e.to_string())?;
+    let is_file_filter = dir_filter.as_ref()
+        .map(|p| !Path::new(p).is_dir())
+        .unwrap_or(false);
+    let changes = if let Some(ref path) = dir_filter {
+        if is_file_filter {
+            db.get_changes_for_task_by_file(&task_id, path).map_err(|e| e.to_string())?
+        } else {
+            db.get_changes_for_task_in_dir(&task_id, path).map_err(|e| e.to_string())?
+        }
+    } else {
+        db.get_changes_for_task(&task_id).map_err(|e| e.to_string())?
+    };
 
     Ok(changes.into_iter().map(|c| ChangeInfo {
         id: c.id,
@@ -429,11 +493,87 @@ pub async fn get_task_changes(state: State<'_, AppState>, task_id: String) -> Re
         diff_text: c.diff_text,
         lines_added: c.lines_added,
         lines_removed: c.lines_removed,
+        restored_at: c.restored_at.map(|t| t.to_rfc3339()),
     }).collect())
 }
 
+// ----------------------------------------------------------------
+// On-demand diff computation
+// ----------------------------------------------------------------
+
+/// Response from `get_change_diff`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeDiffResult {
+    /// Unified diff text ready for display, or None for binary files.
+    pub diff_text: Option<String>,
+    /// Re-computed lines added (may update stale DB value).
+    pub lines_added: u32,
+    /// Re-computed lines removed.
+    pub lines_removed: u32,
+}
+
 #[tauri::command]
-pub async fn preview_undo(state: State<'_, AppState>, task_id: String) -> Result<UndoPreviewInfo, String> {
+pub async fn get_change_diff(
+    state: State<'_, AppState>,
+    task_id: String,
+    file_path: String,
+) -> Result<ChangeDiffResult, String> {
+    let (old_hash, new_hash) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let changes = db.get_changes_for_task(&task_id).map_err(|e| e.to_string())?;
+        let change = changes
+            .into_iter()
+            .find(|c| c.file_path.to_string_lossy() == file_path.as_str())
+            .ok_or_else(|| format!("No change record found for {}", file_path))?;
+        (change.old_hash, change.new_hash)
+    };
+
+    let objects_root = rew_home_dir().join("objects");
+    let obj_store = rew_core::objects::ObjectStore::new(objects_root)
+        .map_err(|e| e.to_string())?;
+
+    let read_content = |hash: Option<&str>| -> Vec<u8> {
+        hash.and_then(|h| obj_store.retrieve(h))
+            .and_then(|p| std::fs::read(p).ok())
+            .unwrap_or_default()
+    };
+
+    let old_bytes = read_content(old_hash.as_deref());
+    let new_bytes = read_content(new_hash.as_deref());
+
+    // Short display name: just the filename for the diff header
+    let name = std::path::Path::new(&file_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_path.clone());
+
+    let result = rew_core::diff::compute_diff(
+        &old_bytes,
+        &new_bytes,
+        &format!("a/{}", name),
+        &format!("b/{}", name),
+    );
+
+    Ok(match result {
+        Some(dr) => ChangeDiffResult {
+            diff_text: Some(dr.text),
+            lines_added: dr.lines_added,
+            lines_removed: dr.lines_removed,
+        },
+        None => ChangeDiffResult {
+            diff_text: None, // binary file
+            lines_added: 0,
+            lines_removed: 0,
+        },
+    })
+}
+
+// ----------------------------------------------------------------
+// Rollback commands (canonical V3 names)
+// ----------------------------------------------------------------
+
+#[tauri::command]
+pub async fn preview_rollback(state: State<'_, AppState>, task_id: String) -> Result<UndoPreviewInfo, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let objects_root = rew_home_dir().join("objects");
     let engine = TaskRestoreEngine::new(objects_root);
@@ -449,38 +589,165 @@ pub async fn preview_undo(state: State<'_, AppState>, task_id: String) -> Result
 }
 
 #[tauri::command]
-pub async fn undo_task_cmd(state: State<'_, AppState>, task_id: String) -> Result<UndoResultInfo, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let objects_root = rew_home_dir().join("objects");
-    let engine = TaskRestoreEngine::new(objects_root);
+pub async fn rollback_task_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<UndoResultInfo, String> {
+    if let Ok(mut guard) = state.rolling_back.lock() {
+        *guard = true;
+    }
 
-    let result = engine.undo_task(&db, &task_id).map_err(|e| e.to_string())?;
+    let result = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let objects_root = rew_home_dir().join("objects");
+        let engine = TaskRestoreEngine::new(objects_root);
+        engine.undo_task(&db, &task_id).map_err(|e| e.to_string())
+    };
 
+    // On success: add all affected paths to suppressed_paths (60s TTL)
+    if result.is_ok() {
+        let now_instant = std::time::Instant::now();
+        if let Ok(mut sp) = state.suppressed_paths.lock() {
+            if let Ok(db) = state.db.lock() {
+                if let Ok(changes) = db.get_changes_for_task(&task_id) {
+                    for c in changes {
+                        sp.insert(c.file_path, now_instant);
+                    }
+                }
+            }
+        }
+    }
+
+    // Delay-clear global rolling_back flag
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        if let Some(s) = app_handle.try_state::<AppState>() {
+            if let Ok(mut g) = s.rolling_back.lock() {
+                *g = false;
+            }
+        }
+    });
+
+    let res = result?;
     Ok(UndoResultInfo {
-        files_restored: result.files_restored,
-        files_deleted: result.files_deleted,
-        failures: result.failures.iter().map(|(p, e)| (p.to_string_lossy().to_string(), e.clone())).collect(),
+        files_restored: res.files_restored,
+        files_deleted: res.files_deleted,
+        failures: res.failures.iter().map(|(p, e)| (p.to_string_lossy().to_string(), e.clone())).collect(),
     })
 }
 
 #[tauri::command]
-pub async fn undo_file_cmd(
+pub async fn restore_file_cmd(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     task_id: String,
     file_path: String,
 ) -> Result<UndoResultInfo, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let objects_root = rew_home_dir().join("objects");
-    let engine = TaskRestoreEngine::new(objects_root);
+    if let Ok(mut guard) = state.rolling_back.lock() {
+        *guard = true;
+    }
 
-    let result = engine.undo_file(&db, &task_id, &PathBuf::from(&file_path))
-        .map_err(|e| e.to_string())?;
+    let result = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let objects_root = rew_home_dir().join("objects");
+        let engine = TaskRestoreEngine::new(objects_root);
+        engine.undo_file(&db, &task_id, &PathBuf::from(&file_path))
+            .map_err(|e| e.to_string())
+    };
 
+    // On success: persist restored_at to DB + add path to suppressed_paths
+    if result.is_ok() {
+        let now = chrono::Utc::now();
+        if let Ok(db) = state.db.lock() {
+            let _ = db.mark_change_restored(&task_id, &PathBuf::from(&file_path), now);
+        }
+        // Suppress FSEvents for this specific path for 60 s so async FSEvent
+        // delivery after the write doesn't create spurious timeline entries.
+        if let Ok(mut sp) = state.suppressed_paths.lock() {
+            sp.insert(PathBuf::from(&file_path), std::time::Instant::now());
+        }
+    }
+
+    // Also clear the global rolling_back flag after a short delay
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        if let Some(s) = app_handle.try_state::<AppState>() {
+            if let Ok(mut g) = s.rolling_back.lock() {
+                *g = false;
+            }
+        }
+    });
+
+    let res = result?;
     Ok(UndoResultInfo {
-        files_restored: result.files_restored,
-        files_deleted: result.files_deleted,
-        failures: result.failures.iter().map(|(p, e)| (p.to_string_lossy().to_string(), e.clone())).collect(),
+        files_restored: res.files_restored,
+        files_deleted: res.files_deleted,
+        failures: res.failures.iter().map(|(p, e)| (p.to_string_lossy().to_string(), e.clone())).collect(),
     })
+}
+
+// ----------------------------------------------------------------
+// Legacy aliases kept for backward compat (delegate to new commands)
+// ----------------------------------------------------------------
+
+#[tauri::command]
+pub async fn preview_undo(state: State<'_, AppState>, task_id: String) -> Result<UndoPreviewInfo, String> {
+    preview_rollback(state, task_id).await
+}
+
+#[tauri::command]
+pub async fn undo_task_cmd(app: tauri::AppHandle, state: State<'_, AppState>, task_id: String) -> Result<UndoResultInfo, String> {
+    rollback_task_cmd(app, state, task_id).await
+}
+
+#[tauri::command]
+pub async fn undo_file_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+    file_path: String,
+) -> Result<UndoResultInfo, String> {
+    restore_file_cmd(app, state, task_id, file_path).await
+}
+
+// ================================================================
+// Monitoring window configuration
+// ================================================================
+
+#[tauri::command]
+pub async fn get_monitoring_window(state: State<'_, AppState>) -> Result<u64, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?;
+    Ok(config.monitoring_window_secs)
+}
+
+#[tauri::command]
+pub async fn set_monitoring_window(state: State<'_, AppState>, secs: u64) -> Result<(), String> {
+    let config_path = rew_core::rew_home_dir().join("config.toml");
+
+    // Seal any currently-open monitoring window immediately at now.
+    // This prevents the situation where the new (shorter) window_secs would
+    // produce a seal_time in the past, conflicting with already-recorded changes.
+    let now = chrono::Utc::now();
+    let sealed_id: Option<String> = {
+        let mut guard = state.fs_window_task.lock().map_err(|e| e.to_string())?;
+        let id = guard.as_ref().map(|w| w.task_id.clone());
+        *guard = None;
+        id
+    };
+    if let Some(task_id) = sealed_id {
+        if let Ok(db) = state.db.lock() {
+            let _ = db.update_task_completed_at(&task_id, now);
+        }
+    }
+
+    let mut config = state.config.lock().map_err(|e| e.to_string())?;
+    // Clamp to sane range: 1 minute – 2 hours
+    config.monitoring_window_secs = secs.clamp(60, 7200);
+    config.save(&config_path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ================================================================
@@ -538,6 +805,7 @@ pub async fn get_scan_progress(state: State<'_, AppState>) -> Result<ScanProgres
 
 #[tauri::command]
 pub async fn add_watch_dir(
+    app: AppHandle,
     state: State<'_, AppState>,
     dir_path: String,
 ) -> Result<(), String> {
@@ -546,17 +814,48 @@ pub async fn add_watch_dir(
         return Err(format!("目录不存在: {}", dir_path));
     }
 
-    // Update config
+    // Update config with overlap detection
     {
         let mut config = state.config.lock().map_err(|e| e.to_string())?;
+
+        // Already in list — idempotent
         if config.watch_dirs.contains(&path) {
             return Ok(());
         }
+
+        // Check if new path is a sub-directory of an existing watch dir
+        for existing in &config.watch_dirs {
+            if path.starts_with(existing) {
+                let parent_name = existing.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("父目录")
+                    .to_string();
+                return Err(format!(
+                    "该目录已被「{}」保护，无需重复添加。\n\
+                     你可以在侧栏点击「{}」展开，选中该子目录来筛选存档记录。",
+                    parent_name, parent_name
+                ));
+            }
+        }
+
+        // Check if new path is a parent of existing watch dirs — absorb them
+        let covered: Vec<PathBuf> = config.watch_dirs.iter()
+            .filter(|d| d.starts_with(&path))
+            .cloned()
+            .collect();
+        if !covered.is_empty() {
+            config.watch_dirs.retain(|d| !d.starts_with(&path));
+            tracing::info!(
+                "add_watch_dir: new parent {:?} covers {:?}, removed sub-dirs",
+                path, covered
+            );
+        }
+
         config.watch_dirs.push(path.clone());
         config.save(&rew_home_dir().join("config.toml")).map_err(|e| e.to_string())?;
     }
 
-    // Add to scan progress as "pending"
+    // Add to scan progress as "pending" and notify frontend immediately
     {
         let mut progress = state.scan_progress.lock().map_err(|e| e.to_string())?;
         if !progress.dirs.iter().any(|d| d.path == dir_path) {
@@ -571,13 +870,18 @@ pub async fn add_watch_dir(
                 last_completed_at: None,
             });
         }
+        let _ = app.emit("scan-progress", &*progress);
     }
 
     // Kick off background scan for this directory
     let sp = state.scan_progress.clone();
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    let path_for_scan = path.clone();
+    let app_scan = app.clone();
     std::thread::spawn(move || {
+        let path = path_for_scan;
         let sp2 = sp.clone();
+        let app_cb = app_scan.clone();
         let callback: rew_core::scanner::ProgressCallback = Box::new(move |update| {
             if let Ok(mut progress) = sp2.lock() {
                 if let Some(ds) = progress.dirs.iter_mut().find(|d| d.path == update.dir) {
@@ -588,33 +892,56 @@ pub async fn add_watch_dir(
                     ds.files_skipped = update.files_skipped;
                     ds.files_failed = update.files_failed;
                 }
+                let _ = app_cb.emit("scan-progress", &*progress);
             }
         });
 
+        // Merge per-directory ignore patterns into the global list for this scan
+        let mut patterns = config.ignore_patterns.clone();
+        let dir_str = path.display().to_string();
+        if let Some(dir_cfg) = config.dir_ignore.get(&dir_str) {
+            for d in &dir_cfg.exclude_dirs {
+                patterns.push(format!("**/{d}/**"));
+            }
+            for ext in &dir_cfg.exclude_extensions {
+                patterns.push(format!("**/*.{ext}"));
+            }
+        }
+
         rew_core::scanner::full_scan(
             &[path],
-            &config.ignore_patterns,
+            &patterns,
             &rew_home_dir(),
             Some(callback),
             None,
             config.max_file_size_bytes,
         );
 
-        // Mark complete
+        // Mark complete and notify
         if let Ok(mut progress) = sp.lock() {
             if let Some(ds) = progress.dirs.iter_mut().find(|d| d.path == dir_path) {
                 ds.status = crate::state::DirStatus::Complete;
                 ds.last_completed_at = Some(chrono::Utc::now().to_rfc3339());
             }
             crate::state::save_scan_status(&progress);
+            let _ = app_scan.emit("scan-progress", &*progress);
+            let _ = app_scan.emit("scan-complete", &dir_path);
         }
     });
+
+    // Hot-add to running FSEvents pipeline
+    if let Ok(tx_guard) = state.pipeline_tx.lock() {
+        if let Some(ref tx) = *tx_guard {
+            let _ = tx.send(crate::state::PipelineCmd::AddPath(path));
+        }
+    }
 
     Ok(())
 }
 
 #[tauri::command]
 pub async fn remove_watch_dir(
+    app: AppHandle,
     state: State<'_, AppState>,
     dir_path: String,
 ) -> Result<(), String> {
@@ -627,11 +954,20 @@ pub async fn remove_watch_dir(
         config.save(&rew_home_dir().join("config.toml")).map_err(|e| e.to_string())?;
     }
 
-    // Remove from scan progress
+    // Remove from scan progress and notify frontend immediately
     {
         let mut progress = state.scan_progress.lock().map_err(|e| e.to_string())?;
         progress.dirs.retain(|d| d.path != dir_path);
         crate::state::save_scan_status(&progress);
+        // Emit updated progress so frontend re-renders immediately
+        let _ = app.emit("scan-progress", &*progress);
+    }
+
+    // Hot-remove from running FSEvents pipeline
+    if let Ok(tx_guard) = state.pipeline_tx.lock() {
+        if let Some(ref tx) = *tx_guard {
+            let _ = tx.send(crate::state::PipelineCmd::RemovePath(path));
+        }
     }
 
     Ok(())
@@ -717,6 +1053,188 @@ pub struct IgnoreConfigInfo {
 }
 
 // ================================================================
+// Per-directory ignore configuration
+// ================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirIgnoreConfigInfo {
+    pub exclude_dirs: Vec<String>,
+    pub exclude_extensions: Vec<String>,
+}
+
+/// List immediate subdirectory names under a watched directory.
+/// Used by the frontend to populate the exclude-directory picker.
+#[tauri::command]
+pub async fn list_subdirs(dir_path: String) -> Result<Vec<String>, String> {
+    let items = list_dir_contents(dir_path).await?;
+    Ok(items.into_iter().filter(|i| i.is_dir).map(|i| i.name).collect())
+}
+
+/// A file or directory entry returned from list_dir_contents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirContentItem {
+    pub name: String,
+    pub full_path: String,
+    pub is_dir: bool,
+    /// Unix timestamp seconds (mtime), 0 if unavailable
+    pub modified_secs: u64,
+}
+
+/// List immediate contents (dirs AND files) of a directory, sorted by mtime desc.
+/// Skips hidden entries and well-known noise directories.
+#[tauri::command]
+pub async fn list_dir_contents(dir_path: String) -> Result<Vec<DirContentItem>, String> {
+    let path = PathBuf::from(&dir_path);
+    if !path.is_dir() {
+        return Ok(vec![]);
+    }
+    let mut items = Vec::new();
+    let entries = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let name = match p.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        // Skip hidden entries
+        if name.starts_with('.') { continue; }
+        let is_dir = p.is_dir();
+        // Skip noisy dirs
+        if is_dir && matches!(name.as_str(), "node_modules" | "target" | "__pycache__") {
+            continue;
+        }
+        if is_dir && name.ends_with(".app") { continue; }
+
+        let modified_secs = entry.metadata().ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        items.push(DirContentItem {
+            name,
+            full_path: p.to_string_lossy().to_string(),
+            is_dir,
+            modified_secs,
+        });
+    }
+    // Sort: dirs first, then by mtime descending
+    items.sort_by(|a, b| {
+        b.is_dir.cmp(&a.is_dir).then(b.modified_secs.cmp(&a.modified_secs))
+    });
+    Ok(items)
+}
+
+#[tauri::command]
+pub async fn get_dir_ignore_config(
+    state: State<'_, AppState>,
+    dir_path: String,
+) -> Result<DirIgnoreConfigInfo, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?;
+    let cfg = config.dir_ignore.get(&dir_path).cloned().unwrap_or_default();
+    Ok(DirIgnoreConfigInfo {
+        exclude_dirs: cfg.exclude_dirs,
+        exclude_extensions: cfg.exclude_extensions,
+    })
+}
+
+#[tauri::command]
+pub async fn update_dir_ignore_config(
+    state: State<'_, AppState>,
+    dir_path: String,
+    exclude_dirs: Vec<String>,
+    exclude_extensions: Vec<String>,
+) -> Result<(), String> {
+    let mut config = state.config.lock().map_err(|e| e.to_string())?;
+    let entry = config.dir_ignore.entry(dir_path).or_default();
+    entry.exclude_dirs = exclude_dirs;
+    entry.exclude_extensions = exclude_extensions;
+    config.save(&rew_home_dir().join("config.toml")).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Re-scan a single watched directory using the current exclude config.
+/// Useful after changing exclude rules so new objects are stored and
+/// scan progress reflects the latest state.
+#[tauri::command]
+pub async fn rescan_watch_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    dir_path: String,
+) -> Result<(), String> {
+    let path = PathBuf::from(&dir_path);
+    if !path.exists() || !path.is_dir() {
+        return Err(format!("目录不存在: {}", dir_path));
+    }
+
+    // Mark as scanning immediately and notify frontend
+    {
+        let mut progress = state.scan_progress.lock().map_err(|e| e.to_string())?;
+        if let Some(ds) = progress.dirs.iter_mut().find(|d| d.path == dir_path) {
+            ds.status = crate::state::DirStatus::Scanning;
+            ds.files_done = 0;
+        }
+        let _ = app.emit("scan-progress", &*progress);
+    }
+
+    let sp = state.scan_progress.clone();
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    let app_scan = app.clone();
+
+    std::thread::spawn(move || {
+        let sp2 = sp.clone();
+        let dir_path_clone = dir_path.clone();
+        let app_cb = app_scan.clone();
+        let callback: rew_core::scanner::ProgressCallback = Box::new(move |update| {
+            if let Ok(mut progress) = sp2.lock() {
+                if let Some(ds) = progress.dirs.iter_mut().find(|d| d.path == update.dir) {
+                    ds.status = crate::state::DirStatus::Scanning;
+                    ds.files_total = update.files_total_estimate;
+                    ds.files_done = update.files_scanned;
+                    ds.files_stored = update.files_stored;
+                    ds.files_skipped = update.files_skipped;
+                    ds.files_failed = update.files_failed;
+                }
+                let _ = app_cb.emit("scan-progress", &*progress);
+            }
+        });
+
+        // Merge per-directory ignore patterns
+        let mut patterns = config.ignore_patterns.clone();
+        let dir_str = path.display().to_string();
+        if let Some(dir_cfg) = config.dir_ignore.get(&dir_str) {
+            for d in &dir_cfg.exclude_dirs {
+                patterns.push(format!("**/{d}/**"));
+            }
+            for ext in &dir_cfg.exclude_extensions {
+                patterns.push(format!("**/*.{ext}"));
+            }
+        }
+
+        rew_core::scanner::full_scan(
+            &[path],
+            &patterns,
+            &rew_home_dir(),
+            Some(callback),
+            None,
+            config.max_file_size_bytes,
+        );
+
+        if let Ok(mut progress) = sp.lock() {
+            if let Some(ds) = progress.dirs.iter_mut().find(|d| d.path == dir_path_clone) {
+                ds.status = crate::state::DirStatus::Complete;
+                ds.last_completed_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+            crate::state::save_scan_status(&progress);
+            let _ = app_scan.emit("scan-progress", &*progress);
+            let _ = app_scan.emit("scan-complete", &dir_path_clone);
+        }
+    });
+
+    Ok(())
+}
+
+// ================================================================
 // Directory analysis for settings panel
 // ================================================================
 
@@ -782,6 +1300,11 @@ fn run_analysis(config: &rew_core::config::RewConfig) -> Result<FullAnalysis, St
     for dir_path in &config.watch_dirs {
         if !dir_path.exists() { continue; }
 
+        // Per-directory ignore config (user-configured excludes)
+        let dir_str = dir_path.display().to_string();
+        let dir_ignore_cfg = config.dir_ignore.get(&dir_str).cloned()
+            .unwrap_or_default();
+
         let mut total_files = 0usize;
         let mut total_bytes = 0u64;
         let mut large_count = 0usize;
@@ -793,8 +1316,13 @@ fn run_analysis(config: &rew_core::config::RewConfig) -> Result<FullAnalysis, St
             for entry in entries.flatten() {
                 let path = entry.path();
 
-                // Use same filter as scanner
+                // Apply global filter
                 if filter.should_ignore(&path) { continue; }
+
+                // Apply per-directory user ignore config (same logic as scanner/daemon)
+                if PathFilter::should_ignore_by_dir_config(&path, dir_path, &dir_ignore_cfg) {
+                    continue;
+                }
 
                 if path.is_dir() {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -827,7 +1355,7 @@ fn run_analysis(config: &rew_core::config::RewConfig) -> Result<FullAnalysis, St
             path: dir_path.display().to_string(),
             total_files,
             total_bytes,
-            categories: vec![], // Simplified — no per-category breakdown needed anymore
+            categories: vec![],
             large_file_count: large_count,
             large_file_bytes: large_bytes,
         });
@@ -849,3 +1377,59 @@ fn run_analysis(config: &rew_core::config::RewConfig) -> Result<FullAnalysis, St
 }
 
 // (quick_dir_estimate removed — no longer needed)
+
+// ================================================================
+// Manual snapshot
+// ================================================================
+
+/// Create a manual save point ("手动存档").
+/// Seals the current monitoring window (writing all pending changes to a timeline
+/// entry) and then inserts a dedicated manual-snapshot task so it appears in the
+/// timeline as a distinct, user-created checkpoint.
+#[tauri::command]
+pub async fn create_manual_snapshot(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    use rew_core::types::{Task, TaskStatus};
+
+    let now = chrono::Utc::now();
+
+    // 1. Seal the current monitoring window so pending changes become their own entry.
+    {
+        let mut window_guard = state.fs_window_task.lock().map_err(|e| e.to_string())?;
+        if let Some(ref old_window) = *window_guard {
+            if let Ok(db) = state.db.lock() {
+                let _ = db.update_task_completed_at(&old_window.task_id, now);
+                tracing::info!(
+                    "create_manual_snapshot: sealed monitoring window {}",
+                    &old_window.task_id
+                );
+            }
+        }
+        *window_guard = None;
+    }
+
+    // 2. Create a new manual-snapshot Task row.
+    let task_id = format!("manual_{}", now.format("%m%d%H%M%S%3f"));
+    let task = Task {
+        id: task_id.clone(),
+        prompt: Some("手动存档".to_string()),
+        tool: Some("手动存档".to_string()),
+        started_at: now,
+        completed_at: Some(now),
+        status: TaskStatus::Completed,
+        risk_level: None,
+        summary: Some("用户创建的手动存档点".to_string()),
+    };
+
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.create_task(&task).map_err(|e| e.to_string())?;
+    }
+
+    // 3. Notify the frontend so the timeline refreshes immediately.
+    let _ = app.emit("task-updated", &task_id);
+
+    Ok(task_id)
+}

@@ -25,6 +25,14 @@ export interface ChangeInfo {
   diff_text: string | null;
   lines_added: number;
   lines_removed: number;
+  /** ISO-8601 timestamp when this file was individually restored, or null. */
+  restored_at: string | null;
+}
+
+export interface ChangeDiffResult {
+  diff_text: string | null;
+  lines_added: number;
+  lines_removed: number;
 }
 
 export interface UndoPreviewInfo {
@@ -72,28 +80,55 @@ export interface ScanProgressInfo {
 
 // === API functions ===
 
-export async function listTasks(): Promise<TaskInfo[]> {
-  return invoke<TaskInfo[]>("list_tasks");
+export async function listTasks(dirFilter?: string): Promise<TaskInfo[]> {
+  return invoke<TaskInfo[]>("list_tasks", { dirFilter: dirFilter ?? null });
 }
 
 export async function getTask(taskId: string): Promise<TaskInfo> {
   return invoke<TaskInfo>("get_task", { taskId });
 }
 
-export async function getTaskChanges(taskId: string): Promise<ChangeInfo[]> {
-  return invoke<ChangeInfo[]>("get_task_changes", { taskId });
+export async function getTaskChanges(taskId: string, dirFilter?: string): Promise<ChangeInfo[]> {
+  return invoke<ChangeInfo[]>("get_task_changes", { taskId, dirFilter: dirFilter ?? null });
 }
 
+export async function getChangeDiff(taskId: string, filePath: string): Promise<ChangeDiffResult> {
+  return invoke<ChangeDiffResult>("get_change_diff", { taskId, filePath });
+}
+
+// Rollback (canonical V3 names)
+export async function previewRollback(taskId: string): Promise<UndoPreviewInfo> {
+  return invoke<UndoPreviewInfo>("preview_rollback", { taskId });
+}
+
+export async function rollbackTask(taskId: string): Promise<UndoResultInfo> {
+  return invoke<UndoResultInfo>("rollback_task_cmd", { taskId });
+}
+
+export async function restoreFile(taskId: string, filePath: string): Promise<UndoResultInfo> {
+  return invoke<UndoResultInfo>("restore_file_cmd", { taskId, filePath });
+}
+
+// Legacy aliases (kept so any callers don't break)
 export async function previewUndo(taskId: string): Promise<UndoPreviewInfo> {
-  return invoke<UndoPreviewInfo>("preview_undo", { taskId });
+  return previewRollback(taskId);
 }
 
 export async function undoTask(taskId: string): Promise<UndoResultInfo> {
-  return invoke<UndoResultInfo>("undo_task_cmd", { taskId });
+  return rollbackTask(taskId);
 }
 
 export async function undoFile(taskId: string, filePath: string): Promise<UndoResultInfo> {
-  return invoke<UndoResultInfo>("undo_file_cmd", { taskId, filePath });
+  return restoreFile(taskId, filePath);
+}
+
+// Monitoring window config
+export async function getMonitoringWindow(): Promise<number> {
+  return invoke<number>("get_monitoring_window");
+}
+
+export async function setMonitoringWindow(secs: number): Promise<void> {
+  return invoke("set_monitoring_window", { secs });
 }
 
 export async function getStatus(): Promise<StatusInfo> {
@@ -126,6 +161,42 @@ export async function addWatchDir(dirPath: string): Promise<void> {
 
 export async function removeWatchDir(dirPath: string): Promise<void> {
   return invoke("remove_watch_dir", { dirPath });
+}
+
+export interface DirIgnoreConfigInfo {
+  exclude_dirs: string[];
+  exclude_extensions: string[];
+}
+
+export async function getDirIgnoreConfig(dirPath: string): Promise<DirIgnoreConfigInfo> {
+  return invoke<DirIgnoreConfigInfo>("get_dir_ignore_config", { dirPath });
+}
+
+export async function updateDirIgnoreConfig(
+  dirPath: string,
+  excludeDirs: string[],
+  excludeExtensions: string[],
+): Promise<void> {
+  return invoke("update_dir_ignore_config", { dirPath, excludeDirs, excludeExtensions });
+}
+
+export async function listSubdirs(dirPath: string): Promise<string[]> {
+  return invoke<string[]>("list_subdirs", { dirPath });
+}
+
+export interface DirContentItem {
+  name: string;
+  full_path: string;
+  is_dir: boolean;
+  modified_secs: number;
+}
+
+export async function listDirContents(dirPath: string): Promise<DirContentItem[]> {
+  return invoke<DirContentItem[]>("list_dir_contents", { dirPath });
+}
+
+export async function rescanWatchDir(dirPath: string): Promise<void> {
+  return invoke("rescan_watch_dir", { dirPath });
 }
 
 export interface IgnoreConfigInfo {

@@ -328,4 +328,7 @@ pub struct Change {
     pub lines_added: u32,
     /// Lines removed
     pub lines_removed: u32,
+    /// Set when the user individually restores this file (single-file rollback).
+    /// NULL = not yet restored; non-NULL = timestamp of restoration.
+    pub restored_at: Option<chrono::DateTime<chrono::Utc>>,
 }

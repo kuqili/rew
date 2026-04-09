@@ -37,11 +37,30 @@ impl Default for ProcessorConfig {
     }
 }
 
-/// Key for deduplication: path + event kind.
+/// Key for deduplication: path only.
+///
+/// Same file path within a window = one record, keeping the last-seen state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DeduplicationKey {
     path: PathBuf,
-    kind: FileEventKind,
+}
+
+/// Merge two event kinds for the same file path.
+///
+/// Returns `None` when the pair cancels out (net-zero change):
+///   Created → Deleted  = file appeared and vanished, no user-visible effect
+///
+/// Otherwise returns the resolved kind:
+///   Created  → Modified  = still Created  (new file, content updated)
+///   Deleted  → Created   = Modified       (re-appeared after being gone)
+///   anything → anything  = latest kind wins
+fn merge_kind(old: &FileEventKind, new: &FileEventKind) -> Option<FileEventKind> {
+    match (old, new) {
+        (FileEventKind::Created, FileEventKind::Deleted) => None,
+        (FileEventKind::Created, FileEventKind::Modified) => Some(FileEventKind::Created),
+        (FileEventKind::Deleted, FileEventKind::Created) => Some(FileEventKind::Modified),
+        (_, k) => Some(k.clone()),
+    }
 }
 
 /// Extract the file name from a FileEvent's path as a String.
@@ -207,12 +226,25 @@ impl EventProcessor {
                                 continue;
                             }
 
-                            // Deduplicate: same path + same kind = keep latest
+                            // Deduplicate: same path = one record, merge kinds
                             let key = DeduplicationKey {
                                 path: file_event.path.clone(),
-                                kind: file_event.kind.clone(),
                             };
-                            event_map.insert(key, file_event);
+                            if let Some(existing) = event_map.get(&key) {
+                                match merge_kind(&existing.kind, &file_event.kind) {
+                                    Some(merged_kind) => {
+                                        let mut merged = file_event.clone();
+                                        merged.kind = merged_kind;
+                                        event_map.insert(key, merged);
+                                    }
+                                    None => {
+                                        // Net-zero: Created then Deleted = nothing
+                                        event_map.remove(&key);
+                                    }
+                                }
+                            } else {
+                                event_map.insert(key, file_event);
+                            }
                         }
                         None => {
                             // Channel closed, flush remaining events and exit
@@ -360,7 +392,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_different_events_not_deduped() {
+    async fn test_same_path_different_kind_merges() {
         let config = ProcessorConfig {
             window_duration: Duration::from_millis(200),
             ..Default::default()
@@ -380,7 +412,7 @@ mod tests {
         event_tx
             .send(make_event("/tmp/b.txt", FileEventKind::Created))
             .unwrap();
-        // Same path but different kind
+        // Same path as a.txt but different kind: Created+Modified → Created (merged)
         event_tx
             .send(make_event("/tmp/a.txt", FileEventKind::Modified))
             .unwrap();
@@ -388,9 +420,48 @@ mod tests {
         let result = timeout(Duration::from_secs(2), batch_rx.recv()).await;
         assert!(result.is_ok());
         let (batch, stats) = result.unwrap().unwrap();
-        assert_eq!(batch.events.len(), 3);
+        // a.txt and b.txt → 2 events (a.txt Created+Modified merged to Created)
+        assert_eq!(batch.events.len(), 2);
         assert_eq!(stats.files_added, 2);
+        assert_eq!(stats.files_modified, 0);
+
+        drop(event_tx);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_created_then_deleted_cancels_out() {
+        let config = ProcessorConfig {
+            window_duration: Duration::from_millis(200),
+            ..Default::default()
+        };
+        let processor = EventProcessor::new(config);
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (batch_tx, mut batch_rx) = mpsc::channel(10);
+
+        let handle = tokio::spawn(async move {
+            processor.run(event_rx, batch_tx).await;
+        });
+
+        // temp.sb-xxx: Created then Deleted → net zero, should not appear
+        event_tx
+            .send(make_event("/tmp/file.sb-abc", FileEventKind::Created))
+            .unwrap();
+        event_tx
+            .send(make_event("/tmp/file.sb-abc", FileEventKind::Deleted))
+            .unwrap();
+        // real file: only a Modified
+        event_tx
+            .send(make_event("/tmp/real.txt", FileEventKind::Modified))
+            .unwrap();
+
+        let result = timeout(Duration::from_secs(2), batch_rx.recv()).await;
+        assert!(result.is_ok());
+        let (batch, stats) = result.unwrap().unwrap();
+        // Only real.txt should appear
+        assert_eq!(batch.events.len(), 1);
         assert_eq!(stats.files_modified, 1);
+        assert_eq!(batch.events[0].path.to_string_lossy(), "/tmp/real.txt");
 
         drop(event_tx);
         let _ = handle.await;

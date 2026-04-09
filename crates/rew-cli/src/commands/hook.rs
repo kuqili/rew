@@ -217,12 +217,13 @@ pub fn handle_post_tool() -> RewResult<()> {
             change_type,
             old_hash,
             new_hash,
-            diff_text: None, // TODO: compute diff
+            diff_text: None,
             lines_added: 0,
             lines_removed: 0,
+            restored_at: None,
         };
 
-        db.insert_change(&change)?;
+        db.upsert_change(&change)?;
     }
 
     Ok(())
