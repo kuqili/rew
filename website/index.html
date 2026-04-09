@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>rew — AI 时代的文件安全网</title>
+  <meta name="description" content="rew 实时监控文件变更，AI 每次操作后自动存档。改错了，一键读档回到任意历史状态。支持 Cursor、Claude Code、CodeBuddy。" />
+  <meta property="og:title" content="rew — AI 时代的文件安全网" />
+  <meta property="og:description" content="让 AI 帮你写代码，rew 帮你守护文件。自动存档，随时读档，数据本地，无需账号。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <style>
+    /* ─── Reset & Base ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --blue:       #3b82f6;
+      --blue-dark:  #2563eb;
+      --blue-light: #eff6ff;
+      --hero-bg:    #0b1120;
+      --text:       #1e293b;
+      --text-2:     #475569;
+      --text-3:     #94a3b8;
+      --border:     #e2e8f0;
+      --bg:         #ffffff;
+      --bg-2:       #f8fafc;
+      --green:      #22c55e;
+      --green-bg:   #f0fdf4;
+      --red:        #ef4444;
+      --red-bg:     #fef2f2;
+      --radius:     12px;
+      --shadow:     0 1px 3px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.08);
+      --shadow-lg:  0 4px 6px rgba(0,0,0,.04), 0 20px 40px rgba(0,0,0,.12);
+    }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+    a { color: inherit; text-decoration: none; }
+    img, svg { display: block; max-width: 100%; }
+
+    /* ─── Utilities ────────────────────────────────────────── */
+    .container { max-width: 1140px; margin: 0 auto; padding: 0 24px; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 12px; border-radius: 100px;
+      font-size: 12px; font-weight: 500; letter-spacing: .02em;
+    }
+    .btn {
+      display: inline-flex; align-items: center; gap-8px; gap: 8px;
+      padding: 12px 24px; border-radius: 8px;
+      font-size: 15px; font-weight: 600; cursor: pointer;
+      border: none; transition: all .18s ease; white-space: nowrap;
+    }
+    .btn-primary {
+      background: var(--blue); color: #fff;
+      box-shadow: 0 0 0 0 rgba(59,130,246,.4);
+    }
+    .btn-primary:hover { background: var(--blue-dark); transform: translateY(-1px); box-shadow: 0 4px 20px rgba(59,130,246,.35); }
+    .btn-ghost {
+      background: transparent; color: var(--text-3);
+      border: 1.5px dashed #334155;
+    }
+    .btn-ghost:hover { border-color: var(--blue); color: var(--blue); }
+    .section-label {
+      font-size: 12px; font-weight: 600; letter-spacing: .12em;
+      text-transform: uppercase; color: var(--blue);
+    }
+    .section-title {
+      font-size: clamp(28px, 4vw, 40px); font-weight: 800;
+      line-height: 1.2; color: var(--text);
+    }
+    .section-sub {
+      font-size: 17px; color: var(--text-2); line-height: 1.7;
+      max-width: 600px;
+    }
+
+    /* scroll-reveal */
+    .reveal { opacity: 0; transform: translateY(28px); transition: opacity .6s ease, transform .6s ease; }
+    .reveal.visible { opacity: 1; transform: none; }
+    .reveal-delay-1 { transition-delay: .1s; }
+    .reveal-delay-2 { transition-delay: .2s; }
+    .reveal-delay-3 { transition-delay: .3s; }
+    .reveal-delay-4 { transition-delay: .4s; }
+    .reveal-delay-5 { transition-delay: .5s; }
+
+    /* ─── Nav ──────────────────────────────────────────────── */
+    #nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      transition: background .25s, border-color .25s, backdrop-filter .25s;
+      border-bottom: 1px solid transparent;
+    }
+    #nav.scrolled {
+      background: rgba(11,17,32,.85);
+      backdrop-filter: blur(16px) saturate(1.8);
+      border-color: rgba(255,255,255,.08);
+    }
+    .nav-inner {
+      display: flex; align-items: center; justify-content: space-between;
+      height: 64px;
+    }
+    .nav-logo {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .nav-logo-mark {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; font-weight: 900; color: #fff; letter-spacing: -.02em;
+    }
+    .nav-logo-name {
+      font-size: 18px; font-weight: 800; color: #fff; letter-spacing: -.02em;
+    }
+    .nav-logo-tag {
+      font-size: 12px; color: rgba(255,255,255,.4); font-weight: 400;
+      display: none;
+    }
+    @media (min-width: 640px) { .nav-logo-tag { display: block; } }
+    .nav-right { display: flex; align-items: center; gap: 12px; }
+    .nav-link { font-size: 14px; color: rgba(255,255,255,.6); font-weight: 500; transition: color .15s; }
+    .nav-link:hover { color: #fff; }
+    .nav-cta { padding: 8px 18px; font-size: 14px; }
+
+    /* ─── Hero ─────────────────────────────────────────────── */
+    #hero {
+      background: var(--hero-bg);
+      padding: 140px 0 0;
+      overflow: hidden;
+      position: relative;
+    }
+    .hero-glow {
+      position: absolute; top: -120px; left: 50%; transform: translateX(-50%);
+      width: 900px; height: 600px; pointer-events: none;
+      background: radial-gradient(ellipse at 50% 0%, rgba(59,130,246,.18) 0%, rgba(99,102,241,.1) 40%, transparent 70%);
+    }
+    .hero-content { text-align: center; position: relative; z-index: 2; }
+    .hero-eyebrow {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 14px; border-radius: 100px;
+      background: rgba(59,130,246,.12); border: 1px solid rgba(59,130,246,.25);
+      font-size: 13px; font-weight: 500; color: #93c5fd;
+      margin-bottom: 28px;
+    }
+    .hero-eyebrow-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: #60a5fa; animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .4; }
+    }
+    .hero-title {
+      font-size: clamp(36px, 6vw, 68px); font-weight: 900;
+      line-height: 1.1; color: #fff; letter-spacing: -.03em;
+      margin-bottom: 24px;
+    }
+    .hero-title em {
+      font-style: normal;
+      background: linear-gradient(90deg, #60a5fa 0%, #a78bfa 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero-sub {
+      font-size: clamp(16px, 2vw, 19px); color: rgba(255,255,255,.55);
+      line-height: 1.7; max-width: 580px; margin: 0 auto 36px;
+    }
+    .hero-badges {
+      display: flex; flex-wrap: wrap; justify-content: center;
+      gap: 10px; margin-bottom: 36px;
+    }
+    .hero-badge {
+      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+      color: rgba(255,255,255,.7); border-radius: 100px;
+      padding: 5px 14px; font-size: 13px; font-weight: 500;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .hero-badge-icon { font-size: 14px; }
+    .hero-ctas { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-bottom: 72px; }
+    .hero-cta-primary {
+      padding: 14px 28px; font-size: 16px;
+      background: var(--blue); color: #fff;
+      border-radius: 10px; font-weight: 700;
+      display: flex; align-items: center; gap: 8px;
+      transition: all .18s; border: none; cursor: pointer;
+      box-shadow: 0 0 40px rgba(59,130,246,.3);
+    }
+    .hero-cta-primary:hover { background: var(--blue-dark); transform: translateY(-2px); box-shadow: 0 8px 40px rgba(59,130,246,.45); }
+    .hero-cta-secondary {
+      padding: 14px 28px; font-size: 16px;
+      background: transparent; color: rgba(255,255,255,.5);
+      border: 1.5px dashed rgba(255,255,255,.2);
+      border-radius: 10px; font-weight: 600;
+      display: flex; align-items: center; gap: 8px;
+      transition: all .18s; cursor: default;
+    }
+
+    /* MacBook mockup */
+    .hero-mockup {
+      position: relative; z-index: 2;
+      max-width: 900px; margin: 0 auto;
+    }
+    .mockup-wrapper {
+      position: relative;
+      background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+      border-radius: 16px 16px 0 0;
+      border: 1px solid rgba(255,255,255,.1);
+      border-bottom: none;
+      overflow: hidden;
+    }
+    .mockup-bar {
+      height: 32px; background: #1e2940;
+      display: flex; align-items: center; padding: 0 16px; gap: 6px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+    .mockup-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+    }
+    .mockup-dot.red   { background: #ff5f57; }
+    .mockup-dot.yellow{ background: #febc2e; }
+    .mockup-dot.green { background: #28c840; }
+    .mockup-screen {
+      height: 480px; overflow: hidden;
+      background: linear-gradient(160deg, #0f1d35 0%, #0b1628 40%, #0f172a 100%);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .mockup-placeholder {
+      text-align: center; color: rgba(255,255,255,.15);
+      font-size: 14px; padding: 40px;
+      display: flex; flex-direction: column; align-items: center; gap: 16px;
+    }
+    .mockup-placeholder svg { opacity: .25; }
+
+    /* Inline app UI mockup */
+    .app-ui {
+      width: 100%; height: 100%; display: flex; font-family: inherit;
+    }
+    .app-sidebar {
+      width: 180px; flex-shrink: 0;
+      background: #111827; border-right: 1px solid rgba(255,255,255,.05);
+      padding: 16px 0;
+    }
+    .app-sidebar-label {
+      font-size: 9px; font-weight: 700; letter-spacing: .1em;
+      color: rgba(255,255,255,.25); padding: 0 16px; margin-bottom: 8px;
+    }
+    .app-sidebar-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 16px; font-size: 12px; color: rgba(255,255,255,.5);
+      cursor: pointer; transition: background .15s;
+    }
+    .app-sidebar-item.active {
+      background: rgba(59,130,246,.15); color: #93c5fd;
+    }
+    .app-sidebar-dir {
+      padding: 4px 16px; font-size: 10px; color: rgba(255,255,255,.3);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .app-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .app-tabs {
+      display: flex; align-items: center; gap: 0;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      background: #111827; padding: 0 16px; height: 36px;
+    }
+    .app-tab {
+      padding: 0 14px; height: 100%; display: flex; align-items: center;
+      font-size: 11px; color: rgba(255,255,255,.35);
+      border-bottom: 2px solid transparent;
+    }
+    .app-tab.active { color: #60a5fa; border-color: #60a5fa; }
+    .app-timeline { flex: 1; overflow: hidden; }
+    .app-row {
+      display: flex; align-items: center;
+      padding: 8px 16px; gap: 12px;
+      border-bottom: 1px solid rgba(255,255,255,.04);
+      transition: background .1s;
+    }
+    .app-row.selected { background: rgba(59,130,246,.08); }
+    .app-row-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: rgba(255,255,255,.15); flex-shrink: 0;
+    }
+    .app-row.selected .app-row-dot { background: #60a5fa; }
+    .app-row-label { flex: 1; font-size: 11px; color: rgba(255,255,255,.4); }
+    .app-row.selected .app-row-label { color: rgba(255,255,255,.8); }
+    .app-row-files { font-size: 10px; color: rgba(255,255,255,.25); }
+    .app-row-time { font-size: 10px; color: rgba(255,255,255,.2); min-width: 80px; text-align: right; }
+    .app-header-row {
+      display: flex; background: #0d1525;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      padding: 6px 16px; font-size: 9px; font-weight: 600;
+      letter-spacing: .06em; color: rgba(255,255,255,.2);
+    }
+    .app-detail {
+      height: 200px; display: flex;
+      border-top: 1px solid rgba(255,255,255,.06);
+    }
+    .app-detail-files {
+      width: 220px; border-right: 1px solid rgba(255,255,255,.06);
+      overflow: hidden;
+    }
+    .app-detail-header {
+      padding: 8px 12px; font-size: 9px; font-weight: 700;
+      letter-spacing: .08em; color: rgba(255,255,255,.2);
+      border-bottom: 1px solid rgba(255,255,255,.04);
+      background: #0d1525;
+    }
+    .app-file-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; border-bottom: 1px solid rgba(255,255,255,.03);
+    }
+    .app-file-badge {
+      width: 14px; height: 14px; border-radius: 3px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 8px; font-weight: 800; flex-shrink: 0;
+    }
+    .badge-m { background: rgba(234,179,8,.15); color: #eab308; }
+    .badge-a { background: rgba(34,197,94,.15); color: #22c55e; }
+    .badge-d { background: rgba(239,68,68,.15); color: #ef4444; }
+    .app-file-name { font-size: 10px; color: rgba(255,255,255,.5); font-family: monospace; flex:1; truncate: clip; overflow: hidden; }
+    .app-file-restore {
+      font-size: 8px; color: rgba(255,255,255,.2);
+      border: 1px solid rgba(255,255,255,.1); border-radius: 4px;
+      padding: 1px 5px;
+    }
+    .app-diff { flex: 1; overflow: hidden; padding: 12px; font-family: monospace; font-size: 10px; }
+    .diff-add { color: #4ade80; background: rgba(34,197,94,.06); display: block; padding: 1px 4px; border-radius: 2px; }
+    .diff-del { color: #f87171; background: rgba(239,68,68,.06); display: block; padding: 1px 4px; border-radius: 2px; }
+    .diff-ctx { color: rgba(255,255,255,.2); display: block; padding: 1px 4px; }
+    .diff-hunk { color: rgba(99,102,241,.7); display: block; padding: 1px 4px; }
+
+    /* ─── Integration Strip ─────────────────────────────────── */
+    #integration {
+      background: var(--bg-2); border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border); padding: 40px 0;
+    }
+    .integration-label {
+      text-align: center; font-size: 13px; font-weight: 500;
+      color: var(--text-3); margin-bottom: 24px; letter-spacing: .04em;
+    }
+    .integration-logos {
+      display: flex; align-items: center; justify-content: center;
+      flex-wrap: wrap; gap: 12px;
+    }
+    .tool-badge {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 20px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--bg);
+      font-size: 14px; font-weight: 600; color: var(--text-2);
+      transition: all .18s;
+    }
+    .tool-badge:hover { border-color: var(--blue); color: var(--text); box-shadow: var(--shadow); }
+    .tool-badge-icon {
+      width: 24px; height: 24px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+    }
+    .tool-coming {
+      font-size: 12px; color: var(--text-3); font-weight: 500;
+      padding: 10px 20px; border-radius: 10px;
+      border: 1.5px dashed var(--border);
+    }
+
+    /* ─── Pain Point ─────────────────────────────────────────── */
+    #pain {
+      padding: 100px 0;
+    }
+    .pain-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 48px;
+      align-items: start; margin-top: 56px;
+    }
+    @media (max-width: 768px) { .pain-grid { grid-template-columns: 1fr; gap: 32px; } }
+    .pain-col-title {
+      font-size: 13px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; margin-bottom: 20px;
+    }
+    .pain-col-title.red { color: var(--red); }
+    .pain-col-title.green { color: var(--green); }
+    .pain-card {
+      border-radius: 10px; padding: 18px 20px;
+      margin-bottom: 12px; display: flex; align-items: flex-start; gap: 14px;
+    }
+    .pain-card.red { background: var(--red-bg); border: 1px solid rgba(239,68,68,.12); }
+    .pain-card.green { background: var(--green-bg); border: 1px solid rgba(34,197,94,.15); }
+    .pain-card-icon { font-size: 18px; flex-shrink: 0; margin-top: 2px; }
+    .pain-card-text { font-size: 14px; line-height: 1.6; }
+    .pain-card-text strong { display: block; font-weight: 600; margin-bottom: 2px; font-size: 14px; }
+    .pain-card.red .pain-card-text strong { color: #b91c1c; }
+    .pain-card.green .pain-card-text strong { color: #15803d; }
+    .pain-card .pain-card-text p { color: var(--text-2); font-size: 13px; }
+
+    /* ─── How It Works ──────────────────────────────────────── */
+    #how {
+      padding: 100px 0; background: var(--bg-2);
+    }
+    .how-header { text-align: center; margin-bottom: 64px; }
+    .how-header .section-sub { margin: 16px auto 0; }
+    .how-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px;
+    }
+    @media (max-width: 768px) { .how-grid { grid-template-columns: 1fr; gap: 24px; } }
+    .how-card {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 32px 28px;
+      position: relative; box-shadow: var(--shadow);
+      transition: transform .2s, box-shadow .2s;
+    }
+    .how-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
+    .how-num {
+      font-size: 48px; font-weight: 900; color: var(--blue);
+      opacity: .12; line-height: 1; margin-bottom: 16px;
+      letter-spacing: -.04em;
+    }
+    .how-icon {
+      width: 44px; height: 44px; border-radius: 10px;
+      background: var(--blue-light); display: flex; align-items: center; justify-content: center;
+      font-size: 22px; margin-bottom: 16px;
+    }
+    .how-title { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
+    .how-desc { font-size: 14px; color: var(--text-2); line-height: 1.65; }
+
+    /* ─── Features ──────────────────────────────────────────── */
+    #features { padding: 100px 0; }
+    .features-header { text-align: center; margin-bottom: 56px; }
+    .features-header .section-sub { margin: 16px auto 0; }
+    .features-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px;
+    }
+    @media (max-width: 900px) { .features-grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 600px) { .features-grid { grid-template-columns: 1fr; } }
+    .feat-card {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 28px 24px;
+      transition: transform .2s, box-shadow .2s, border-color .2s;
+    }
+    .feat-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: rgba(59,130,246,.2); }
+    .feat-icon {
+      width: 40px; height: 40px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; margin-bottom: 14px;
+    }
+    .feat-title { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+    .feat-desc { font-size: 13px; color: var(--text-2); line-height: 1.65; }
+
+    /* ─── Demo ──────────────────────────────────────────────── */
+    #demo { padding: 100px 0; background: var(--bg-2); }
+    .demo-header { text-align: center; margin-bottom: 48px; }
+    .demo-header .section-sub { margin: 16px auto 0; }
+    .demo-frame {
+      border-radius: 16px; overflow: hidden;
+      background: linear-gradient(135deg, #1e2d4a 0%, #0f1e38 50%, #0b1628 100%);
+      border: 1px solid rgba(255,255,255,.08);
+      box-shadow: 0 40px 80px rgba(0,0,0,.3);
+      aspect-ratio: 16/9; max-width: 960px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: center;
+      position: relative; cursor: pointer;
+    }
+    .demo-frame::before {
+      content: ""; position: absolute; inset: 0;
+      background: radial-gradient(circle at 50% 50%, rgba(59,130,246,.08) 0%, transparent 70%);
+    }
+    .demo-play {
+      width: 72px; height: 72px; border-radius: 50%;
+      background: rgba(255,255,255,.1); backdrop-filter: blur(8px);
+      border: 1.5px solid rgba(255,255,255,.2);
+      display: flex; align-items: center; justify-content: center;
+      transition: all .2s; z-index: 1;
+    }
+    .demo-frame:hover .demo-play { background: rgba(59,130,246,.4); transform: scale(1.1); }
+    .demo-play svg { width: 28px; height: 28px; fill: #fff; margin-left: 4px; }
+    .demo-caption {
+      text-align: center; margin-top: 16px;
+      font-size: 13px; color: var(--text-3);
+    }
+    .demo-placeholder-label {
+      position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+      font-size: 12px; color: rgba(255,255,255,.2); white-space: nowrap;
+    }
+
+    /* ─── Download ──────────────────────────────────────────── */
+    #download {
+      padding: 100px 0;
+      background: linear-gradient(180deg, #fff 0%, #f0f7ff 100%);
+    }
+    .download-header { text-align: center; margin-bottom: 56px; }
+    .download-header .section-sub { margin: 16px auto 0; }
+    .download-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 28px;
+      max-width: 720px; margin: 0 auto;
+    }
+    @media (max-width: 640px) { .download-grid { grid-template-columns: 1fr; } }
+    .dl-card {
+      border-radius: var(--radius); padding: 36px 32px;
+      text-align: center; border: 1.5px solid var(--border);
+    }
+    .dl-card.primary {
+      background: #fff; border-color: rgba(59,130,246,.3);
+      box-shadow: 0 0 0 4px rgba(59,130,246,.06), var(--shadow-lg);
+    }
+    .dl-card.secondary { background: var(--bg-2); border-style: dashed; }
+    .dl-card-icon { font-size: 40px; margin-bottom: 16px; }
+    .dl-card-title { font-size: 20px; font-weight: 800; margin-bottom: 8px; }
+    .dl-card.secondary .dl-card-title { color: var(--text-3); }
+    .dl-card-sub { font-size: 13px; color: var(--text-3); margin-bottom: 24px; }
+    .dl-btn {
+      width: 100%; padding: 13px; border-radius: 9px;
+      font-size: 15px; font-weight: 700; cursor: pointer; border: none;
+      transition: all .18s;
+    }
+    .dl-btn.primary {
+      background: var(--blue); color: #fff;
+      box-shadow: 0 4px 20px rgba(59,130,246,.3);
+    }
+    .dl-btn.primary:hover { background: var(--blue-dark); transform: translateY(-1px); box-shadow: 0 8px 28px rgba(59,130,246,.4); }
+    .dl-btn.secondary {
+      background: var(--bg); color: var(--text-3);
+      border: 1.5px solid var(--border); cursor: not-allowed;
+    }
+    .dl-meta { margin-top: 14px; font-size: 12px; color: var(--text-3); line-height: 1.6; }
+    .dl-meta a { color: var(--blue); text-decoration: underline; text-decoration-color: rgba(59,130,246,.3); }
+    .dl-meta a:hover { text-decoration-color: var(--blue); }
+    .win-email {
+      margin-top: 16px; display: flex; gap: 8px;
+    }
+    .win-email input {
+      flex: 1; padding: 9px 12px; border-radius: 7px;
+      border: 1px solid var(--border); font-size: 13px;
+      background: #fff; color: var(--text); outline: none;
+    }
+    .win-email input:focus { border-color: var(--blue); }
+    .win-email button {
+      padding: 9px 14px; border-radius: 7px; border: none;
+      background: var(--text); color: #fff;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      transition: background .15s;
+    }
+    .win-email button:hover { background: #334155; }
+    .win-note { font-size: 11px; color: var(--text-3); margin-top: 8px; }
+
+    /* Gatekeeper note */
+    .gk-note {
+      max-width: 560px; margin: 32px auto 0;
+      background: var(--bg-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px 20px;
+      font-size: 13px; color: var(--text-2); line-height: 1.65;
+    }
+    .gk-note strong { color: var(--text); }
+    .gk-steps { margin-top: 8px; padding-left: 16px; }
+    .gk-steps li { margin-bottom: 4px; }
+
+    /* ─── Footer ─────────────────────────────────────────────── */
+    #footer {
+      background: var(--hero-bg); padding: 56px 0 40px;
+      border-top: 1px solid rgba(255,255,255,.05);
+    }
+    .footer-inner {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      flex-wrap: wrap; gap: 32px;
+    }
+    .footer-brand .nav-logo-name { font-size: 20px; }
+    .footer-tagline {
+      font-size: 13px; color: rgba(255,255,255,.3); margin-top: 8px;
+    }
+    .footer-links { display: flex; gap: 24px; }
+    .footer-link { font-size: 14px; color: rgba(255,255,255,.4); transition: color .15s; }
+    .footer-link:hover { color: rgba(255,255,255,.8); }
+    .footer-bottom {
+      margin-top: 48px; padding-top: 24px;
+      border-top: 1px solid rgba(255,255,255,.05);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px;
+    }
+    .footer-copy { font-size: 13px; color: rgba(255,255,255,.2); }
+    .footer-heart { color: rgba(239,68,68,.6); }
+
+    /* ─── Responsive extras ─────────────────────────────────── */
+    @media (max-width: 768px) {
+      #hero { padding: 110px 0 0; }
+      .hero-title { font-size: 36px; }
+      .hero-sub { font-size: 15px; }
+      .how-num { font-size: 36px; }
+      .mockup-screen { height: 280px; }
+      .app-sidebar { width: 120px; }
+      .nav-logo-name { font-size: 16px; }
+      .footer-inner { flex-direction: column; }
+      .footer-bottom { flex-direction: column; text-align: center; }
+    }
+    @media (max-width: 480px) {
+      .container { padding: 0 16px; }
+      .hero-ctas { flex-direction: column; align-items: center; }
+      .hero-cta-primary, .hero-cta-secondary { width: 100%; max-width: 300px; justify-content: center; }
+      .download-grid { max-width: 100%; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ─── Nav ──────────────────────────────────────────────────── -->
+<nav id="nav">
+  <div class="container nav-inner">
+    <a href="#" class="nav-logo">
+      <div class="nav-logo-mark">r</div>
+      <span class="nav-logo-name">rew</span>
+      <span class="nav-logo-tag">/ AI 时代的文件安全网</span>
+    </a>
+    <div class="nav-right">
+      <a href="#features" class="nav-link" style="display:none" id="nav-features-link">功能</a>
+      <a href="#download" class="btn btn-primary nav-cta">免费下载</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ─── Hero ─────────────────────────────────────────────────── -->
+<section id="hero">
+  <div class="hero-glow"></div>
+  <div class="container">
+    <div class="hero-content">
+
+      <div class="hero-eyebrow reveal">
+        <div class="hero-eyebrow-dot"></div>
+        适用于 AI 编程时代的文件守护工具
+      </div>
+
+      <h1 class="hero-title reveal reveal-delay-1">
+        AI 正在改你的文件<br/>
+        <em>你知道它改了什么吗？</em>
+      </h1>
+
+      <p class="hero-sub reveal reveal-delay-2">
+        rew 实时监控文件变更，AI 每次操作后自动存档。<br/>
+        改错了，一键读档回到任意历史状态。
+      </p>
+
+      <div class="hero-badges reveal reveal-delay-3">
+        <span class="hero-badge">
+          <span class="hero-badge-icon">🔒</span> 无需账号
+        </span>
+        <span class="hero-badge">
+          <span class="hero-badge-icon">💾</span> 数据不出本机
+        </span>
+        <span class="hero-badge">
+          <span class="hero-badge-icon">⚡</span> 零额外磁盘占用
+        </span>
+        <span class="hero-badge">
+          <span class="hero-badge-icon">🆓</span> 完全免费
+        </span>
+      </div>
+
+      <div class="hero-ctas reveal reveal-delay-4">
+        <a href="#download" class="hero-cta-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M12 17l-7-7h4V3h6v7h4l-7 7zM3 21h18"/>
+          </svg>
+          下载 for macOS
+        </a>
+        <div class="hero-cta-secondary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M3 5.75A2.75 2.75 0 015.75 3h12.5A2.75 2.75 0 0121 5.75v12.5A2.75 2.75 0 0118.25 21H5.75A2.75 2.75 0 013 18.25V5.75z"/>
+          </svg>
+          Windows · 即将到来
+        </div>
+      </div>
+    </div>
+
+    <!-- MacBook Mockup with inline app UI -->
+    <div class="hero-mockup reveal reveal-delay-5">
+      <div class="mockup-wrapper">
+        <div class="mockup-bar">
+          <div class="mockup-dot red"></div>
+          <div class="mockup-dot yellow"></div>
+          <div class="mockup-dot green"></div>
+        </div>
+        <div class="mockup-screen">
+          <div class="app-ui">
+            <!-- Sidebar -->
+            <div class="app-sidebar">
+              <div class="app-sidebar-label">WORKSPACE</div>
+              <div class="app-sidebar-item active">
+                <span>🕐</span> 存档
+              </div>
+              <div style="height:16px"></div>
+              <div class="app-sidebar-label">保护状态</div>
+              <div class="app-sidebar-item">
+                <span style="font-size:10px">🛡️</span>
+                <span>保护中</span>
+                <span style="width:6px;height:6px;border-radius:50%;background:#22c55e;margin-left:auto"></span>
+              </div>
+              <div style="height:16px"></div>
+              <div class="app-sidebar-label">保护目录</div>
+              <div class="app-sidebar-dir">
+                <span>✓</span> Desktop
+              </div>
+              <div class="app-sidebar-dir">
+                <span>✓</span> Documents
+              </div>
+              <div class="app-sidebar-dir">
+                <span>✓</span> Downloads
+              </div>
+            </div>
+            <!-- Main -->
+            <div class="app-main">
+              <div class="app-tabs">
+                <div class="app-tab active">定时存档 (12)</div>
+                <div class="app-tab">AI 任务</div>
+                <div style="flex:1"></div>
+                <div style="font-size:10px;color:rgba(255,255,255,.2);display:flex;align-items:center;gap:4px">
+                  <span>时间筛选</span>
+                  <span style="opacity:.5">· 今天 ▾</span>
+                </div>
+              </div>
+              <div class="app-header-row" style="gap:0">
+                <span style="width:48px;text-align:center">图表</span>
+                <span style="flex:1;padding-left:12px">描述</span>
+                <span style="width:80px;text-align:right">文件</span>
+                <span style="width:130px;text-align:right">时间</span>
+              </div>
+              <div class="app-timeline">
+                <div class="app-row selected">
+                  <div class="app-row-dot"></div>
+                  <div class="app-row-label">16:20 存档</div>
+                  <div class="app-row-files">22 文件</div>
+                  <div class="app-row-time">2026-04-09 16:20</div>
+                </div>
+                <div class="app-row">
+                  <div class="app-row-dot"></div>
+                  <div class="app-row-label">15:20 存档</div>
+                  <div class="app-row-files">31 文件</div>
+                  <div class="app-row-time">2026-04-09 15:20</div>
+                </div>
+                <div class="app-row">
+                  <div class="app-row-dot"></div>
+                  <div class="app-row-label">14:20 存档</div>
+                  <div class="app-row-files">28 文件</div>
+                  <div class="app-row-time">2026-04-09 14:20</div>
+                </div>
+                <div class="app-row">
+                  <div class="app-row-dot"></div>
+                  <div class="app-row-label">13:20 存档</div>
+                  <div class="app-row-files">15 文件</div>
+                  <div class="app-row-time">2026-04-09 13:20</div>
+                </div>
+              </div>
+              <!-- Detail pane -->
+              <div class="app-detail">
+                <div class="app-detail-files">
+                  <div class="app-detail-header">变更文件 (22)</div>
+                  <div class="app-file-row">
+                    <div class="app-file-badge badge-m">M</div>
+                    <div class="app-file-name">commands.rs</div>
+                    <div style="font-size:9px;color:#4ade80">+18</div>
+                    <div class="app-file-restore">↩ 读档</div>
+                  </div>
+                  <div class="app-file-row">
+                    <div class="app-file-badge badge-m">M</div>
+                    <div class="app-file-name">TaskTimeline.tsx</div>
+                    <div style="font-size:9px;color:#f87171">-24</div>
+                    <div class="app-file-restore">↩ 读档</div>
+                  </div>
+                  <div class="app-file-row">
+                    <div class="app-file-badge badge-a">A</div>
+                    <div class="app-file-name">DiffViewer.tsx</div>
+                    <div style="font-size:9px;color:#4ade80">+153</div>
+                    <div class="app-file-restore">↩ 读档</div>
+                  </div>
+                  <div class="app-file-row">
+                    <div class="app-file-badge badge-d">D</div>
+                    <div class="app-file-name">legacy.rs</div>
+                    <div style="font-size:9px;color:#f87171">-88</div>
+                    <div style="font-size:8px;color:rgba(255,255,255,.15)">已删除</div>
+                  </div>
+                </div>
+                <div class="app-diff">
+                  <span class="diff-hunk">@@ -288,10 +288,14 @@</span>
+                  <span class="diff-ctx">  let window_secs = state.config</span>
+                  <span class="diff-ctx">    .lock()</span>
+                  <span class="diff-del">-   .map(|c| c.monitoring_window_secs)</span>
+                  <span class="diff-add">+   .map(|c| c.monitoring_window_secs)</span>
+                  <span class="diff-add">+   .unwrap_or(600);</span>
+                  <span class="diff-ctx"> </span>
+                  <span class="diff-add">+ // Seal exactly at started_at + window_secs</span>
+                  <span class="diff-add">+ let seal_time = w.started_at</span>
+                  <span class="diff-add">+     + Duration::seconds(window_secs as i64);</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Integration Strip ──────────────────────────────────────── -->
+<section id="integration">
+  <div class="container">
+    <p class="integration-label reveal">无缝集成你正在使用的 AI 编程工具</p>
+    <div class="integration-logos reveal reveal-delay-1">
+      <div class="tool-badge">
+        <div class="tool-badge-icon" style="background:#fef3c7;color:#d97706">✦</div>
+        Claude Code
+      </div>
+      <div class="tool-badge">
+        <div class="tool-badge-icon" style="background:#ede9fe;color:#7c3aed">⌶</div>
+        Cursor
+      </div>
+      <div class="tool-badge">
+        <div class="tool-badge-icon" style="background:#dbeafe;color:#2563eb">◈</div>
+        CodeBuddy
+      </div>
+      <div class="tool-badge">
+        <div class="tool-badge-icon" style="background:#f0fdf4;color:#16a34a">✦</div>
+        Windsurf
+      </div>
+      <span class="tool-coming">更多 AI 工具持续接入 →</span>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Pain Point ─────────────────────────────────────────────── -->
+<section id="pain">
+  <div class="container">
+    <div style="text-align:center;margin-bottom:16px">
+      <span class="section-label reveal">为什么需要 rew</span>
+    </div>
+    <h2 class="section-title reveal reveal-delay-1" style="text-align:center">
+      AI 写代码很强，但它也会出错
+    </h2>
+    <p class="section-sub reveal reveal-delay-2" style="margin:16px auto 0;text-align:center">
+      让 AI 帮你改代码，你需要一张安全网——不是靠记忆，而是靠系统。
+    </p>
+
+    <div class="pain-grid">
+      <!-- Pain -->
+      <div class="reveal reveal-delay-2">
+        <div class="pain-col-title red">没有 rew 时</div>
+
+        <div class="pain-card red">
+          <div class="pain-card-icon">😱</div>
+          <div class="pain-card-text">
+            <strong>批量文件被意外修改或删除</strong>
+            <p>AI Agent 重构了 30 个文件，其中 3 个关键配置被清空，回滚不知道从哪里下手。</p>
+          </div>
+        </div>
+
+        <div class="pain-card red">
+          <div class="pain-card-icon">🔁</div>
+          <div class="pain-card-text">
+            <strong>Ctrl+Z 已经不够用了</strong>
+            <p>Cursor Agent 跑完，IDE 历史记录早就被覆盖，只能盯着屏幕后悔。</p>
+          </div>
+        </div>
+
+        <div class="pain-card red">
+          <div class="pain-card-icon">🙈</div>
+          <div class="pain-card-text">
+            <strong>根本不知道 AI 改了哪里</strong>
+            <p>项目没有用 Git，AI 改完一堆文件，完全看不清改动了什么，更不知道出错在哪。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Solution -->
+      <div class="reveal reveal-delay-3">
+        <div class="pain-col-title green">有了 rew 之后</div>
+
+        <div class="pain-card green">
+          <div class="pain-card-icon">✅</div>
+          <div class="pain-card-text">
+            <strong>任意存档点，一键还原</strong>
+            <p>rew 自动记录每次 AI 任务前的文件状态，出错时选择对应存档点，批量还原不超过 5 秒。</p>
+          </div>
+        </div>
+
+        <div class="pain-card green">
+          <div class="pain-card-icon">⏪</div>
+          <div class="pain-card-text">
+            <strong>时间线任意回退，不限次数</strong>
+            <p>像游戏存档点一样，可以回到任意历史状态，操作不限次数，不怕「读档太晚」。</p>
+          </div>
+        </div>
+
+        <div class="pain-card green">
+          <div class="pain-card-icon">🔍</div>
+          <div class="pain-card-text">
+            <strong>完整 Diff，清楚看见每一处改动</strong>
+            <p>每个存档点都有详细 Diff，文件级别查看增删行，彻底搞清楚 AI 改了什么。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── How It Works ───────────────────────────────────────────── -->
+<section id="how">
+  <div class="container">
+    <div class="how-header">
+      <span class="section-label reveal">工作原理</span>
+      <h2 class="section-title reveal reveal-delay-1" style="margin-top:12px">三步，开箱即用</h2>
+      <p class="section-sub reveal reveal-delay-2">
+        无需配置服务器，无需账号注册，安装即用，后台静默运行。
+      </p>
+    </div>
+    <div class="how-grid">
+      <div class="how-card reveal reveal-delay-1">
+        <div class="how-num">01</div>
+        <div class="how-icon">📁</div>
+        <div class="how-title">选择保护目录</div>
+        <div class="how-desc">
+          告诉 rew 你想守护哪些文件夹，rew 自动全量扫描、建立基线，只需 30 秒完成初始化。
+        </div>
+      </div>
+      <div class="how-card reveal reveal-delay-2">
+        <div class="how-num">02</div>
+        <div class="how-icon">⚡</div>
+        <div class="how-title">自动存档，无感运行</div>
+        <div class="how-desc">
+          每隔设定时间（5 分钟到 1 小时）自动存档一次。AI 任务完成后也会独立留档，附带完整 Diff。全程后台运行，不打扰你工作。
+        </div>
+      </div>
+      <div class="how-card reveal reveal-delay-3">
+        <div class="how-num">03</div>
+        <div class="how-icon">↩️</div>
+        <div class="how-title">随时读档，一键还原</div>
+        <div class="how-desc">
+          发现问题，打开 rew 时间线，选择想要回到的存档点。支持整批还原或单文件读档，操作不限次数。
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Features ──────────────────────────────────────────────── -->
+<section id="features">
+  <div class="container">
+    <div class="features-header">
+      <span class="section-label reveal">核心功能</span>
+      <h2 class="section-title reveal reveal-delay-1" style="margin-top:12px">
+        为 AI 时代的开发者而生
+      </h2>
+      <p class="section-sub reveal reveal-delay-2">
+        rew 不是传统备份工具，也不是 Git 替代品——它是专为「AI 在改你的文件」这件事设计的安全网。
+      </p>
+    </div>
+    <div class="features-grid">
+
+      <div class="feat-card reveal reveal-delay-1">
+        <div class="feat-icon" style="background:#eff6ff">⏰</div>
+        <div class="feat-title">定时自动存档</div>
+        <div class="feat-desc">
+          每 5 / 10 / 30 分钟或 1 小时自动存一个档，存档点精准封存，误差小于 10 秒，无需手动触发。
+        </div>
+      </div>
+
+      <div class="feat-card reveal reveal-delay-2">
+        <div class="feat-icon" style="background:#fef9c3">🤖</div>
+        <div class="feat-title">AI 任务感知</div>
+        <div class="feat-desc">
+          与 Cursor、Claude Code、CodeBuddy 深度集成，每次 AI 任务完成后自动留档，与定时存档互不干扰。
+        </div>
+      </div>
+
+      <div class="feat-card reveal reveal-delay-3">
+        <div class="feat-icon" style="background:#f0fdf4">🎮</div>
+        <div class="feat-title">像游戏存档一样读档</div>
+        <div class="feat-desc">
+          任意存档点可以反复读档，不限次数。支持整批还原或逐文件恢复，操作幂等，随时反悔。
+        </div>
+      </div>
+
+      <div class="feat-card reveal reveal-delay-1">
+        <div class="feat-icon" style="background:#fdf4ff">🔍</div>
+        <div class="feat-title">文件级 Diff 视图</div>
+        <div class="feat-desc">
+          点击任意存档点，查看每个文件的具体增删行，右侧即时展示 Diff，清晰呈现 AI 改了什么。
+        </div>
+      </div>
+
+      <div class="feat-card reveal reveal-delay-2">
+        <div class="feat-icon" style="background:#fff7ed">💽</div>
+        <div class="feat-title">零额外磁盘占用</div>
+        <div class="feat-desc">
+          基于 APFS clonefile（CoW）技术，备份与原文件共享物理存储空间，10 万个文件的备份只需几 MB 额外空间。
+        </div>
+      </div>
+
+      <div class="feat-card reveal reveal-delay-3">
+        <div class="feat-icon" style="background:#f0fdf4">🔐</div>
+        <div class="feat-title">数据完全本地</div>
+        <div class="feat-desc">
+          无账号、无云端、无订阅。所有数据存储在本机 <code style="font-size:12px;background:#f1f5f9;padding:1px 5px;border-radius:4px">~/.rew/</code>，代码永远不会离开你的电脑。
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ─── Demo ───────────────────────────────────────────────────── -->
+<section id="demo">
+  <div class="container">
+    <div class="demo-header">
+      <span class="section-label reveal">产品演示</span>
+      <h2 class="section-title reveal reveal-delay-1" style="margin-top:12px">
+        看看 rew 是如何工作的
+      </h2>
+      <p class="section-sub reveal reveal-delay-2">
+        AI 改坏了文件，30 秒内找回历史版本。
+      </p>
+    </div>
+    <div class="demo-frame reveal reveal-delay-2" id="demo-frame">
+      <div class="demo-play">
+        <svg viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21"/></svg>
+      </div>
+      <div class="demo-placeholder-label">演示视频即将上线 · 敬请期待</div>
+    </div>
+    <p class="demo-caption reveal">实际产品界面 · 支持拖拽调整布局 · 三栏设计（时间线 / 文件列表 / Diff 视图）</p>
+  </div>
+</section>
+
+<!-- ─── Download ──────────────────────────────────────────────── -->
+<section id="download">
+  <div class="container">
+    <div class="download-header">
+      <span class="section-label reveal">立即开始</span>
+      <h2 class="section-title reveal reveal-delay-1" style="margin-top:12px">
+        免费下载，今天就开始保护你的文件
+      </h2>
+      <p class="section-sub reveal reveal-delay-2">
+        安装即用，后台静默运行，不打扰你的开发工作流。
+      </p>
+    </div>
+
+    <div class="download-grid">
+      <!-- macOS -->
+      <div class="dl-card primary reveal reveal-delay-1">
+        <div class="dl-card-icon">🍎</div>
+        <div class="dl-card-title">macOS</div>
+        <div class="dl-card-sub">需要 macOS 11.0 Big Sur 或更高版本</div>
+        <a href="./assets/rew_0.1.0_aarch64.dmg" class="dl-btn primary" download>
+          下载 rew v0.1.0 (.dmg)
+        </a>
+        <div class="dl-meta">
+          适用于 Apple Silicon (M1/M2/M3/M4) 和 Intel Mac<br/>
+          <strong>首次打开提示？</strong>
+          <a href="#gatekeeper">查看安装说明 ↓</a>
+        </div>
+      </div>
+
+      <!-- Windows -->
+      <div class="dl-card secondary reveal reveal-delay-2">
+        <div class="dl-card-icon">🪟</div>
+        <div class="dl-card-title">Windows</div>
+        <div class="dl-card-sub">正在开发中，即将推出</div>
+        <button class="dl-btn secondary" disabled>Windows — 即将推出</button>
+        <div class="win-email">
+          <input type="email" placeholder="留下邮箱，发布时通知我" id="win-email-input" />
+          <button onclick="handleWinNotify()">订阅</button>
+        </div>
+        <div class="win-note" id="win-notify-msg"></div>
+      </div>
+    </div>
+
+    <!-- Gatekeeper Note -->
+    <div class="gk-note reveal" id="gatekeeper">
+      <strong>⚠️ macOS 首次打开说明</strong><br/>
+      由于 rew 目前暂未完成 Apple 公证，macOS 可能提示"无法验证开发者"。按以下步骤可正常安装：
+      <ol class="gk-steps">
+        <li>下载并拖拽 rew.app 到「应用程序」文件夹</li>
+        <li><strong>右键点击</strong> rew.app → 选择「打开」</li>
+        <li>在弹出对话框中再次点击「打开」</li>
+        <li>之后正常双击即可启动，无需重复上述步骤</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Footer ─────────────────────────────────────────────────── -->
+<footer id="footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <div class="nav-logo">
+          <div class="nav-logo-mark">r</div>
+          <span class="nav-logo-name">rew</span>
+        </div>
+        <div class="footer-tagline">AI 时代的文件安全网</div>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com" class="footer-link" target="_blank" rel="noopener">GitHub</a>
+        <a href="mailto:hello@rew.app" class="footer-link">反馈问题</a>
+        <a href="#download" class="footer-link">下载</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="footer-copy">© 2026 rew · 保留所有权利</div>
+      <div class="footer-copy">Made with <span class="footer-heart">♥</span> for the AI-coding era</div>
+    </div>
+  </div>
+</footer>
+
+<script>
+// ─── Scroll-based nav ────────────────────────────────────────────
+const nav = document.getElementById("nav");
+function onScroll() {
+  if (window.scrollY > 24) {
+    nav.classList.add("scrolled");
+  } else {
+    nav.classList.remove("scrolled");
+  }
+}
+window.addEventListener("scroll", onScroll, { passive: true });
+onScroll();
+
+// ─── Scroll-reveal animation ─────────────────────────────────────
+const observer = new IntersectionObserver(
+  (entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add("visible");
+        observer.unobserve(entry.target);
+      }
+    });
+  },
+  { threshold: 0.1, rootMargin: "0px 0px -40px 0px" }
+);
+document.querySelectorAll(".reveal").forEach((el) => observer.observe(el));
+
+// ─── Windows notify ──────────────────────────────────────────────
+function handleWinNotify() {
+  const input = document.getElementById("win-email-input");
+  const msg = document.getElementById("win-notify-msg");
+  const email = input.value.trim();
+  if (!email || !email.includes("@")) {
+    msg.textContent = "请输入有效的邮箱地址";
+    msg.style.color = "#ef4444";
+    return;
+  }
+  // TODO: 接入实际邮件订阅服务
+  msg.textContent = "✓ 已订阅！Windows 版本发布时我们会第一时间通知你。";
+  msg.style.color = "#22c55e";
+  input.value = "";
+}
+document.getElementById("win-email-input")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") handleWinNotify();
+});
+
+// ─── Demo frame click ────────────────────────────────────────────
+document.getElementById("demo-frame")?.addEventListener("click", () => {
+  // TODO: open actual video or embed lightbox
+  alert("演示视频即将上线，敬请期待！");
+});
+
+// ─── Smooth anchor offset (for fixed nav) ───────────────────────
+document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
+  anchor.addEventListener("click", (e) => {
+    const id = anchor.getAttribute("href").slice(1);
+    if (!id) return;
+    const target = document.getElementById(id);
+    if (target) {
+      e.preventDefault();
+      const top = target.getBoundingClientRect().top + window.scrollY - 72;
+      window.scrollTo({ top, behavior: "smooth" });
+    }
+  });
+});
+</script>
+</body>
+</html>
