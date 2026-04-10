@@ -13,6 +13,7 @@ export interface TaskInfo {
   risk_level: string | null;
   summary: string | null;
   changes_count: number;
+  cwd: string | null;
 }
 
 export interface ChangeInfo {
@@ -68,6 +69,7 @@ export interface DirScanStatus {
   status: "pending" | "scanning" | "complete";
   files_total: number;
   files_done: number;
+  files_failed: number;
   percent: number;
   last_completed_at: string | null;
 }

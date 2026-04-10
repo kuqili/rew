@@ -96,34 +96,57 @@ impl RewConfig {
     ///
     /// Kept as a standalone function so both `Default` and `load()` can use it
     /// to ensure existing configs on disk are always up-to-date.
-    pub fn default_ignore_patterns() -> Vec<String> {
+        pub fn default_ignore_patterns() -> Vec<String> {
         vec![
-            // OS/editor temporaries
+            // ── Version control ────────────────────────────────────────────
+            "**/.git/**".to_string(),
+            "**/.svn/**".to_string(),
+            "**/.hg/**".to_string(),
+            // ── Language / runtime build caches ────────────────────────────
+            "**/node_modules/**".to_string(),
+            "**/target/**".to_string(),
+            "**/__pycache__/**".to_string(),
+            "**/*.pyc".to_string(),
+            "**/*.pyo".to_string(),
+            "**/.venv/**".to_string(),
+            "**/venv/**".to_string(),
+            "**/.tox/**".to_string(),
+            "**/.gradle/**".to_string(),
+            "**/.m2/**".to_string(),
+            "**/vendor/**".to_string(),
+            // ── Frontend / bundler output ───────────────────────────────────
+            "**/.next/**".to_string(),
+            "**/.nuxt/**".to_string(),
+            "**/.output/**".to_string(),
+            "**/.cache/**".to_string(),
+            "**/dist/**".to_string(),
+            "**/build/**".to_string(),
+            "**/out/**".to_string(),
+            "**/.parcel-cache/**".to_string(),
+            "**/.turbo/**".to_string(),
+            // ── Compiled binary artifacts ───────────────────────────────────
+            "**/*.class".to_string(),
+            "**/*.o".to_string(),
+            "**/*.a".to_string(),
+            "**/*.so".to_string(),
+            "**/*.dylib".to_string(),
+            "**/*.dll".to_string(),
+            "**/*.exe".to_string(),
+            // ── OS / editor noise ───────────────────────────────────────────
             "**/.DS_Store".to_string(),
             "**/Thumbs.db".to_string(),
             "**/*.swp".to_string(),
             "**/*~".to_string(),
-            "**/.#*".to_string(),       // Emacs lock files
+            "**/*.sb-*".to_string(),
+            "**/.#*".to_string(),
             "**/*.tmp".to_string(),
             "**/*.temp".to_string(),
-            // macOS safe-save (atomic write) temp files.
-            // Apps write to a ".sb-XXXXXXXX-YYYYYY" file, atomically swap it
-            // with the original, then delete the temp. These intermediate events
-            // are noise and should never be recorded or restored.
-            "**/*.sb-*".to_string(),
-            // Applications (not user data)
+            // ── Applications & installers (not user data) ───────────────────
             "**/*.app/**".to_string(),
-            // Installers & disk images (can re-download)
             "**/*.dmg".to_string(),
             "**/*.pkg".to_string(),
             "**/*.iso".to_string(),
             "**/*.msi".to_string(),
-            "**/*.exe".to_string(),
-            // Development artifacts (auto-generated, not user data)
-            "**/node_modules/**".to_string(),
-            "**/.git/**".to_string(),
-            "**/target/**".to_string(),
-            "**/__pycache__/**".to_string(),
         ]
     }
 

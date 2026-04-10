@@ -1,68 +1,35 @@
 //! File copying strategy with filtering and retry logic.
 //!
-//! Uses the same `globset::GlobSet` matching as `PathFilter` for consistency.
+//! Delegates all path filtering to `PathFilter` so that the exact same
+//! default + user patterns are applied everywhere in the codebase.
 
 use crate::error::RewResult;
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use crate::watcher::filter::PathFilter;
 use std::path::Path;
 
 /// Handles file copying with ignore pattern filtering.
 ///
-/// Uses `globset::GlobSet` (same engine as `PathFilter`) for consistent
-/// pattern matching across the entire codebase.
+/// Reuses `PathFilter` (with merged default + user patterns) to guarantee
+/// consistent exclusion rules across watcher, scanner, and backup.
 pub struct FileCopyStrategy {
-    /// Compiled ignore patterns (globset-based)
-    ignore_set: GlobSet,
+    filter: PathFilter,
 }
 
 impl FileCopyStrategy {
     /// Create a new copy strategy with ignore patterns.
+    ///
+    /// `PathFilter::new` automatically merges built-in defaults (dist/,
+    /// build/, .next/, node_modules/, etc.) with the caller's patterns.
     pub fn new(ignore_patterns: Vec<String>) -> RewResult<Self> {
-        let mut builder = GlobSetBuilder::new();
-        for pattern in &ignore_patterns {
-            let glob = Glob::new(pattern).map_err(|e| {
-                crate::error::RewError::Config(format!("Invalid glob pattern '{}': {}", pattern, e))
-            })?;
-            builder.add(glob);
-        }
-        let ignore_set = builder.build().map_err(|e| {
-            crate::error::RewError::Config(format!("Failed to build glob set: {}", e))
+        let filter = PathFilter::new(&ignore_patterns).map_err(|e| {
+            crate::error::RewError::Config(format!("Invalid glob pattern: {}", e))
         })?;
-
-        Ok(FileCopyStrategy { ignore_set })
+        Ok(FileCopyStrategy { filter })
     }
 
     /// Check if a path matches any ignore pattern.
-    ///
-    /// Uses the same globset matching logic as PathFilter for consistency.
-    /// Also checks path components for known noise directories.
     pub fn should_skip(&self, path: &Path) -> bool {
-        // Direct glob match
-        if self.ignore_set.is_match(path) {
-            return true;
-        }
-
-        // Also check as string (for patterns like **/.DS_Store)
-        let path_str = path.to_string_lossy();
-        if self.ignore_set.is_match(path_str.as_ref() as &str) {
-            return true;
-        }
-
-        // Component-level check for known noise directories
-        // (same approach as PathFilter::should_ignore)
-        for ancestor in path.ancestors() {
-            if let Some(name) = ancestor.file_name() {
-                let name_str = name.to_string_lossy();
-                if matches!(
-                    name_str.as_ref(),
-                    "node_modules" | ".git" | "target" | "__pycache__"
-                ) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        self.filter.should_ignore(path)
     }
 
     /// Copy a file to the backup location, preserving directory structure.

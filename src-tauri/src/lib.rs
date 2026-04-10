@@ -146,6 +146,33 @@ pub fn run() {
                                 let _ = db.update_task_completed_at(&task_id, seal_time);
                             }
                         }
+
+                        // Periodically clean up stale AI tasks.
+                        // This handles cases where Claude Code / Cursor crashed or
+                        // the system slept while an AI task was active, leaving
+                        // `.current_task` on disk and the DB row stuck in "active".
+                        // We check the mtime of the marker file: if it hasn't been
+                        // touched for more than 30 minutes, the session is gone.
+                        {
+                            let rew_dir = rew_core::rew_home_dir();
+                            let marker = rew_dir.join(".current_task");
+                            if marker.exists() {
+                                let stale = std::fs::metadata(&marker)
+                                    .and_then(|m| m.modified())
+                                    .map(|t| t.elapsed().unwrap_or_default().as_secs() > 1800)
+                                    .unwrap_or(false);
+                                if stale {
+                                    tracing::info!(
+                                        "Stale .current_task detected (>30 min old), cleaning up"
+                                    );
+                                    let _ = std::fs::remove_file(&marker);
+                                    let _ = std::fs::remove_file(rew_dir.join(".current_session"));
+                                    if let Ok(db) = state.db.lock() {
+                                        let _ = db.recover_stale_ai_tasks(now);
+                                    }
+                                }
+                            }
+                        }
                     }
                 });
             }

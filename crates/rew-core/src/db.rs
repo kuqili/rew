@@ -42,7 +42,7 @@ impl Database {
     /// Open (or create) the database at the given path.
     pub fn open(path: &Path) -> RewResult<Self> {
         let conn = Connection::open(path)?;
-        // Enable WAL mode for better concurrent read performance
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         Ok(Database { conn })
     }
@@ -118,6 +118,12 @@ impl Database {
         // ALTER TABLE ADD COLUMN is a no-op error when the column already exists — safe to ignore.
         let _ = self.conn.execute(
             "ALTER TABLE changes ADD COLUMN restored_at TEXT",
+            [],
+        );
+
+        // V4 migration: add cwd column to tasks for project directory tracking.
+        let _ = self.conn.execute(
+            "ALTER TABLE tasks ADD COLUMN cwd TEXT",
             [],
         );
 
@@ -255,8 +261,8 @@ impl Database {
     /// Create a new task record.
     pub fn create_task(&self, task: &Task) -> RewResult<()> {
         self.conn.execute(
-            "INSERT INTO tasks (id, prompt, tool, started_at, completed_at, status, risk_level, summary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO tasks (id, prompt, tool, started_at, completed_at, status, risk_level, summary, cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 task.id,
                 task.prompt,
@@ -266,6 +272,7 @@ impl Database {
                 task.status.to_string(),
                 task.risk_level.as_ref().map(|r| r.to_string()),
                 task.summary,
+                task.cwd,
             ],
         )?;
         Ok(())
@@ -274,7 +281,7 @@ impl Database {
     /// Get a task by ID.
     pub fn get_task(&self, id: &str) -> RewResult<Option<Task>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, prompt, tool, started_at, completed_at, status, risk_level, summary
+            "SELECT id, prompt, tool, started_at, completed_at, status, risk_level, summary, cwd
              FROM tasks WHERE id = ?1",
         )?;
 
@@ -292,7 +299,7 @@ impl Database {
     /// so users only see fully-sealed archive entries.
     pub fn list_tasks(&self) -> RewResult<Vec<Task>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, prompt, tool, started_at, completed_at, status, risk_level, summary
+            "SELECT id, prompt, tool, started_at, completed_at, status, risk_level, summary, cwd
              FROM tasks
              WHERE (tool != '文件监听' OR completed_at IS NOT NULL)
              ORDER BY started_at DESC",
@@ -316,14 +323,19 @@ impl Database {
         status: &TaskStatus,
         completed_at: Option<DateTime<Utc>>,
     ) -> RewResult<()> {
-        self.conn.execute(
-            "UPDATE tasks SET status = ?1, completed_at = ?2 WHERE id = ?3",
-            params![
-                status.to_string(),
-                completed_at.map(|t| t.to_rfc3339()),
-                id,
-            ],
-        )?;
+        if let Some(ts) = completed_at {
+            self.conn.execute(
+                "UPDATE tasks SET status = ?1, completed_at = ?2 WHERE id = ?3",
+                params![status.to_string(), ts.to_rfc3339(), id],
+            )?;
+        } else {
+            // Preserve existing completed_at (e.g. when marking as rolled-back we
+            // don't want to overwrite the original archive timestamp).
+            self.conn.execute(
+                "UPDATE tasks SET status = ?1 WHERE id = ?2",
+                params![status.to_string(), id],
+            )?;
+        }
         Ok(())
     }
 
@@ -332,7 +344,7 @@ impl Database {
     /// Used on startup to decide whether to resume or abandon the previous window.
     pub fn get_latest_monitoring_window(&self) -> RewResult<Option<Task>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, prompt, tool, started_at, completed_at, status, risk_level, summary
+            "SELECT id, prompt, tool, started_at, completed_at, status, risk_level, summary, cwd
              FROM tasks WHERE id LIKE 'fs_%' ORDER BY started_at DESC LIMIT 1",
         )?;
         let result = stmt.query_row([], |row| Ok(Self::row_to_task(row)));
@@ -359,6 +371,23 @@ impl Database {
         Ok(())
     }
 
+    /// On app startup: mark any lingering AI tasks (non-fs_* tasks) that still
+    /// have `status = 'active'` as completed.
+    ///
+    /// Lingering tasks arise when the user interrupts an AI session (Ctrl-C,
+    /// force-quit) before `rew hook stop` fires.  After a restart there can be
+    /// no live AI session, so it is safe to close them all.
+    ///
+    /// Returns the number of rows updated.
+    pub fn recover_stale_ai_tasks(&self, now: DateTime<Utc>) -> RewResult<usize> {
+        let n = self.conn.execute(
+            "UPDATE tasks SET status = 'completed', completed_at = ?1
+             WHERE status = 'active' AND id NOT LIKE 'fs_%'",
+            params![now.to_rfc3339()],
+        )?;
+        Ok(n)
+    }
+
     /// Seal a file-monitoring time window by setting its `completed_at` timestamp.
     ///
     /// Called when a new window opens to close the previous one.
@@ -367,6 +396,12 @@ impl Database {
             "UPDATE tasks SET completed_at = ?1 WHERE id = ?2",
             params![completed_at.to_rfc3339(), id],
         )?;
+        Ok(())
+    }
+
+    /// Delete a task row (used to clean up ghost monitoring windows with 0 changes).
+    pub fn delete_task(&self, id: &str) -> RewResult<()> {
+        self.conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -398,6 +433,7 @@ impl Database {
             status: status_str.parse()?,
             risk_level: risk_str.map(|s| s.parse()).transpose()?,
             summary: row.get(7).map_err(|e| e.to_string())?,
+            cwd: row.get(8).map_err(|e| e.to_string())?,
         })
     }
 
@@ -486,7 +522,7 @@ impl Database {
         let like_pattern = format!("{}/%", dir_prefix);
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
-                    t.status, t.risk_level, t.summary
+                    t.status, t.risk_level, t.summary, t.cwd
              FROM tasks t
              JOIN changes c ON c.task_id = t.id
              WHERE c.file_path LIKE ?1
@@ -511,7 +547,7 @@ impl Database {
     pub fn list_tasks_by_file(&self, file_path: &str) -> RewResult<Vec<Task>> {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
-                    t.status, t.risk_level, t.summary
+                    t.status, t.risk_level, t.summary, t.cwd
              FROM tasks t
              JOIN changes c ON c.task_id = t.id
              WHERE c.file_path = ?1
@@ -595,6 +631,53 @@ impl Database {
     }
 
     /// Get the most recent change for a specific file path (for shadow lookup).
+    /// Returns hashes of stored versions for `file_path` that are older than the
+    /// `keep_count` most-recent ones (ordered by task creation time, newest first).
+    ///
+    /// These hashes are candidates for ObjectStore deletion — callers must still
+    /// verify via `is_hash_referenced` before removing, since content-addressable
+    /// storage means the same hash can appear in multiple change records.
+    pub fn get_old_version_hashes(&self, file_path: &Path, keep_count: usize) -> RewResult<Vec<String>> {
+        let path_str = file_path.to_string_lossy().to_string();
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT c.new_hash
+             FROM changes c
+             JOIN tasks t ON c.task_id = t.id
+             WHERE c.file_path = ?1 AND c.new_hash IS NOT NULL
+             ORDER BY t.created_at DESC",
+        )?;
+        let all_hashes: Vec<String> = stmt
+            .query_map(params![path_str], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        // Everything beyond the keep_count most recent is a candidate for deletion
+        Ok(all_hashes.into_iter().skip(keep_count).collect())
+    }
+
+    /// Returns the current `new_hash` for a `(task_id, file_path)` change record, if one exists.
+    /// Used to detect which object hash becomes orphaned after an upsert.
+    pub fn get_change_new_hash(&self, task_id: &str, file_path: &Path) -> RewResult<Option<String>> {
+        let path_str = file_path.to_string_lossy().to_string();
+        let result = self.conn.query_row(
+            "SELECT new_hash FROM changes WHERE task_id = ?1 AND file_path = ?2",
+            params![task_id, path_str],
+            |row| row.get::<_, Option<String>>(0),
+        ).optional()?;
+        Ok(result.flatten())
+    }
+
+    /// Returns true if the given hash is referenced by any change record
+    /// (either as `old_hash` or `new_hash`).  Used before deleting an object
+    /// to confirm it is truly unreferenced.
+    pub fn is_hash_referenced(&self, hash: &str) -> RewResult<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM changes WHERE old_hash = ?1 OR new_hash = ?1",
+            params![hash],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     pub fn get_latest_change_for_file(&self, file_path: &Path) -> RewResult<Option<Change>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at
@@ -727,6 +810,7 @@ mod tests {
             status: TaskStatus::Active,
             risk_level: None,
             summary: None,
+            cwd: None,
         };
 
         // Create
@@ -770,6 +854,7 @@ mod tests {
             status: TaskStatus::Active,
             risk_level: None,
             summary: None,
+            cwd: None,
         };
         db.create_task(&task).unwrap();
 

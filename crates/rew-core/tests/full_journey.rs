@@ -10,7 +10,6 @@
 use rew_core::config::RewConfig;
 use rew_core::db::Database;
 use rew_core::detector::RuleEngine;
-use rew_core::launchd;
 use rew_core::lifecycle;
 use rew_core::traits::AnomalyDetector;
 use rew_core::types::*;
@@ -248,29 +247,6 @@ fn test_database_reinitializes_missing_tables() {
 // ========================================================================
 // Integration Test: LaunchAgent Plist Generation
 // ========================================================================
-
-#[test]
-fn test_launchd_plist_generation() {
-    let exe = Path::new("/Applications/rew.app/Contents/MacOS/rew");
-    let log_dir = Path::new("/Users/test/.rew");
-    let plist = launchd::generate_plist(exe, log_dir);
-
-    // Verify it's valid XML structure
-    assert!(plist.contains("<?xml version=\"1.0\""));
-    assert!(plist.contains("<plist version=\"1.0\">"));
-    assert!(plist.contains("</plist>"));
-
-    // Verify required keys
-    assert!(plist.contains("<string>com.rew.agent</string>"));
-    assert!(plist.contains("<key>RunAtLoad</key>"));
-    assert!(plist.contains("<key>KeepAlive</key>"));
-    assert!(plist.contains("<key>ThrottleInterval</key>"));
-    assert!(plist.contains("<integer>5</integer>"));
-
-    // Verify daemon command
-    assert!(plist.contains("<string>daemon</string>"));
-    assert!(plist.contains(&exe.display().to_string()));
-}
 
 // ========================================================================
 // Integration Test: Anomaly Detection Rules

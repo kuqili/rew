@@ -91,14 +91,31 @@ function filterLabel(filter: DateFilter): string {
   }
 }
 
-/** Monitoring window: show only the completed_at time (seal moment). */
+/** Format a Date to HH:MM in local time. */
+function fmtHHMM(d: Date): string {
+  return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+/** Format a Date to HH:MM:SS in local time. */
+function fmtHHMMSS(d: Date): string {
+  return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+/**
+ * Monitoring window: show a time range "HH:MM – HH:MM".
+ * When the window spans less than a minute (or start == end minute),
+ * fall back to "HH:MM:SS" so two same-minute archives are distinct.
+ */
 function formatWindowTime(task: TaskInfo): string {
-  const ts = task.completed_at ?? task.started_at;
-  return new Date(ts).toLocaleTimeString("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+  const start = new Date(task.started_at);
+  const end = new Date(task.completed_at ?? task.started_at);
+  const startMin = fmtHHMM(start);
+  const endMin = fmtHHMM(end);
+  if (startMin === endMin) {
+    // Both within the same minute — show seconds to distinguish
+    return fmtHHMMSS(end);
+  }
+  return `${startMin}–${endMin}`;
 }
 
 // ─── Date Picker ─────────────────────────────────────────────────────────────
@@ -309,7 +326,6 @@ export default function TaskTimeline({ selectedId, onSelect, dirFilter }: Props)
         <div className="flex items-center px-3 pt-1 gap-0">
           <button
             onClick={() => setViewMode("scheduled")}
-            title="按设定时间间隔自动生成的存档点。AI 任务期间的文件变更不计入此视图，避免重复。"
             className={`px-3 py-1.5 text-[12px] border-b-2 transition-colors ${
               viewMode === "scheduled"
                 ? "border-st-blue text-st-blue font-medium"
@@ -320,7 +336,6 @@ export default function TaskTimeline({ selectedId, onSelect, dirFilter }: Props)
           </button>
           <button
             onClick={() => setViewMode("ai")}
-            title="由 AI 工具（Cursor、Claude Code 等）触发的存档，每次 AI 任务完成后自动生成一条记录。"
             className={`px-3 py-1.5 text-[12px] border-b-2 transition-colors ${
               viewMode === "ai"
                 ? "border-st-blue text-st-blue font-medium"
@@ -336,6 +351,26 @@ export default function TaskTimeline({ selectedId, onSelect, dirFilter }: Props)
           <div className="pb-1">
             <DateFilterPicker value={dateFilter} onChange={setDateFilter} />
           </div>
+        </div>
+
+        {/* Context banner — explains the current view's scope */}
+        <div className="px-3 py-1.5 bg-surface-secondary/60 border-t border-surface-border/40 flex items-center gap-1.5">
+          {viewMode === "scheduled" ? (
+            <>
+              <span className="text-[10px] text-ink-faint">👤</span>
+              <span className="text-[11px] text-ink-muted leading-snug">
+                你或其他程序（非 AI）对文件的修改 · 按设定频率自动打包存档 ·
+                <span className="text-ink-faint"> AI 任务期间的变更单独计入「AI 任务」，不在此处重复展示</span>
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-[10px] text-ink-faint">🤖</span>
+              <span className="text-[11px] text-ink-muted leading-snug">
+                Cursor、Claude Code 等 AI 工具执行的文件操作 · 每次任务完成后自动生成一条存档
+              </span>
+            </>
+          )}
         </div>
 
         {/* Column headers */}
@@ -448,6 +483,11 @@ function TaskRow({
           {toolLabel && (
             <span className="badge bg-st-blue-light text-st-blue">{toolLabel}</span>
           )}
+          {!isWindow && task.cwd && (
+            <span className="badge bg-surface-hover text-ink-secondary" title={task.cwd}>
+              {task.cwd.split("/").filter(Boolean).pop() || task.cwd}
+            </span>
+          )}
           <span className={`text-[13px] truncate ${isWindow ? "text-ink-secondary font-mono" : "text-ink"}`}>
             {description}
           </span>
@@ -476,16 +516,33 @@ function EmptyTimeline({
 }) {
   const isScheduled = mode === "scheduled";
   return (
-    <div className="flex flex-col items-center justify-center h-full text-ink-muted py-8 select-none">
+    <div className="flex flex-col items-center justify-center h-full text-ink-muted py-8 select-none px-6">
       <div className="text-3xl mb-3 opacity-20">{isScheduled ? "🕐" : "🤖"}</div>
-      <div className="text-[13px] text-ink-muted font-medium mb-1">
-        {label}{isScheduled ? "暂无存档" : "暂无 AI 任务"}
+      <div className="text-[13px] text-ink-muted font-medium mb-2">
+        {label}{isScheduled ? "暂无存档" : "暂无 AI 任务记录"}
       </div>
-      <div className="text-[11px] text-ink-faint text-center max-w-[240px] leading-relaxed">
-        {isScheduled
-          ? "rew 正在后台监控文件。按设定的时间间隔自动生成存档，存档出现后将显示在这里。"
-          : "当 Cursor 或 Claude Code 完成任务后，此处会自动出现操作记录。"}
-      </div>
+      {isScheduled ? (
+        <div className="text-center space-y-1.5 max-w-[280px]">
+          <p className="text-[11px] text-ink-faint leading-relaxed">
+            此视图记录<b className="text-ink-muted">你自己</b>对文件的修改——包括手动编辑、其他工具改动等。
+          </p>
+          <p className="text-[11px] text-ink-faint leading-relaxed">
+            rew 按你设定的频率自动打包存档，有文件变更时才会生成记录。
+          </p>
+          <p className="text-[11px] text-ink-faint leading-relaxed">
+            AI 工具（Cursor、Claude Code）期间的变更<b className="text-ink-muted">不在此显示</b>，单独归入「AI 任务」。
+          </p>
+        </div>
+      ) : (
+        <div className="text-center space-y-1.5 max-w-[280px]">
+          <p className="text-[11px] text-ink-faint leading-relaxed">
+            此视图记录 <b className="text-ink-muted">AI 工具</b>（Cursor、Claude Code 等）操作的文件变更。
+          </p>
+          <p className="text-[11px] text-ink-faint leading-relaxed">
+            每次 AI 任务完成后自动生成一条存档，方便你查看 AI 改了什么、必要时一键读档恢复。
+          </p>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,32 +1,15 @@
-//! `rew install` / `rew uninstall` — LaunchAgent + AI tool hook management.
+//! `rew install` / `rew uninstall` — AI tool hook management.
 
 use crate::display;
 use rew_core::error::RewResult;
-use rew_core::launchd;
 use std::path::PathBuf;
 
-/// Install the LaunchAgent AND inject hooks into detected AI tools.
+/// Detect AI tools and inject hooks.
 pub fn install() -> RewResult<()> {
-    // Find the rew binary path
     let exe = std::env::current_exe().map_err(|e| {
         rew_core::error::RewError::Config(format!("Could not determine rew binary path: {}", e))
     })?;
 
-    // 1. Install LaunchAgent
-    println!(
-        "{} 正在安装 LaunchAgent...",
-        display::info_prefix()
-    );
-
-    launchd::install(&exe)?;
-
-    println!(
-        "{} LaunchAgent 已安装",
-        display::success_prefix()
-    );
-
-    // 2. Detect and inject hooks for AI tools
-    println!();
     println!(
         "{} 正在检测 AI 工具并注入 hook...",
         display::info_prefix()
@@ -83,19 +66,11 @@ allow:
   - "./**"
 
 deny:
-  - "~/Desktop/**"
-  - "~/Documents/**"
-  - "~/Downloads/**"
   - "~/.ssh/**"
   - "~/.aws/**"
+  - "~/.rew/**"
   - "/**/.env"
   - "/**/.env.*"
-
-alert:
-  - pattern: "rm -rf"
-    action: block
-  - pattern: "> /dev/"
-    action: block
 "#;
         if std::fs::write(&scope_file, default_scope).is_ok() {
             println!(
@@ -105,15 +80,11 @@ alert:
         }
     }
 
-    println!();
-    println!("  使用 {} 立即启动守护进程", colored::Colorize::cyan("rew daemon"));
-
     Ok(())
 }
 
-/// Uninstall the LaunchAgent AND remove hooks from AI tools.
+/// Remove hooks from AI tools.
 pub fn uninstall() -> RewResult<()> {
-    // 1. Remove hooks
     let rew_bin = std::env::current_exe()
         .map(|e| e.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -121,27 +92,10 @@ pub fn uninstall() -> RewResult<()> {
     remove_claude_code_hooks(&rew_bin);
     remove_cursor_hooks(&rew_bin);
 
-    // 2. Remove LaunchAgent
-    if launchd::is_installed() {
-        println!(
-            "{} 正在卸载 LaunchAgent...",
-            display::info_prefix()
-        );
-
-        launchd::uninstall()?;
-
-        println!(
-            "{} LaunchAgent 已卸载",
-            display::success_prefix()
-        );
-    } else {
-        println!(
-            "{} LaunchAgent 未安装，无需卸载",
-            display::info_prefix()
-        );
-    }
-
-    println!("  所有 rew hook 已清理");
+    println!(
+        "{} 所有 rew hook 已清理",
+        display::success_prefix()
+    );
 
     Ok(())
 }
@@ -155,9 +109,10 @@ fn inject_claude_code_hooks(rew_bin: &str) -> Option<Result<(), String>> {
     let home = dirs::home_dir()?;
 
     // Claude Code uses ~/.claude/settings.json (or ~/.claude-internal/settings.json)
+    // Prefer ~/.claude-internal/ first (Tencent internal build takes precedence)
     let settings_paths = vec![
-        home.join(".claude").join("settings.json"),
         home.join(".claude-internal").join("settings.json"),
+        home.join(".claude").join("settings.json"),
     ];
 
     for settings_path in &settings_paths {
@@ -180,8 +135,8 @@ fn inject_claude_code_hooks_to(settings_path: &PathBuf, rew_bin: &str) -> Result
     };
 
     // Build hooks configuration
-    // Claude Code hook format: hooks.PreToolUse = [{ "matcher": "...", "hooks": [...] }]
-    let hook_entry = serde_json::json!({
+    // Claude Code hook format: hooks.EventName = [{ "matcher": "...", "hooks": [...] }]
+    let pre_tool_hook = serde_json::json!({
         "type": "command",
         "command": format!("{} hook pre-tool", rew_bin)
     });
@@ -212,29 +167,58 @@ fn inject_claude_code_hooks_to(settings_path: &PathBuf, rew_bin: &str) -> Result
     let hooks_section = hooks.get_mut("hooks").unwrap().as_object_mut()
         .ok_or("hooks 不是有效的 JSON 对象")?;
 
-    // Set PreToolUse hook
-    hooks_section.insert("PreToolUse".to_string(), serde_json::json!([{
-        "matcher": "",
-        "hooks": [hook_entry]
-    }]));
+    // Helper: add rew hook entry to an event, preserving existing non-rew hooks
+    fn add_rew_hook(
+        hooks_section: &mut serde_json::Map<String, serde_json::Value>,
+        event_name: &str,
+        matcher: &str,
+        hook_entry: serde_json::Value,
+    ) {
+        // First remove any existing rew entries for this event
+        if let Some(existing) = hooks_section.get(event_name).and_then(|v| v.as_array()) {
+            let filtered: Vec<serde_json::Value> = existing.iter()
+                .filter(|entry| {
+                    // Keep entries that don't contain "rew hook" in any of their hook commands
+                    if let Some(hooks) = entry.get("hooks").and_then(|h| h.as_array()) {
+                        !hooks.iter().any(|h| {
+                            h.get("command")
+                                .and_then(|c| c.as_str())
+                                .map(|c| c.contains("rew hook"))
+                                .unwrap_or(false)
+                        })
+                    } else {
+                        true
+                    }
+                })
+                .cloned()
+                .collect();
+            hooks_section.insert(event_name.to_string(), serde_json::Value::Array(filtered));
+        }
+
+        // Now append the new rew entry
+        let rew_entry = serde_json::json!({
+            "matcher": matcher,
+            "hooks": [hook_entry]
+        });
+
+        if let Some(arr) = hooks_section.get_mut(event_name).and_then(|v| v.as_array_mut()) {
+            arr.push(rew_entry);
+        } else {
+            hooks_section.insert(event_name.to_string(), serde_json::json!([rew_entry]));
+        }
+    }
+
+    // Set PreToolUse hook (match Write/Edit/Bash tools only)
+    add_rew_hook(hooks_section, "PreToolUse", "Write|Edit|MultiEdit|Bash", pre_tool_hook);
 
     // Set UserPromptSubmit hook
-    hooks_section.insert("UserPromptSubmit".to_string(), serde_json::json!([{
-        "matcher": "",
-        "hooks": [prompt_hook]
-    }]));
+    add_rew_hook(hooks_section, "UserPromptSubmit", "", prompt_hook);
 
-    // Set PostToolUse hook
-    hooks_section.insert("PostToolUse".to_string(), serde_json::json!([{
-        "matcher": "",
-        "hooks": [post_hook]
-    }]));
+    // Set PostToolUse hook (match Write/Edit/Bash tools only)
+    add_rew_hook(hooks_section, "PostToolUse", "Write|Edit|MultiEdit|Bash", post_hook);
 
     // Set Stop hook
-    hooks_section.insert("Stop".to_string(), serde_json::json!([{
-        "matcher": "",
-        "hooks": [stop_hook]
-    }]));
+    add_rew_hook(hooks_section, "Stop", "", stop_hook);
 
     // Write back
     let content = serde_json::to_string_pretty(&settings)
@@ -252,21 +236,42 @@ fn remove_claude_code_hooks(rew_bin: &str) {
     };
 
     let settings_paths = vec![
-        home.join(".claude").join("settings.json"),
         home.join(".claude-internal").join("settings.json"),
+        home.join(".claude").join("settings.json"),
     ];
 
     for path in &settings_paths {
         if path.exists() {
             if let Ok(content) = std::fs::read_to_string(path) {
                 if content.contains(rew_bin) || content.contains("rew hook") {
-                    // Remove rew hooks from settings
                     if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
                         if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-                            hooks.remove("PreToolUse");
-                            hooks.remove("UserPromptSubmit");
-                            hooks.remove("PostToolUse");
-                            hooks.remove("Stop");
+                            // Only remove rew-related entries from each event, preserve others
+                            for (_event_name, entries) in hooks.iter_mut() {
+                                if let Some(arr) = entries.as_array_mut() {
+                                    arr.retain(|entry| {
+                                        if let Some(hook_list) = entry.get("hooks").and_then(|h| h.as_array()) {
+                                            !hook_list.iter().any(|h| {
+                                                h.get("command")
+                                                    .and_then(|c| c.as_str())
+                                                    .map(|c| c.contains("rew hook"))
+                                                    .unwrap_or(false)
+                                            })
+                                        } else {
+                                            true // Keep entries we don't understand
+                                        }
+                                    });
+                                }
+                            }
+
+                            // Clean up empty event arrays
+                            let empty_events: Vec<String> = hooks.iter()
+                                .filter(|(_, v)| v.as_array().map(|a| a.is_empty()).unwrap_or(false))
+                                .map(|(k, _)| k.clone())
+                                .collect();
+                            for key in empty_events {
+                                hooks.remove(&key);
+                            }
                         }
                         if let Ok(new_content) = serde_json::to_string_pretty(&settings) {
                             let _ = std::fs::write(path, new_content);

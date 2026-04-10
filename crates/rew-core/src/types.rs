@@ -302,6 +302,8 @@ pub struct Task {
     pub risk_level: Option<RiskLevel>,
     /// AI-generated summary of changes
     pub summary: Option<String>,
+    /// Project working directory (from AI tool hook's cwd field)
+    pub cwd: Option<String>,
 }
 
 /// A single file change within a task.

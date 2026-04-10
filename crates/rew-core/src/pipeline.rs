@@ -82,6 +82,9 @@ pub fn start_pipeline_with_config(
     let filter = PathFilter::new(&config.ignore_patterns)
         .map_err(|e| crate::error::RewError::Config(format!("Invalid glob pattern: {}", e)))?;
 
+    // Clone filter for use in shadow backup task (CRITICAL: must apply filtering before backup)
+    let shadow_filter = filter.clone();
+
     // Create and start watcher
     let mut watcher = MacOSWatcher::new(filter);
     let event_rx = watcher.start(&config.watch_dirs)?;
@@ -105,7 +108,12 @@ pub fn start_pipeline_with_config(
             // For files that exist right now, immediately store in objects
             // This includes Renamed — macOS trash is a rename, we need the content before it's gone
             if event.path.exists() && matches!(event.kind, FileEventKind::Created | FileEventKind::Modified | FileEventKind::Renamed) {
-                if let Some(ref store) = obj_store {
+                // CRITICAL FIX: Apply filtering BEFORE storing in shadow backup.
+                // Excluded files (node_modules, .git, etc.) should never be backed up.
+                if shadow_filter.should_ignore(&event.path) {
+                    debug!("Shadow backup: filtered (ignored) {}", event.path.display());
+                    // Do NOT store this file, but still forward the event
+                } else if let Some(ref store) = obj_store {
                     match store.store(&event.path) {
                         Ok(hash) => {
                             debug!("Shadow backup: {} → {}", event.path.display(), &hash[..12]);

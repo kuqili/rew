@@ -1,46 +1,14 @@
-//! `rew status` — show daemon status, protected directories, and recent snapshots.
+//! `rew status` — show protected directories and recent snapshots.
 
 use crate::display;
 use crate::AppContext;
 use colored::*;
 use rew_core::error::RewResult;
 
-/// Check if the rew daemon is running by looking for a PID file.
-fn daemon_status(rew_dir: &std::path::Path) -> (bool, String) {
-    let pid_path = rew_dir.join("rew.pid");
-    if pid_path.exists() {
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
-            let pid_str = pid_str.trim();
-            // Check if process is actually running
-            if let Ok(pid) = pid_str.parse::<u32>() {
-                let status = std::process::Command::new("kill")
-                    .args(["-0", &pid.to_string()])
-                    .output();
-                if status.map(|o| o.status.success()).unwrap_or(false) {
-                    return (true, format!("Running (PID {})", pid));
-                }
-            }
-        }
-        (false, "Stopped (stale PID file)".to_string())
-    } else {
-        (false, "Stopped".to_string())
-    }
-}
-
 pub fn run(ctx: &AppContext) -> RewResult<()> {
     println!();
     println!("  {} v{}", "rew".bold().cyan(), env!("CARGO_PKG_VERSION"));
     println!("  {}", display::dim("AI 时代的文件安全网"));
-    println!();
-
-    // Daemon status
-    let (running, status_text) = daemon_status(&ctx.rew_dir);
-    let status_colored = if running {
-        format!("● {}", status_text).green().to_string()
-    } else {
-        format!("○ {}", status_text).yellow().to_string()
-    };
-    println!("  {} {}", display::section("Daemon:"), status_colored);
     println!();
 
     // Protected directories

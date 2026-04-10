@@ -1,5 +1,4 @@
 pub mod config;
-pub mod daemon;
 pub mod diff;
 pub mod hook;
 pub mod init;

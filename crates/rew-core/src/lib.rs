@@ -9,7 +9,6 @@ pub mod diff;
 pub mod db;
 pub mod detector;
 pub mod error;
-pub mod launchd;
 pub mod lifecycle;
 pub mod logging;
 pub mod notifier;

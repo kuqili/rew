@@ -3222,7 +3222,6 @@ dependencies = [
  "rew-core",
  "serde",
  "serde_json",
- "tokio",
  "tracing",
  "uuid",
 ]

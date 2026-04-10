@@ -24,7 +24,9 @@ use tracing::{error, info, warn};
 /// Start the background protection daemon.
 /// Runs file watching, anomaly detection, and snapshot management.
 pub fn start_daemon(app: &AppHandle) {
-    // On startup: restore previous monitoring window from DB (or clean up stale NULLs)
+    // On startup: clean up stale AI tasks left behind by interrupted sessions,
+    // then restore the previous monitoring window.
+    recover_stale_ai_tasks_on_startup(app);
     restore_monitoring_window_from_db(app);
 
     let app_handle = app.clone();
@@ -391,12 +393,18 @@ async fn run_pipeline(
                                     .unwrap_or(false);
 
                                 // Path-level suppression: filter out events for
-                                // paths recently written by GUI operations.
-                                // TTL = 60 s; also cleans up expired entries.
+                                // paths recently written by GUI rollback operations.
+                                // TTL = 90 s; also cleans up expired entries.
+                                //
+                                // NOTE: `.stop_suppress` (paths from a recently-ended AI task)
+                                // is intentionally NOT consumed here — it must only filter
+                                // monitoring-window events, never AI-task events, so that a new
+                                // AI task can still record deletions/modifications on files that
+                                // were touched by the previous task.
                                 let real_events: Vec<_> = {
                                     let now = std::time::Instant::now();
                                     if let Ok(mut sp) = state.suppressed_paths.lock() {
-                                        sp.retain(|_, t| now.duration_since(*t).as_secs() < 60);
+                                        sp.retain(|_, t| now.duration_since(*t).as_secs() < 90);
                                         real_events.into_iter()
                                             .filter(|e| !sp.contains_key(&e.path))
                                             .collect()
@@ -436,9 +444,19 @@ async fn run_pipeline(
                                     info!("读档进行中 — 抑制 {} 个 FSEvent", real_events.len());
                                 } else {
                                     // Determine routing: AI task or monitoring window?
-                                    let active_ai_task_id = read_active_ai_task_id();
+                                    // Falls back to grace-period task ID so that
+                                    // delayed FSEvents from Bash tool ops (e.g.
+                                    // `echo > file`) still land in the AI task
+                                    // rather than a new monitoring window.
+                                    let active_ai_task_id = read_active_ai_task_id()
+                                        .or_else(read_grace_task_id);
 
                                     let now = chrono::Utc::now();
+
+                                    // is_new_window tracks whether we just created a fresh
+                                    // monitoring window vs reused an existing one.  Used later
+                                    // to decide if an all-no-op batch should clean up the window.
+                                    let mut is_new_window = false;
 
                                     let task_id: String = if let Some(ref ai_id) = active_ai_task_id {
                                         // ── AI task path ──────────────────────────────────────
@@ -452,7 +470,7 @@ async fn run_pipeline(
                                                 }
                                                 info!("Sealed monitoring window {} (AI task started)", &old.task_id);
                                             }
-                                            *wg = None; // clear so next non-AI batch opens a fresh window
+                                            *wg = None;
                                         }
                                         ai_id.clone()
                                     } else {
@@ -471,13 +489,15 @@ async fn run_pipeline(
                                             }).unwrap_or(false);
 
                                             if use_existing {
-                                                // Reuse: update in-memory last-event time for display
                                                 let existing_id = window_guard.as_ref().unwrap().task_id.clone();
+                                                info!("WINDOW-DIAG: reuse {} (elapsed < {}s)", existing_id, window_secs);
                                                 (existing_id, None)
                                             } else {
-                                                // Expire: record old window id for sealing, open new one
+                                                is_new_window = true;
                                                 let old_id = window_guard.as_ref().map(|w| w.task_id.clone());
+                                                let reason = if window_guard.is_none() { "none" } else { "expired" };
                                                 let new_id = format!("fs_{}", now.format("%m%d%H%M%S%3f"));
+                                                info!("WINDOW-DIAG: create {} (prev={:?}, reason={})", new_id, old_id, reason);
                                                 *window_guard = Some(crate::state::FsWindowTask {
                                                     task_id: new_id.clone(),
                                                     started_at: now,
@@ -499,7 +519,40 @@ async fn run_pipeline(
                                         task_id
                                     };
 
-                                    if let Ok(db) = state.db.lock() {
+                                    // Monitoring-window-only: filter paths from the most recently
+                                    // ended AI task (written to .stop_suppress by `rew hook stop`).
+                                    // Prevents delayed FSEvents already recorded in the AI task from
+                                    // appearing as duplicate monitoring-window entries.
+                                    //
+                                    // AI-task events intentionally bypass this so a new AI task can
+                                    // still record operations on files touched by the previous task.
+                                    let real_events: Vec<_> = if active_ai_task_id.is_none() {
+                                        let stop_set = take_stop_suppress_set();
+                                        if stop_set.is_empty() {
+                                            real_events
+                                        } else {
+                                            real_events.into_iter()
+                                                .filter(|e| !stop_set.contains(&e.path))
+                                                .collect()
+                                        }
+                                    } else {
+                                        real_events
+                                    };
+
+                                    // After all filtering, if nothing left to record, skip DB write.
+                                    // Only clear the in-memory window if we JUST created it in
+                                    // this batch (is_new_window). Reused windows must be kept
+                                    // alive — they already have changes from earlier batches.
+                                    if real_events.is_empty() {
+                                        if active_ai_task_id.is_none() && is_new_window {
+                                            info!("WINDOW-DIAG: CLEAR-A {} (empty events + new window)", task_id);
+                                            if let Ok(mut wg) = state.fs_window_task.lock() {
+                                                if wg.as_ref().map(|w| w.task_id == task_id).unwrap_or(false) {
+                                                    *wg = None;
+                                                }
+                                            }
+                                        }
+                                    } else if let Ok(db) = state.db.lock() {
                                         // If this is a monitoring window batch, ensure the Task row
                                         // exists. For AI task batches the row was created by the hook.
                                         if active_ai_task_id.is_none() {
@@ -529,6 +582,7 @@ async fn run_pipeline(
                                                 status: TaskStatus::Completed,
                                                 risk_level: None,
                                                 summary: Some(summary),
+                                                cwd: None,
                                             };
                                             // Silently ignore duplicate-key — means we're in an existing window.
                                             let _ = db.create_task(&task);
@@ -540,10 +594,39 @@ async fn run_pipeline(
                                         let mut file_hashes: std::collections::HashMap<std::path::PathBuf, String> =
                                             std::collections::HashMap::new();
 
+                                        // For large audio/video files (>= 50 MB) only keep the
+                                        // 2 most recent stored versions across all tasks.
+                                        // Code/text files are excluded from this trim — their full
+                                        // history is small and valuable.
+                                        const LARGE_FILE_BYTES: u64 = 50 * 1024 * 1024;
+                                        const LARGE_FILE_KEEP_VERSIONS: usize = 2;
+
                                         for event in real_events.iter() {
                                             if event.path.exists() {
                                                 if let Some(ref store) = obj_store {
                                                     if let Ok(hash) = store.store(&event.path) {
+                                                        // Trim old cross-task versions for large audio/video files
+                                                        let file_size = std::fs::metadata(&event.path)
+                                                            .map(|m| m.len())
+                                                            .unwrap_or(0);
+                                                        if file_size >= LARGE_FILE_BYTES
+                                                            && is_av_file(&event.path)
+                                                        {
+                                                            let old_hashes = db
+                                                                .get_old_version_hashes(
+                                                                    &event.path,
+                                                                    LARGE_FILE_KEEP_VERSIONS,
+                                                                )
+                                                                .unwrap_or_default();
+                                                            for old_hash in old_hashes {
+                                                                let still_ref = db
+                                                                    .is_hash_referenced(&old_hash)
+                                                                    .unwrap_or(true);
+                                                                if !still_ref {
+                                                                    let _ = store.delete(&old_hash);
+                                                                }
+                                                            }
+                                                        }
                                                         file_hashes.insert(event.path.clone(), hash);
                                                     }
                                                 }
@@ -568,12 +651,23 @@ async fn run_pipeline(
                                         // exists for (task_id, file_path) — so AI hook's precise
                                         // old_hash (captured right before the write) wins when
                                         // both the hook and daemon write for the same file.
+                                        let mut changes_written: usize = 0;
                                         for event in &real_events {
                                             let change_type = match event.kind {
                                                 FileEventKind::Created => ChangeType::Created,
                                                 FileEventKind::Modified => ChangeType::Modified,
                                                 FileEventKind::Deleted => ChangeType::Deleted,
-                                                FileEventKind::Renamed => ChangeType::Renamed,
+                                                // On macOS/APFS, `rm` triggers ModifyKind::Name
+                                                // (atomic rename-then-delete) which notify reports
+                                                // as Renamed.  If the file no longer exists, it
+                                                // was actually deleted — reclassify accordingly.
+                                                FileEventKind::Renamed => {
+                                                    if event.path.exists() {
+                                                        ChangeType::Renamed
+                                                    } else {
+                                                        ChangeType::Deleted
+                                                    }
+                                                }
                                             };
 
                                             let (old_hash, new_hash) = match event.kind {
@@ -644,7 +738,50 @@ async fn run_pipeline(
                                                 restored_at: None,
                                             };
 
+                                            // Before upserting, record which new_hash currently
+                                            // occupies this (task_id, file_path) slot so we can
+                                            // delete it from the ObjectStore if it becomes orphaned.
+                                            let prev_new_hash = db.get_change_new_hash(
+                                                &change.task_id,
+                                                &change.file_path,
+                                            ).ok().flatten();
+
                                             let _ = db.upsert_change(&change);
+                                            changes_written += 1;
+
+                                            // Clean up orphaned object: the previous new_hash is
+                                            // only deleted when the hash actually changed AND
+                                            // no other change record references it.
+                                            if let Some(ref prev_hash) = prev_new_hash {
+                                                let new_hash_differs = change.new_hash
+                                                    .as_deref()
+                                                    .map(|h| h != prev_hash.as_str())
+                                                    .unwrap_or(true);
+                                                if new_hash_differs {
+                                                    let still_referenced = db
+                                                        .is_hash_referenced(prev_hash)
+                                                        .unwrap_or(true);
+                                                    if !still_referenced {
+                                                        if let Some(ref store) = obj_store {
+                                                            let _ = store.delete(prev_hash);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Phase 4: Remove ghost task rows — ONLY for newly
+                                        // created windows. A reused window (is_new_window=false)
+                                        // already has changes from earlier batches; a no-op batch
+                                        // (metadata touch / Spotlight) must not kill it.
+                                        if active_ai_task_id.is_none() && is_new_window && changes_written == 0 {
+                                            info!("WINDOW-DIAG: CLEAR-B {} (new window + 0 changes)", task_id);
+                                            let _ = db.delete_task(&task_id);
+                                            if let Ok(mut wg) = state.fs_window_task.lock() {
+                                                if wg.as_ref().map(|w| w.task_id == task_id).unwrap_or(false) {
+                                                    *wg = None;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -789,24 +926,127 @@ pub fn on_anomaly_detected(app: &AppHandle, description: &str, snapshot_id: Opti
     );
 }
 
+/// Returns true if the file is an audio or video format.
+/// Used together with a size threshold to decide whether to trim old cross-task
+/// versions in the ObjectStore (keeping only the last N copies).
+fn is_av_file(path: &std::path::Path) -> bool {
+    const AV_EXTENSIONS: &[&str] = &[
+        // Video
+        "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpg", "mpeg",
+        "3gp", "3g2", "ts", "mts", "m2ts", "vob", "ogv", "rm", "rmvb", "asf",
+        "divx", "xvid", "hevc", "h264", "h265", "f4v", "mxf", "dv", "mpe",
+        // Audio
+        "mp3", "aac", "wav", "flac", "ogg", "wma", "m4a", "aiff", "aif",
+        "opus", "ape", "wv", "mka", "ra", "amr", "ac3", "dts",
+        // Raw / professional media
+        "raw", "r3d", "braw", "ari", "dpx",
+    ];
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| AV_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
 /// Returns true if this path is a temporary/system file that should be excluded
 /// from the change timeline (e.g. macOS safe-save intermediates, editor temps).
+///
+/// Rules kept in sync with `is_temp_file` in rew-cli hook.rs.
 fn is_temp_path(path: &std::path::Path) -> bool {
     let name = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => n,
         None => return false,
     };
-    // macOS safe-save: "original.sb-XXXXXXXX-YYYYYY"
-    if name.contains(".sb-") {
-        return true;
-    }
-    if name.ends_with(".tmp") || name.ends_with(".temp") {
-        return true;
-    }
-    if name.starts_with(".#") {
-        return true;
-    }
+    if name.contains(".sb-") { return true; }         // macOS safe-save
+    if name.contains(".tmp.") { return true; }        // Claude Code staging: "foo.rs.tmp.73919"
+    if name.ends_with(".tmp") || name.ends_with(".temp") { return true; }
+    if name.starts_with(".#") { return true; }        // Emacs lock files
+    if name.ends_with(".swp") || name.ends_with(".swo") { return true; } // Vim swap
+    if name.ends_with('~') { return true; }           // Editor backup files
     false
+}
+
+/// Read `~/.rew/.stop_suppress` (written by `rew hook stop`) and return the
+/// set of paths that should be suppressed in monitoring-window mode.
+///
+/// The file is always deleted after reading.  Returns an empty set if the
+/// file is absent or its `expires_secs` timestamp is already in the past.
+///
+/// **IMPORTANT**: This must only be called in the monitoring-window code path.
+/// AI-task event processing must NOT consult this set so that a new AI task
+/// can still record changes on files touched by the previous task.
+fn take_stop_suppress_set() -> std::collections::HashSet<std::path::PathBuf> {
+    let file = rew_home_dir().join(".stop_suppress");
+    let content = match std::fs::read_to_string(&file) {
+        Ok(s) => s,
+        Err(_) => return std::collections::HashSet::new(),
+    };
+    // Always delete after reading — prevents double-consumption.
+    let _ = std::fs::remove_file(&file);
+
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    if let Some(expires) = extract_json_i64(&content, "expires_secs") {
+        if expires <= now_unix {
+            return std::collections::HashSet::new(); // Already expired
+        }
+        extract_json_string_array(&content, "paths")
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    }
+}
+
+/// Extract a signed integer value from a flat JSON object string.
+/// e.g. `extract_json_i64(r#"{"expires_secs":1234}"#, "expires_secs")` → Some(1234)
+fn extract_json_i64(json: &str, key: &str) -> Option<i64> {
+    let needle = format!("\"{}\":", key);
+    let start = json.find(&needle)? + needle.len();
+    let rest = json[start..].trim_start();
+    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+/// Extract a JSON array of strings from a flat JSON object string.
+fn extract_json_string_array(json: &str, key: &str) -> Vec<String> {
+    let needle = format!("\"{}\":[", key);
+    let start = match json.find(&needle) {
+        Some(p) => p + needle.len(),
+        None => return vec![],
+    };
+    let array_str = &json[start..];
+    let end = match array_str.find(']') {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let inner = &array_str[..end];
+    let mut results = Vec::new();
+    let mut remaining = inner.trim();
+    while let Some(q1) = remaining.find('"') {
+        let after_q1 = &remaining[q1 + 1..];
+        // Find closing quote, skip escaped quotes
+        let mut pos = 0;
+        let mut closed = false;
+        while pos < after_q1.len() {
+            match after_q1.as_bytes()[pos] {
+                b'\\' => pos += 2, // skip escaped char
+                b'"' => { closed = true; break; }
+                _ => pos += 1,
+            }
+        }
+        if closed {
+            let raw = &after_q1[..pos];
+            results.push(raw.replace("\\\"", "\"").replace("\\\\", "\\"));
+            remaining = &after_q1[pos + 1..];
+        } else {
+            break;
+        }
+    }
+    results
 }
 
 /// Compute `(lines_added, lines_removed)` by reading old/new content from the
@@ -857,43 +1097,137 @@ fn manifest_hash_for_path(path: &std::path::Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Read the active AI task ID from the `.current_task` marker file.
+/// Read the active AI task ID, supporting concurrent sessions from multiple
+/// AI tools (Claude Code, Cursor, Codebuddy, …).
 ///
-/// Returns `Some(task_id)` while an AI tool session is open,
-/// `None` when no AI task is running.
+/// Priority order:
+///   1. `~/.rew/sessions/` directory — each active session writes one file
+///      named by its session ID, containing the task ID.  Multiple tools can
+///      run simultaneously without overwriting each other.
+///   2. Legacy `~/.rew/.current_task` — plain-text fallback for tools that
+///      haven't adopted session-scoped files yet.
 ///
-/// The marker is written by `rew hook prompt` and removed by `rew hook stop`.
-/// It is also treated as stale if it is older than 2 hours (covers the case
-/// where `hook stop` was never called because the AI session crashed).
+/// When multiple sessions are active the most recently modified session file
+/// is used (highest chance of being the one that triggered the current batch
+/// of FSEvents).  Stale session files (>2 h) are silently removed.
 fn read_active_ai_task_id() -> Option<String> {
-    let marker = rew_home_dir().join(".current_task");
+    let rew_dir = rew_home_dir();
 
+    // ── 1. Session directory ──────────────────────────────────────────────
+    let sessions_dir = rew_dir.join("sessions");
+    if sessions_dir.exists() {
+        let mut sessions: Vec<(std::time::SystemTime, String)> = Vec::new();
+
+        if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+            for entry in entries.flatten() {
+                // Skip hidden/temp files (e.g. .grace_xxx)
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                let Ok(meta) = entry.metadata() else { continue };
+                let Ok(modified) = meta.modified() else { continue };
+
+                // Remove sessions older than 2 hours (stale crash leftovers)
+                if modified.elapsed().map(|d| d.as_secs() > 7200).unwrap_or(false) {
+                    let _ = std::fs::remove_file(entry.path());
+                    continue;
+                }
+
+                if let Ok(task_id) = std::fs::read_to_string(entry.path()) {
+                    let task_id = task_id.trim().to_string();
+                    if !task_id.is_empty() {
+                        sessions.push((modified, task_id));
+                    }
+                }
+            }
+        }
+
+        if !sessions.is_empty() {
+            // Pick the most-recently-active session
+            sessions.sort_by(|a, b| b.0.cmp(&a.0));
+            return Some(sessions.into_iter().next().unwrap().1);
+        }
+    }
+
+    // ── 2. Legacy .current_task fallback ─────────────────────────────────
+    let marker = rew_dir.join(".current_task");
     let content = std::fs::read_to_string(&marker).ok()?;
     let task_id = content.trim().to_string();
     if task_id.is_empty() {
         return None;
     }
-
-    // Staleness check: if the marker is older than 2 hours, ignore it.
+    // Staleness check
     if let Ok(meta) = std::fs::metadata(&marker) {
         if let Ok(modified) = meta.modified() {
-            if let Ok(age) = modified.elapsed() {
-                if age.as_secs() > 7200 {
-                    // Stale — clean it up silently
-                    let _ = std::fs::remove_file(&marker);
-                    return None;
-                }
+            if modified.elapsed().map(|d| d.as_secs() > 7200).unwrap_or(false) {
+                let _ = std::fs::remove_file(&marker);
+                return None;
             }
         }
     }
-
     Some(task_id)
+}
+
+/// Read the grace-period task ID written by `rew hook stop`.
+///
+/// After an AI session ends, `hook stop` writes `.grace_task` with the task ID
+/// and an 8-second TTL.  This lets delayed FSEvents (e.g. from Bash `echo > file`
+/// operations that arrive after `.current_task` is removed) still be attributed
+/// to the correct AI task rather than a new monitoring window.
+fn read_grace_task_id() -> Option<String> {
+    let grace_file = rew_home_dir().join(".grace_task");
+    let content = std::fs::read_to_string(&grace_file).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let expires = json["expires_secs"].as_i64()?;
+    if chrono::Utc::now().timestamp() > expires {
+        let _ = std::fs::remove_file(&grace_file);
+        return None;
+    }
+    json["task_id"].as_str().map(|s| s.to_string())
 }
 
 /// On startup: restore the previous monitoring window from DB if still valid,
 /// or clean up leftover NULL completed_at entries from an unclean shutdown.
 ///
 /// Because `completed_at` is written to DB on every batch (even reused windows),
+/// On startup: close any AI tasks that were left open because `rew hook stop`
+/// never ran (e.g. the user pressed Ctrl-C or force-quit Claude Code).
+///
+/// Also removes the `.current_task` marker file — after a restart no AI session
+/// can be running, so the marker would cause every subsequent file event to be
+/// mis-attributed to the now-dead task.
+pub fn recover_stale_ai_tasks_on_startup(app: &AppHandle) {
+    // Remove the .current_task marker unconditionally.
+    let marker = rew_home_dir().join(".current_task");
+    if marker.exists() {
+        let _ = std::fs::remove_file(&marker);
+        info!("Startup: removed stale .current_task marker");
+    }
+    // Also remove .current_session, .grace_task, and all session files.
+    let rew_dir = rew_home_dir();
+    let _ = std::fs::remove_file(rew_dir.join(".current_session"));
+    let _ = std::fs::remove_file(rew_dir.join(".grace_task"));
+    // Clear the sessions/ directory — on app restart no AI session can
+    // still be running, so all session files are guaranteed stale.
+    let sessions_dir = rew_dir.join("sessions");
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+
+    // Mark any lingering Active AI tasks as Completed in the DB.
+    let Some(state) = app.try_state::<AppState>() else { return };
+    let Ok(db) = state.db.lock() else { return };
+    let now = chrono::Utc::now();
+    match db.recover_stale_ai_tasks(now) {
+        Ok(0) => {}
+        Ok(n) => info!("Startup: closed {} stale AI task(s)", n),
+        Err(e) => warn!("Startup: failed to recover stale AI tasks: {}", e),
+    }
+}
+
 /// the persisted value is always accurate to within ~30 seconds. This means:
 ///
 /// - App restarts within a valid window → resume the same window (no duplicate entry)

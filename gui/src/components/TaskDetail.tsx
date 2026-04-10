@@ -287,8 +287,9 @@ function FileListRow({
     ? `上次读档: ${timeAgo(change.restored_at)}`
     : null;
 
+  // "renamed" with old_hash = macOS rm-reported-as-rename; treat as deleted.
   const canRestore =
-    (change.change_type === "modified" || change.change_type === "deleted") &&
+    (change.change_type === "modified" || change.change_type === "deleted" || change.change_type === "renamed") &&
     !!change.old_hash;
 
   const doRestore = async (e: React.MouseEvent) => {
@@ -389,7 +390,7 @@ function FileListRow({
                 onClick={handleRestoreClick}
                 title={[
                   "将此文件回到该存档点之前的版本。",
-                  change.change_type === "deleted" ? "（此文件在该时间段内被删除，读档将恢复它）" : "",
+                  (change.change_type === "deleted" || change.change_type === "renamed") ? "（此文件在该时间段内被删除，读档将恢复它）" : "",
                   lastRestoredHint ?? "",
                 ].filter(Boolean).join("\n")}
                 className="text-[9px] text-ink-faint border border-surface-border/50 rounded px-1.5 py-0.5 hover:text-st-blue hover:border-st-blue transition-colors leading-none"

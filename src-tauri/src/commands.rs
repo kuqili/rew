@@ -334,6 +334,7 @@ pub struct TaskInfo {
     pub risk_level: Option<String>,
     pub summary: Option<String>,
     pub changes_count: usize,
+    pub cwd: Option<String>,
 }
 
 /// Change data sent to the frontend.
@@ -432,6 +433,7 @@ pub async fn list_tasks(
             risk_level: task.risk_level.map(|r| r.to_string()),
             summary: task.summary,
             changes_count,
+            cwd: task.cwd,
         });
     }
 
@@ -460,6 +462,7 @@ pub async fn get_task(state: State<'_, AppState>, task_id: String) -> Result<Tas
         risk_level: task.risk_level.map(|r| r.to_string()),
         summary: task.summary,
         changes_count,
+        cwd: task.cwd,
     })
 }
 
@@ -770,6 +773,7 @@ pub struct DirScanStatusInfo {
     pub status: String,
     pub files_total: usize,
     pub files_done: usize,
+    pub files_failed: usize,
     pub percent: f64,
     pub last_completed_at: Option<String>,
 }
@@ -792,6 +796,7 @@ pub async fn get_scan_progress(state: State<'_, AppState>) -> Result<ScanProgres
                 },
                 files_total: d.files_total,
                 files_done: d.files_done,
+                files_failed: d.files_failed,
                 percent: if d.files_total > 0 {
                     (d.files_done as f64 / d.files_total as f64 * 100.0).min(100.0)
                 } else {
@@ -1421,6 +1426,7 @@ pub async fn create_manual_snapshot(
         status: TaskStatus::Completed,
         risk_level: None,
         summary: Some("用户创建的手动存档点".to_string()),
+        cwd: None,
     };
 
     {

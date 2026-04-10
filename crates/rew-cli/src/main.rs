@@ -96,14 +96,11 @@ enum Commands {
     /// Initialize rew (create config and database)
     Init,
 
-    /// Install LaunchAgent for auto-start on login
+    /// Install AI tool hooks (Claude Code, Cursor, etc.)
     Install,
 
-    /// Remove LaunchAgent (disable auto-start)
+    /// Remove AI tool hooks
     Uninstall,
-
-    /// Run the rew daemon in the foreground
-    Daemon,
 
     /// Hook commands (called by AI tools, not for direct use)
     Hook {
@@ -193,7 +190,6 @@ fn run() -> RewResult<()> {
     match &cli.command {
         Some(Commands::Install) => return commands::install::install(),
         Some(Commands::Uninstall) => return commands::install::uninstall(),
-        Some(Commands::Daemon) => return commands::daemon::run(),
         Some(Commands::Hook { action }) => {
             match action {
                 HookAction::Prompt => {
@@ -249,7 +245,6 @@ fn run() -> RewResult<()> {
         // Already handled above
         Some(Commands::Install)
         | Some(Commands::Uninstall)
-        | Some(Commands::Daemon)
         | Some(Commands::Hook { .. }) => {
             unreachable!()
         }

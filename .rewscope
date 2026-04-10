@@ -1,0 +1,13 @@
+# rew scope rules
+# AI tools can only operate within the allowed scope.
+# Paths matching 'deny' will be blocked (PreToolUse exit 2).
+
+allow:
+  - "./**"
+
+deny:
+  - "~/.ssh/**"
+  - "~/.aws/**"
+  - "~/.rew/**"
+  - "/**/.env"
+  - "/**/.env.*"

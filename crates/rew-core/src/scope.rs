@@ -175,22 +175,23 @@ impl ScopeEngine {
     /// Check a command string against alert rules.
     /// Used for Bash commands in PreToolUse.
     pub fn check_command(&self, command: &str) -> ScopeResult {
-        // Built-in dangerous command patterns
-        if command.contains("rm -rf /") || command.contains("rm -rf ~/") {
-            return ScopeResult::Deny(format!(
-                "Dangerous command blocked: {}",
-                truncate_str(command, 80)
-            ));
-        }
+    if let Some(reason) = check_dangerous_command(command) {
+        return ScopeResult::Deny(format!(
+            "{}: {}",
+            reason,
+            truncate_str(command, 80)
+        ));
+    }
 
-        if command.contains("> /dev/") {
-            return ScopeResult::Deny(format!(
-                "Writing to /dev/ blocked: {}",
-                truncate_str(command, 80)
-            ));
-        }
+    // Protect the rew data directory from any destructive command
+    if is_targeting_rew_dir(command) {
+        return ScopeResult::Deny(format!(
+            "Modifying rew data directory is not allowed: {}",
+            truncate_str(command, 80)
+        ));
+    }
 
-        // Check alert rules against the command
+        // Check user-defined alert rules against the command
         for (_, rule) in &self.alert_rules {
             if command.contains(&rule.pattern) && rule.action == "block" {
                 return ScopeResult::Deny(format!(
@@ -213,6 +214,9 @@ impl ScopeEngine {
 /// Default deny patterns — always active even without .rewscope file.
 fn default_deny_patterns() -> Vec<String> {
     vec![
+        // rew data directory — snapshots, objects, config must never be touched by AI
+        "~/.rew/**".to_string(),
+        "/Users/*/.rew/**".to_string(),
         // SSH keys and credentials
         "~/.ssh/**".to_string(),
         "/Users/*/.ssh/**".to_string(),
@@ -240,6 +244,193 @@ fn default_alert_rules() -> Vec<AlertRule> {
             action: "block".to_string(),
         },
     ]
+}
+
+// ── rew directory protection ─────────────────────────────────────────────────
+
+/// Returns true if the command string contains a path pointing at the rew
+/// data directory (`~/.rew` or its absolute form).
+///
+/// This catches commands like:
+///   rm -rf ~/.rew
+///   rm -rf /Users/alice/.rew
+///   mv ~/.rew /tmp/
+fn is_targeting_rew_dir(command: &str) -> bool {
+    // Destructive verbs that should never touch ~/.rew
+    const DESTRUCTIVE: &[&str] = &["rm ", "rmdir ", "mv ", "shred ", "dd "];
+
+    let is_destructive = DESTRUCTIVE.iter().any(|verb| {
+        command.starts_with(verb)
+            || command.contains(&format!("; {}", verb))
+            || command.contains(&format!("&& {}", verb))
+            || command.contains(&format!("|| {}", verb))
+    });
+
+    if !is_destructive {
+        return false;
+    }
+
+    command.contains("/.rew") || command.contains("~/.rew")
+}
+
+// ── Dangerous command detection ──────────────────────────────────────────────
+
+/// Check whether a shell command string matches known destructive patterns.
+///
+/// Returns `Some(reason)` if the command should be blocked, `None` if safe.
+///
+/// Design: we normalize the command (collapse whitespace, lowercase flags)
+/// to catch common variations without pulling in a regex dependency.
+///
+/// Blocked categories:
+/// 1. `rm` with recursive+force flags targeting root, home, or `/*`
+/// 2. Writing directly to block devices (`/dev/sd*`, `/dev/nvme*`, etc.)
+/// 3. `dd` writing to block devices (disk wipe)
+/// 4. `mkfs.*` filesystem formatting
+/// 5. `:(){ :|:& };:` fork bomb pattern
+fn check_dangerous_command(command: &str) -> Option<&'static str> {
+    // Normalize: collapse runs of whitespace for easier matching
+    let cmd = command.trim();
+
+    // ── 1. Destructive rm ────────────────────────────────────────────────────
+    // Detect `rm` with any combination of -r/-R/--recursive AND -f/--force
+    // targeting dangerous paths: /, ~, /*, ~/* etc.
+    if is_destructive_rm(cmd) {
+        return Some("Destructive rm blocked");
+    }
+
+    // ── 2. Writing to raw block devices ─────────────────────────────────────
+    // Catches: echo foo > /dev/sda, cat file > /dev/nvme0n1
+    for dev_prefix in &["/dev/sd", "/dev/hd", "/dev/nvme", "/dev/disk"] {
+        if cmd.contains(dev_prefix) && (cmd.contains('>') || cmd.contains("dd ")) {
+            return Some("Writing to block device blocked");
+        }
+    }
+
+    // ── 3. dd writing to block devices ──────────────────────────────────────
+    // Catches: dd if=... of=/dev/sda, dd of=/dev/nvme0n1
+    if (cmd.starts_with("dd ") || cmd.contains("; dd ") || cmd.contains("&& dd "))
+        && cmd.contains("of=/dev/")
+    {
+        return Some("dd to block device blocked");
+    }
+
+    // ── 4. mkfs — format a filesystem ───────────────────────────────────────
+    if cmd.starts_with("mkfs") || cmd.contains(" mkfs") || cmd.contains(";mkfs") {
+        return Some("Filesystem formatting command blocked");
+    }
+
+    // ── 5. Fork bomb ─────────────────────────────────────────────────────────
+    if cmd.contains(":(){ :|:") || cmd.contains(":(){ : |:") {
+        return Some("Fork bomb pattern blocked");
+    }
+
+    None
+}
+
+/// Returns true if the command is `rm` with recursive+force flags pointing at
+/// a dangerous root-level or home-level path.
+///
+/// Splits the full command on common shell separators (`; && || |`) so that
+/// chained invocations like `cd /tmp && rm -rf /usr` are also caught.
+fn is_destructive_rm(cmd: &str) -> bool {
+    // Split on common shell statement separators so we check each sub-command.
+    for part in split_shell_commands(cmd) {
+        let tokens: Vec<&str> = part.split_whitespace().collect();
+        if tokens.is_empty() {
+            continue;
+        }
+        // First token must be "rm" (bare command, possibly prefixed by sudo)
+        let first = tokens[0];
+        let rest_start = if first == "rm" {
+            1
+        } else if first == "sudo" && tokens.get(1).copied() == Some("rm") {
+            2
+        } else {
+            continue;
+        };
+
+        let mut has_recursive = false;
+        let mut has_force = false;
+        let mut dangerous_path = false;
+
+        for token in &tokens[rest_start..] {
+            if *token == "--" {
+                // End-of-options marker; remaining tokens are paths
+                continue;
+            } else if token.starts_with("--") {
+                if *token == "--recursive" || *token == "-R" { has_recursive = true; }
+                if *token == "--force"                       { has_force = true; }
+            } else if token.starts_with('-') {
+                let flags = &token[1..];
+                if flags.contains('r') || flags.contains('R') { has_recursive = true; }
+                if flags.contains('f')                        { has_force = true; }
+            } else {
+                // Path argument — strip trailing slashes for uniform comparison,
+                // but preserve "/" itself (trim would turn it into "").
+                let path = if *token == "/" || *token == "//" {
+                    "/"
+                } else {
+                    token.trim_end_matches('/')
+                };
+                if is_dangerous_rm_target(path) {
+                    dangerous_path = true;
+                }
+            }
+        }
+
+        if has_recursive && has_force && dangerous_path {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns true for rm target paths that would cause catastrophic data loss.
+fn is_dangerous_rm_target(path: &str) -> bool {
+    // Literal root
+    if path == "/" || path == "/*" {
+        return true;
+    }
+    // Home directory or home glob: ~, ~/*, ~/Desktop/*, etc.
+    if path == "~" || path == "~/*" || path.starts_with("~/") {
+        return true;
+    }
+    // /home/<user> or /home/*
+    if path.starts_with("/home/") {
+        let after = &path["/home/".len()..];
+        // /home/alice  or  /home/*  — one more component means user's home root
+        if !after.contains('/') || after.starts_with("*/") {
+            return true;
+        }
+    }
+    // Single-level paths directly under root: /usr /etc /var /bin /lib …
+    // These are recognisably system directories.
+    if path.starts_with('/') {
+        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        if components.len() == 1 {
+            return true; // e.g. /usr /etc /tmp /var
+        }
+    }
+    false
+}
+
+/// Split a shell command string on common statement separators.
+/// Returns an iterator over individual command fragments.
+fn split_shell_commands(cmd: &str) -> Vec<&str> {
+    // We split on &&, ||, ;  (but not | alone to avoid false positives in paths)
+    // This is intentionally conservative — we don't parse full shell syntax.
+    let mut parts: Vec<&str> = vec![cmd];
+    for sep in &["&&", "||", ";"] {
+        let mut expanded = Vec::new();
+        for part in &parts {
+            for fragment in part.split(sep) {
+                expanded.push(fragment.trim());
+            }
+        }
+        parts = expanded;
+    }
+    parts
 }
 
 /// Expand ~ to the user's home directory.
@@ -354,6 +545,56 @@ alert: []
         assert!(matches!(result2, ScopeResult::Deny(_)));
     }
 
+    // ── Dangerous rm variations ───────────────────────────────────────────────
+
+    #[test]
+    fn test_rm_classic_root() {
+        assert!(check_dangerous_command("rm -rf /").is_some());
+        assert!(check_dangerous_command("rm -rf /").is_some());
+    }
+
+    #[test]
+    fn test_rm_reversed_flags() {
+        // -fr instead of -rf
+        assert!(check_dangerous_command("rm -fr /").is_some());
+        assert!(check_dangerous_command("rm -fr ~/").is_some());
+    }
+
+    #[test]
+    fn test_rm_long_flags() {
+        assert!(check_dangerous_command("rm --recursive --force /").is_some());
+        assert!(check_dangerous_command("rm --force --recursive ~/").is_some());
+    }
+
+    #[test]
+    fn test_rm_split_flags() {
+        // Flags split into separate tokens: rm -r -f /
+        assert!(check_dangerous_command("rm -r -f /").is_some());
+        assert!(check_dangerous_command("rm -f -r ~/").is_some());
+    }
+
+    #[test]
+    fn test_rm_home_glob() {
+        assert!(check_dangerous_command("rm -rf ~/*").is_some());
+        assert!(check_dangerous_command("rm -rf ~/Desktop/*").is_some());
+    }
+
+    #[test]
+    fn test_rm_root_subdir() {
+        // rm -rf /usr is catastrophic even if not literally /
+        assert!(check_dangerous_command("rm -rf /usr").is_some());
+        assert!(check_dangerous_command("rm -rf /etc").is_some());
+    }
+
+    #[test]
+    fn test_rm_safe_paths_allowed() {
+        // Normal project paths must NOT be blocked
+        assert!(check_dangerous_command("rm -rf ./tmp").is_none());
+        assert!(check_dangerous_command("rm -rf /tmp/build").is_none());
+        assert!(check_dangerous_command("rm -rf ./node_modules").is_none());
+        assert!(check_dangerous_command("ls -la").is_none());
+    }
+
     #[test]
     fn test_command_check_rm_rf() {
         let engine = ScopeEngine::default_rules(None).unwrap();
@@ -365,12 +606,35 @@ alert: []
         assert_eq!(result2, ScopeResult::Allow);
     }
 
-    #[test]
-    fn test_command_check_dev_null() {
-        let engine = ScopeEngine::default_rules(None).unwrap();
+    // ── Block device writes ──────────────────────────────────────────────────
 
-        let result = engine.check_command("echo foo > /dev/sda");
-        assert!(matches!(result, ScopeResult::Deny(_)));
+    #[test]
+    fn test_command_check_dev_sda() {
+        assert!(check_dangerous_command("echo foo > /dev/sda").is_some());
+        assert!(check_dangerous_command("cat file.img > /dev/nvme0n1").is_some());
+    }
+
+    #[test]
+    fn test_command_check_dd_wipe() {
+        assert!(check_dangerous_command("dd if=/dev/zero of=/dev/sda").is_some());
+        assert!(check_dangerous_command("dd if=/dev/urandom of=/dev/nvme0n1").is_some());
+    }
+
+    #[test]
+    fn test_command_check_mkfs() {
+        assert!(check_dangerous_command("mkfs.ext4 /dev/sda1").is_some());
+        assert!(check_dangerous_command("mkfs -t vfat /dev/disk2").is_some());
+    }
+
+    #[test]
+    fn test_command_check_fork_bomb() {
+        assert!(check_dangerous_command(":(){ :|:& };:").is_some());
+    }
+
+    #[test]
+    fn test_dev_null_write_allowed() {
+        // Writing to /dev/null is harmless
+        assert!(check_dangerous_command("echo foo > /dev/null").is_none());
     }
 
     #[test]
@@ -396,6 +660,43 @@ alert: []
 
         // Normal paths allowed (no allow rules = allow all except deny)
         let result = engine.check_path(Path::new("/tmp/test.txt"));
+        assert_eq!(result, ScopeResult::Allow);
+    }
+
+    // ── rew directory protection ─────────────────────────────────────────────
+
+    #[test]
+    fn test_rew_dir_path_denied() {
+        let engine = ScopeEngine::default_rules(None).unwrap();
+        let home = dirs::home_dir().unwrap();
+
+        let result = engine.check_path(&home.join(".rew/snapshots.db"));
+        assert!(matches!(result, ScopeResult::Deny(_)), "~/.rew/snapshots.db should be denied");
+
+        let result2 = engine.check_path(&home.join(".rew/objects/ab/cdef"));
+        assert!(matches!(result2, ScopeResult::Deny(_)), "~/.rew/objects/** should be denied");
+    }
+
+    #[test]
+    fn test_rew_dir_rm_command_denied() {
+        let engine = ScopeEngine::default_rules(None).unwrap();
+
+        let r1 = engine.check_command("rm -rf ~/.rew");
+        assert!(matches!(r1, ScopeResult::Deny(_)), "rm -rf ~/.rew should be denied");
+
+        let r2 = engine.check_command("rm -rf /Users/alice/.rew");
+        assert!(matches!(r2, ScopeResult::Deny(_)), "rm -rf /Users/alice/.rew should be denied");
+
+        let r3 = engine.check_command("mv ~/.rew /tmp/rew-backup");
+        assert!(matches!(r3, ScopeResult::Deny(_)), "mv ~/.rew ... should be denied");
+    }
+
+    #[test]
+    fn test_rew_dir_read_allowed_at_command_level() {
+        // cat/grep on ~/.rew is not a destructive verb, command check should pass
+        // (path-level check would still deny if the hook checks the path separately)
+        let engine = ScopeEngine::default_rules(None).unwrap();
+        let result = engine.check_command("cat ~/.rew/snapshots.db");
         assert_eq!(result, ScopeResult::Allow);
     }
 }

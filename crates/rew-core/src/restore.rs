@@ -596,25 +596,26 @@ impl TaskRestoreEngine {
             match self.undo_single_change(change) {
                 Ok(UndoAction::Restored) => files_restored += 1,
                 Ok(UndoAction::Deleted) => files_deleted += 1,
-                Ok(UndoAction::Skipped) => {}
                 Err(e) => {
                     failures.push((change.file_path.clone(), e));
                 }
             }
         }
 
-        // Update task status
+        // Update task status — keep completed_at unchanged so the archive's
+        // original timestamp is preserved in the timeline (the rollback time
+        // would otherwise overwrite it and show a confusing display time).
         if failures.is_empty() {
             db.update_task_status(
                 task_id,
                 &crate::types::TaskStatus::RolledBack,
-                Some(chrono::Utc::now()),
+                None,
             )?;
         } else if files_restored > 0 || files_deleted > 0 {
             db.update_task_status(
                 task_id,
                 &crate::types::TaskStatus::PartialRolledBack,
-                Some(chrono::Utc::now()),
+                None,
             )?;
         }
 
@@ -656,7 +657,6 @@ impl TaskRestoreEngine {
         match self.undo_single_change(change) {
             Ok(UndoAction::Restored) => files_restored = 1,
             Ok(UndoAction::Deleted) => files_deleted = 1,
-            Ok(UndoAction::Skipped) => {}
             Err(e) => failures.push((file_path.to_path_buf(), e)),
         }
 
@@ -676,14 +676,14 @@ impl TaskRestoreEngine {
 
         match change.change_type {
             ChangeType::Created => {
-                // File was created by AI → delete it
+                // File was created by AI → delete it to undo.
+                // If the file is already gone, the desired state is already achieved;
+                // still count it as Deleted so callers know something was handled.
                 if change.file_path.exists() {
                     std::fs::remove_file(&change.file_path)
                         .map_err(|e| format!("Failed to delete {}: {}", change.file_path.display(), e))?;
-                    Ok(UndoAction::Deleted)
-                } else {
-                    Ok(UndoAction::Skipped) // Already gone
                 }
+                Ok(UndoAction::Deleted)
             }
             ChangeType::Modified => {
                 if let Some(ref hash) = change.old_hash {
@@ -794,7 +794,6 @@ impl TaskRestoreEngine {
 enum UndoAction {
     Restored,
     Deleted,
-    Skipped,
 }
 
 /// Restore a file from the most recent APFS snapshot.
@@ -1174,6 +1173,7 @@ mod tests {
             status: TaskStatus::Active,
             risk_level: None,
             summary: None,
+            cwd: None,
         };
         db.create_task(&task).unwrap();
     }
@@ -1428,6 +1428,7 @@ mod tests {
             status: TaskStatus::RolledBack,
             risk_level: None,
             summary: None,
+            cwd: None,
         };
         db.create_task(&task).unwrap();
 

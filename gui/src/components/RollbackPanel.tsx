@@ -41,10 +41,23 @@ export default function RollbackPanel({
     setError(null);
     try {
       const res = await rollbackTask(taskId);
-      if (res.failures.length === 0 || res.files_restored > 0 || res.files_deleted > 0) {
+      const anyDone = res.files_restored > 0 || res.files_deleted > 0;
+      const hasFailures = res.failures.length > 0;
+
+      if (!hasFailures && !anyDone) {
+        // Task had no recoverable file changes (e.g. all files already in target state)
+        setError("此任务没有可恢复的文件变更");
+      } else if (!hasFailures) {
+        // Full success
         setSuccess(true);
         setTimeout(onRolledBack, 1200);
+      } else if (anyDone) {
+        // Partial: some succeeded, some failed
+        const msg = res.failures.map(([p, e]) => `${fileName(p)}: ${e}`).join("\n");
+        setError(`部分文件读档失败：\n${msg}`);
+        setTimeout(onRolledBack, 2000);
       } else {
+        // All failed
         const msg = res.failures.map(([p, e]) => `${fileName(p)}: ${e}`).join("\n");
         setError(msg || "读档失败，请重试");
       }

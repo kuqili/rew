@@ -15,10 +15,8 @@ pub struct PathFilter {
 }
 
 impl PathFilter {
-    /// Create a new PathFilter from a list of glob patterns.
-    ///
-    /// Patterns use glob syntax (e.g., `**/node_modules/**`, `**/.DS_Store`).
-    pub fn new(patterns: &[String]) -> Result<Self, globset::Error> {
+    /// Create a PathFilter from raw patterns (no merging with defaults).
+    fn from_patterns(patterns: &[String]) -> Result<Self, globset::Error> {
         let mut builder = GlobSetBuilder::new();
         for pattern in patterns {
             builder.add(Glob::new(pattern)?);
@@ -27,6 +25,70 @@ impl PathFilter {
             ignore_set: builder.build()?,
             patterns: patterns.to_vec(),
         })
+    }
+
+    /// Create a new PathFilter from user-supplied patterns.
+    ///
+    /// The built-in default patterns (build dirs, OS noise, etc.) are always
+    /// included; `patterns` are merged on top so user config can add extras
+    /// but never accidentally lose the baseline coverage.
+    pub fn new(patterns: &[String]) -> Result<Self, globset::Error> {
+        let mut merged = Self::default_patterns();
+        for p in patterns {
+            if !merged.contains(p) {
+                merged.push(p.clone());
+            }
+        }
+        Self::from_patterns(&merged)
+    }
+
+    /// Built-in patterns that are always active.
+    fn default_patterns() -> Vec<String> {
+        vec![
+            // ── Version control ────────────────────────────────────────────
+            "**/.git/**".to_string(),
+            "**/.svn/**".to_string(),
+            "**/.hg/**".to_string(),
+            // ── Language / runtime build caches ────────────────────────────
+            "**/node_modules/**".to_string(),
+            "**/target/**".to_string(),
+            "**/__pycache__/**".to_string(),
+            "**/*.pyc".to_string(),
+            "**/*.pyo".to_string(),
+            "**/.venv/**".to_string(),
+            "**/venv/**".to_string(),
+            "**/.tox/**".to_string(),
+            "**/.gradle/**".to_string(),
+            "**/.m2/**".to_string(),
+            "**/vendor/**".to_string(),
+            // ── Frontend / bundler output ───────────────────────────────────
+            "**/.next/**".to_string(),
+            "**/.nuxt/**".to_string(),
+            "**/.output/**".to_string(),
+            "**/.cache/**".to_string(),
+            "**/dist/**".to_string(),
+            "**/build/**".to_string(),
+            "**/out/**".to_string(),
+            "**/.parcel-cache/**".to_string(),
+            "**/.turbo/**".to_string(),
+            // ── Compiled binary artifacts ───────────────────────────────────
+            "**/*.class".to_string(),
+            "**/*.o".to_string(),
+            "**/*.a".to_string(),
+            "**/*.so".to_string(),
+            "**/*.dylib".to_string(),
+            "**/*.dll".to_string(),
+            "**/*.exe".to_string(),
+            // ── OS / editor noise ───────────────────────────────────────────
+            "**/.DS_Store".to_string(),
+            "**/Thumbs.db".to_string(),
+            "**/*.swp".to_string(),
+            "**/*~".to_string(),
+            "**/*.sb-*".to_string(),
+            "**/.#*".to_string(),
+            "**/*.tmp".to_string(),
+            "**/*.temp".to_string(),
+        ]
     }
 
     /// Returns `true` if the given path should be ignored (matches any pattern).
@@ -146,25 +208,8 @@ impl PathFilter {
 
 impl Default for PathFilter {
     fn default() -> Self {
-        let default_patterns = vec![
-            "**/node_modules/**".to_string(),
-            "**/.git/**".to_string(),
-            "**/target/**".to_string(),
-            "**/__pycache__/**".to_string(),
-            "**/.DS_Store".to_string(),
-            "**/Thumbs.db".to_string(),
-            "**/*.swp".to_string(),
-            "**/*~".to_string(),
-            // macOS safe-save (atomic write) temp files:
-            // Apps write to a .sb-XXXXXXXX-YYYYYY temp file, swap it with the
-            // original, then delete the temp. These intermediate events are noise.
-            "**/*.sb-*".to_string(),
-            // Other common editor/OS temp patterns
-            "**/.#*".to_string(),       // Emacs lock files
-            "**/*.tmp".to_string(),
-            "**/*.temp".to_string(),
-        ];
-        Self::new(&default_patterns).expect("Default patterns should be valid")
+        Self::from_patterns(&Self::default_patterns())
+            .expect("Default patterns should be valid")
     }
 }
 

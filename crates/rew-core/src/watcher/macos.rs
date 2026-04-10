@@ -51,7 +51,20 @@ impl MacOSWatcher {
                         EventKind::Modify(modify_kind) => {
                             use notify::event::ModifyKind;
                             match modify_kind {
-                                ModifyKind::Name(_) => Some(FileEventKind::Renamed),
+                                // On macOS/APFS, `rm` often triggers a Name-change
+                                // event (atomic unlink via rename) rather than Remove.
+                                // Check at the earliest possible moment — right here in
+                                // the notify callback — whether the file still exists.
+                                // If it doesn't, treat the event as Deleted so we never
+                                // persist "renamed" for a plain `rm`.
+                                ModifyKind::Name(_) => {
+                                    let first_path = event.paths.first();
+                                    if first_path.map(|p| p.exists()).unwrap_or(true) {
+                                        Some(FileEventKind::Renamed)
+                                    } else {
+                                        Some(FileEventKind::Deleted)
+                                    }
+                                }
                                 _ => Some(FileEventKind::Modified),
                             }
                         }

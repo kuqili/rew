@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useScanProgress } from "../hooks/useScanProgress";
 import {
@@ -37,6 +37,34 @@ export default function SettingsPanel({ onClose }: Props) {
   const [addingDir, setAddingDir] = useState(false);
   const [addSuccess, setAddSuccess] = useState<string | null>(null);
   const scanProgress = useScanProgress();
+
+  // Merge analysis dirs (persistent) with scanProgress dirs (live status).
+  // analysis?.dirs is always populated after the first analyzeDirectories() call
+  // and is the source of truth for which directories are being watched.
+  // scanProgress?.dirs overlays real-time scan progress on top.
+  const allDirs = useMemo((): DirScanStatus[] => {
+    const spDirs = scanProgress?.dirs ?? [];
+    const aDirs = analysis?.dirs ?? [];
+    // Union of all paths, analysis is canonical for membership
+    const paths = Array.from(
+      new Set([...aDirs.map((d) => d.path), ...spDirs.map((d) => d.path)])
+    );
+    return paths.map((path) => {
+      const sp = spDirs.find((d) => d.path === path);
+      if (sp) return sp; // live status takes priority during scan
+      // Synthesise a "complete" status from analysis data
+      const name = path.split("/").filter(Boolean).pop() ?? path;
+      return {
+        path,
+        name,
+        status: "complete" as const,
+        files_total: aDirs.find((d) => d.path === path)?.total_files ?? 0,
+        files_done: aDirs.find((d) => d.path === path)?.total_files ?? 0,
+        percent: 100,
+        last_completed_at: null,
+      };
+    });
+  }, [scanProgress?.dirs, analysis?.dirs]);
 
   const refreshAnalysis = useCallback(() => {
     setAnalyzing(true);
@@ -186,34 +214,84 @@ export default function SettingsPanel({ onClose }: Props) {
                       ))}
                     </div>
                   </div>
-                  {storage && (() => {
-                    // Effective backed-up count: cap at total_files so we never show
-                    // "85,552 backed up" when scope is only 28,822.
-                    const scopeTotal = analysis.total_files;
-                    const backedUp = Math.min(storage.object_count, scopeTotal);
-                    const allDone = storage.object_count >= scopeTotal;
-                    return (
-                      <div>
-                        <div className="text-2xs text-ink-muted mb-0.5">备份进度</div>
-                        {allDone ? (
-                          <div className="flex items-center gap-2">
-                            <span className="text-[15px] font-semibold text-status-green">✓ 全部已备份</span>
-                            <span className="text-[13px] text-ink-muted">{scopeTotal.toLocaleString()} 个文件</span>
+                  {(() => {
+                    const isCurrentlyScanning = scanProgress?.is_scanning ?? false;
+                    const totalFailed = allDirs.reduce((s, d) => s + (d.files_failed ?? 0), 0);
+                    const totalDone = allDirs.reduce((s, d) => s + d.files_done, 0);
+                    const totalFiles = allDirs.reduce((s, d) => s + d.files_total, 0);
+                    const allComplete = !isCurrentlyScanning &&
+                      allDirs.length > 0 &&
+                      allDirs.every((d) => d.status === "complete");
+
+                    if (isCurrentlyScanning) {
+                      const pct = totalFiles > 0 ? Math.min((totalDone / totalFiles) * 100, 100) : 0;
+                      return (
+                        <div>
+                          <div className="text-2xs text-ink-muted mb-0.5">备份进度</div>
+                          <div className="flex items-baseline gap-2 mb-1.5">
+                            <span className="text-[15px] font-semibold text-st-blue">{totalDone.toLocaleString()}</span>
+                            <span className="text-[13px] text-ink-muted">/ {totalFiles.toLocaleString()} 个文件已备份</span>
                           </div>
-                        ) : (
-                          <>
-                            <div className="flex items-baseline gap-2">
-                              <span className="text-[15px] font-semibold text-st-blue">{backedUp.toLocaleString()}</span>
-                              <span className="text-[13px] text-ink-muted">/ {scopeTotal.toLocaleString()} 个文件已备份</span>
-                            </div>
-                            <div className="w-full h-1.5 bg-surface-border rounded-full overflow-hidden mt-1.5">
-                              <div className="h-full bg-st-blue rounded-full transition-all duration-300"
-                                style={{ width: `${Math.min((backedUp / scopeTotal) * 100, 100)}%` }} />
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    );
+                          <div className="w-full h-1.5 bg-surface-border rounded-full overflow-hidden">
+                            <div className="h-full bg-st-blue rounded-full transition-all duration-300"
+                              style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    if (allComplete && totalFailed > 0) {
+                      // Partial success — guide user to rescan
+                      return (
+                        <div className="space-y-2">
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-[15px] font-semibold text-status-yellow">⚠ 部分文件未能备份</span>
+                          </div>
+                          <div className="text-[12px] text-ink-muted leading-relaxed">
+                            共 {analysis.total_files.toLocaleString()} 个文件，其中
+                            <span className="text-status-yellow font-medium"> {totalFailed.toLocaleString()} 个备份失败</span>
+                            （通常是权限不足或文件被锁定），点击对应目录重新扫描。
+                          </div>
+                          <div className="flex flex-wrap gap-2 pt-0.5">
+                            {allDirs
+                              .filter((d) => (d.files_failed ?? 0) > 0)
+                              .map((d) => (
+                                <button
+                                  key={d.path}
+                                  onClick={async () => {
+                                    try { await rescanWatchDir(d.path); refreshAnalysis(); }
+                                    catch (e) { console.error(e); }
+                                  }}
+                                  className="px-3 py-1.5 rounded-lg border border-status-yellow/40 bg-status-yellow-bg text-status-yellow text-[12px] hover:opacity-80 transition-opacity"
+                                >
+                                  重新扫描 {d.name}（{(d.files_failed ?? 0).toLocaleString()} 个失败）
+                                </button>
+                              ))
+                            }
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    if (allComplete) {
+                      return (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[15px] font-semibold text-status-green">✓ 初始备份已完成</span>
+                          <span className="text-[13px] text-ink-muted">{analysis.total_files.toLocaleString()} 个文件受保护</span>
+                        </div>
+                      );
+                    }
+
+                    if (allDirs.length > 0) {
+                      return (
+                        <div className="flex items-center gap-2 text-[13px] text-ink-muted">
+                          <span className="animate-spin inline-block">◐</span>
+                          <span>正在启动初始扫描...</span>
+                        </div>
+                      );
+                    }
+
+                    return null;
                   })()}
                   {storage && (
                     <div className="text-2xs text-ink-muted leading-relaxed px-1">
@@ -253,7 +331,7 @@ export default function SettingsPanel({ onClose }: Props) {
               )}
 
               <div className="space-y-2">
-                {(scanProgress?.dirs || []).map((dir) => (
+                {allDirs.map((dir) => (
                   <DirCard
                     key={dir.path}
                     dir={dir}
@@ -263,6 +341,7 @@ export default function SettingsPanel({ onClose }: Props) {
                     onRemove={async () => {
                       if (confirm(`停止保护「${dir.name}」？\n已备份的文件不会被删除。`)) {
                         await removeWatchDir(dir.path);
+                        refreshAnalysis();
                         setAddError(null);
                       }
                     }}
@@ -270,7 +349,7 @@ export default function SettingsPanel({ onClose }: Props) {
                 ))}
               </div>
 
-              {(scanProgress?.dirs || []).length === 0 && (
+              {allDirs.length === 0 && (
                 <div className="text-center py-8 text-ink-muted text-[13px]">
                   还没有保护目录，点击「+ 添加目录」开始保护
                 </div>

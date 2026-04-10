@@ -30,7 +30,10 @@ pub struct ProcessorConfig {
 impl Default for ProcessorConfig {
     fn default() -> Self {
         Self {
-            window_duration: Duration::from_secs(30),
+            // 3 s accumulation window: short enough that delayed FSEvents from
+            // Bash tool ops land in the daemon well before the grace period
+            // expires, while still deduplicating burst writes within a few secs.
+            window_duration: Duration::from_secs(3),
             package_pause_duration: Duration::from_secs(60),
             git_pause_duration: Duration::from_secs(10),
         }
