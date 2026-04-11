@@ -93,6 +93,28 @@ impl PathFilter {
             format!("{}/Library/**", home),
             format!("{}/Applications/**", home),
             format!("{}/.Trash/**", home),
+            // ── Shell history & caches (change on every command / login) ───
+            format!("{}/.zsh_history", home),
+            format!("{}/.zsh_history.*", home),
+            format!("{}/.bash_history", home),
+            format!("{}/.sh_history", home),
+            format!("{}/.fish_history", home),
+            format!("{}/.zcompdump*", home),   // zsh completion dump
+            format!("{}/.zsh_sessions/**", home),
+            format!("{}/.lesshst", home),
+            format!("{}/.viminfo", home),
+            format!("{}/.python_history", home),
+            format!("{}/.node_repl_history", home),
+            // ── z / zoxide jump history ─────────────────────────────────────
+            format!("{}/.z", home),
+            format!("{}/.z.*", home),
+            format!("{}/.zlua", home),
+            // ── CLI tool update-notifier caches ──────────────────────────────
+            format!("{}/.config/configstore/**", home),
+            // ── Log files (always regenerated, never user content) ───────────
+            "**/log/*.log".to_string(),
+            "**/logs/*.log".to_string(),
+            "**/*.log.*".to_string(),          // rotated: app.log.1, app.log.20260411
             // ── App bundles / disk images ──────────────────────────────────
             "**/*.app/**".to_string(),
             "**/*.dmg".to_string(),
@@ -209,6 +231,18 @@ impl PathFilter {
             }
             // Known OS noise
             if matches!(name, ".DS_Store" | "Thumbs.db") {
+                return true;
+            }
+            // zsh completion dumps: .zcompdump, .zcompdump-HOST-5.9, .zcompdump-HOST.zwc
+            if name.starts_with(".zcompdump") {
+                return true;
+            }
+            // z/zoxide jump history files: .z, .z.12345 (temp writes)
+            if name == ".z" || name.starts_with(".z.") {
+                return true;
+            }
+            // Rotated / numbered log files: app.log.1, server.log.20260411
+            if name.contains(".log.") {
                 return true;
             }
         }
