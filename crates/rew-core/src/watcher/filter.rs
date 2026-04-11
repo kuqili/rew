@@ -351,6 +351,18 @@ impl PathFilter {
                     return true;
                 }
             }
+            // Dotfiles like `.gitconfig` have no extension per Rust's Path API.
+            // Match against the full filename so users can exclude them via the
+            // "exclude file types" UI (e.g. typing "gitconfig" or ".gitconfig").
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if cfg.exclude_extensions.iter().any(|e| {
+                    let pattern = e.strip_prefix('.').unwrap_or(e);
+                    // Match ".gitconfig" against pattern "gitconfig"
+                    name.eq_ignore_ascii_case(&format!(".{}", pattern))
+                }) {
+                    return true;
+                }
+            }
         }
 
         false

@@ -1334,7 +1334,10 @@ pub async fn rescan_watch_dir(
                 patterns.push(format!("**/{d}/**"));
             }
             for ext in &dir_cfg.exclude_extensions {
-                patterns.push(format!("**/*.{ext}"));
+                let bare = ext.strip_prefix('.').unwrap_or(ext);
+                patterns.push(format!("**/*.{bare}"));
+                // Also match dotfiles like .gitconfig (no extension per glob)
+                patterns.push(format!("**/.{bare}"));
             }
         }
 

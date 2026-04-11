@@ -136,7 +136,9 @@ pub fn start_daemon(app: &AppHandle) {
                 }
             }
             for ext in &dir_cfg.exclude_extensions {
-                scan_patterns.push(format!("{}/**/*.{}", dir_str, ext));
+                let bare = ext.strip_prefix('.').unwrap_or(ext);
+                scan_patterns.push(format!("{}/**/*.{}", dir_str, bare));
+                scan_patterns.push(format!("{}/**/.{}", dir_str, bare));
             }
         }
 
@@ -1214,16 +1216,45 @@ fn read_active_ai_task_id() -> Option<String> {
 /// and a 15-second TTL.  With hook-level recording (afterFileEdit etc.) as the
 /// primary capture path, this grace window only covers Cursor auto-save delays
 /// and FSEvents latency (~5 s typical).
+/// Read the most recently expired grace task ID from either the new multi-entry
+/// `.grace_tasks` file (JSON array) or the legacy single-entry `.grace_task`.
+///
+/// When multiple concurrent AI sessions each write their own grace entry, the
+/// most-recently-added unexpired entry is returned (last in array = most recent).
 fn read_grace_task_id() -> Option<String> {
-    let grace_file = rew_home_dir().join(".grace_task");
-    let content = std::fs::read_to_string(&grace_file).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let expires = json["expires_secs"].as_i64()?;
-    if chrono::Utc::now().timestamp() > expires {
-        let _ = std::fs::remove_file(&grace_file);
-        return None;
+    let rew_dir = rew_home_dir();
+    let now_ts = chrono::Utc::now().timestamp();
+
+    // ── New multi-entry format ─────────────────────────────────────────────
+    let multi_file = rew_dir.join(".grace_tasks");
+    if let Ok(content) = std::fs::read_to_string(&multi_file) {
+        if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+            // Pick the most recently added entry that hasn't expired yet.
+            // Entries are appended in chronological order, so iterate in reverse.
+            for entry in entries.iter().rev() {
+                let expires = entry["expires_secs"].as_i64().unwrap_or(0);
+                if now_ts <= expires {
+                    if let Some(tid) = entry["task_id"].as_str() {
+                        return Some(tid.to_string());
+                    }
+                }
+            }
+        }
     }
-    json["task_id"].as_str().map(|s| s.to_string())
+
+    // ── Legacy single-entry format (backward-compat) ───────────────────────
+    let legacy_file = rew_dir.join(".grace_task");
+    if let Ok(content) = std::fs::read_to_string(&legacy_file) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+            let expires = json["expires_secs"].as_i64().unwrap_or(0);
+            if now_ts <= expires {
+                return json["task_id"].as_str().map(|s| s.to_string());
+            }
+            let _ = std::fs::remove_file(&legacy_file);
+        }
+    }
+
+    None
 }
 
 /// On startup: restore the previous monitoring window from DB if still valid,
@@ -1243,10 +1274,11 @@ pub fn recover_stale_ai_tasks_on_startup(app: &AppHandle) {
         let _ = std::fs::remove_file(&marker);
         info!("Startup: removed stale .current_task marker");
     }
-    // Also remove .current_session, .grace_task, and all session files.
+    // Also remove .current_session, grace files, and all session files.
     let rew_dir = rew_home_dir();
     let _ = std::fs::remove_file(rew_dir.join(".current_session"));
-    let _ = std::fs::remove_file(rew_dir.join(".grace_task"));
+    let _ = std::fs::remove_file(rew_dir.join(".grace_task"));   // legacy
+    let _ = std::fs::remove_file(rew_dir.join(".grace_tasks"));  // new multi-entry
     // Clear the sessions/ directory — on app restart no AI session can
     // still be running, so all session files are guaranteed stale.
     let sessions_dir = rew_dir.join("sessions");

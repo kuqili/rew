@@ -46,6 +46,7 @@ struct NormalizedPreTool {
     file_path: Option<String>,
     command: Option<String>,
     cwd: Option<String>,
+    session_id: Option<String>,
 }
 
 /// Normalized post-tool input extracted from any AI tool's JSON.
@@ -54,6 +55,7 @@ struct NormalizedPostTool {
     file_path: Option<String>,
     success: Option<bool>,
     cwd: Option<String>,
+    session_id: Option<String>,
 }
 
 // ================================================================
@@ -127,6 +129,7 @@ fn normalize_pre_tool(raw: &str) -> Option<NormalizedPreTool> {
                 file_path,
                 command,
                 cwd: input.cwd,
+                session_id: input.session_id,
             });
         }
     }
@@ -138,6 +141,7 @@ fn normalize_pre_tool(raw: &str) -> Option<NormalizedPreTool> {
             file_path: input.file_path,
             command: input.command,
             cwd: None,
+            session_id: None,
         });
     }
 
@@ -157,6 +161,7 @@ fn normalize_post_tool(raw: &str) -> Option<NormalizedPostTool> {
                 file_path,
                 success,
                 cwd: input.cwd,
+                session_id: input.session_id,
             });
         }
     }
@@ -170,6 +175,7 @@ fn normalize_post_tool(raw: &str) -> Option<NormalizedPostTool> {
                     file_path: Some(fp.to_string()),
                     success: Some(true),
                     cwd: val.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    session_id: val.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 });
             }
         }
@@ -182,6 +188,7 @@ fn normalize_post_tool(raw: &str) -> Option<NormalizedPostTool> {
             file_path: input.file_path,
             success: input.success,
             cwd: None,
+            session_id: None,
         });
     }
 
@@ -235,11 +242,25 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
 
     let db = open_db()?;
 
+    let sessions_dir = rew_dir.join("sessions");
+    let _ = std::fs::create_dir_all(&sessions_dir);
+
+    let effective_sid = input.session_id.clone()
+        .unwrap_or_else(|| format!("{}_default", tool_source));
+
+    // Close any orphan active task left by a previous session that never
+    // got a proper `hook stop` (e.g. user pressed Ctrl-C).
+    if let Some(old_tid) = read_task_id_for_session(&rew_dir, &effective_sid) {
+        let _ = db.update_task_status(&old_tid, &TaskStatus::Completed, Some(Utc::now()));
+        // Clean up the per-task marker for the old task
+        let _ = std::fs::remove_file(sessions_dir.join(format!(".task_{}", old_tid)));
+    }
+
     let task_id = generate_task_id();
     let task = Task {
         id: task_id.clone(),
         prompt: if input.prompt.is_empty() { None } else { Some(input.prompt) },
-        tool: Some(tool_source),
+        tool: Some(tool_source.clone()),
         started_at: Utc::now(),
         completed_at: None,
         status: TaskStatus::Active,
@@ -250,31 +271,25 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
 
     db.create_task(&task)?;
 
-    // Write session-scoped marker so multiple concurrent AI sessions
-    // (Claude Code + Cursor + Codebuddy etc.) each track their own task.
-    //
-    // Layout:  ~/.rew/sessions/{session_id}  →  task_id (plain text)
-    //
-    // Falls back to a stable synthetic session ID derived from the tool
-    // name when the caller doesn't provide one, so every prompt always
-    // registers a session file — even for tools without session tracking.
-    let sessions_dir = rew_dir.join("sessions");
-    let _ = std::fs::create_dir_all(&sessions_dir);
-
-    let effective_sid = input.session_id.clone()
-        .unwrap_or_else(|| "default_session".to_string());
-
     let _ = std::fs::write(sessions_dir.join(&effective_sid), &task_id);
+
+    // Write a per-task marker so `hook stop` (running in the same process
+    // context) can look up the exact session file to remove, even when
+    // multiple tools are running concurrently and `.current_session` has
+    // been overwritten by another tool's prompt hook.
+    // Layout: ~/.rew/sessions/.task_{task_id} → effective_sid
+    let task_sid_file = sessions_dir.join(format!(".task_{}", task_id));
+    let _ = std::fs::write(&task_sid_file, &effective_sid);
 
     // Keep legacy .current_task for backward-compat (tools/hooks that read it directly).
     let marker = rew_dir.join(".current_task");
     std::fs::write(&marker, &task_id)?;
 
     // Keep .current_session for existing code that reads it.
-    if let Some(ref sid) = input.session_id {
-        let sid_marker = rew_dir.join(".current_session");
-        let _ = std::fs::write(&sid_marker, sid);
-    }
+    // Note: this may be overwritten by the next concurrent prompt call, so
+    // stop() now prefers the per-task marker above.
+    let sid_marker = rew_dir.join(".current_session");
+    let _ = std::fs::write(&sid_marker, &effective_sid);
 
     Ok(())
 }
@@ -328,8 +343,7 @@ pub fn handle_pre_tool(_source: Option<&str>) -> RewResult<i32> {
                 // Backup the file before AI modifies it
                 if path.exists() {
                     if let Ok(hash) = backup_file_to_objects(&path) {
-                        // Record the old_hash so post-tool can reference it
-                        record_pre_tool_hash(&path, &hash);
+                        record_pre_tool_hash(&path, &hash, input.session_id.as_deref());
                     }
                 }
             }
@@ -375,7 +389,7 @@ pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
     };
 
     let rew_dir = rew_home_dir();
-    let task_id = read_current_task_id(&rew_dir);
+    let task_id = resolve_task_id(&rew_dir, input.session_id.as_deref());
 
     if let (Some(task_id), Some(ref path_str)) = (task_id, input.file_path) {
         let path = canonicalize_path(path_str);
@@ -403,8 +417,9 @@ pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
             ChangeType::Deleted
         };
 
-        // Get old_hash from pre-tool record
-        let old_hash = read_pre_tool_hash(&path);
+        // Get old_hash from pre-tool record — use session_id to read from
+        // the correct session-scoped directory.
+        let old_hash = read_pre_tool_hash(&path, input.session_id.as_deref());
 
         // Compute new hash if file exists
         let new_hash = if path.exists() {
@@ -441,13 +456,19 @@ pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
 
 /// Handle `rew hook stop` — called when AI finishes responding.
 ///
-/// Closes the current task, computes summary stats.
+/// Parses stdin to extract `session_id`, then precisely closes the task
+/// associated with that session.  Falls back to the global `.current_session`
+/// when the payload doesn't contain a session_id (e.g. legacy tools).
 pub fn handle_stop(_source: Option<&str>) -> RewResult<()> {
     let rew_dir = rew_home_dir();
-    let task_id = read_current_task_id(&rew_dir);
+    let raw = read_stdin_text();
 
-    // Read and discard stdin (Claude Code sends JSON, but we don't need it)
-    let _ = read_stdin_text();
+    // Extract session_id from the stop payload (Claude Code always sends it).
+    let stop_session_id: Option<String> = serde_json::from_str::<ClaudeCodeInput>(&raw)
+        .ok()
+        .and_then(|input| input.session_id);
+
+    let task_id = resolve_task_id(&rew_dir, stop_session_id.as_deref());
 
     if let Some(task_id) = task_id {
         let db = open_db()?;
@@ -492,29 +513,61 @@ pub fn handle_stop(_source: Option<&str>) -> RewResult<()> {
             let _ = std::fs::write(rew_dir.join(".stop_suppress"), json);
         }
 
-        // Write a grace-period file so the daemon can still attribute delayed
-        // FSEvents to this AI task after the session ends.
-        // With the afterFileEdit hook fix, most changes are recorded in real-time
-        // by the hook itself.  This grace window only covers edge cases where
-        // Cursor delays the actual disk write (auto-save queuing).
+        // Append to the grace-period list so multiple concurrent AI sessions
+        // (Claude Code + Cursor + …) can each register their own grace window
+        // without overwriting each other.
+        // Layout: ~/.rew/.grace_tasks (JSON array of {task_id, expires_secs})
+        // The daemon reads all unexpired entries; daemon-side read_grace_task_id
+        // still exists for backward-compat but the array file takes precedence.
         // 15 s = 2 s FSEvents latency + 3 s pipeline window + 10 s headroom.
         let grace_expires = Utc::now().timestamp() + 15;
-        let grace_json = format!(
-            "{{\"task_id\":\"{}\",\"expires_secs\":{}}}",
-            task_id, grace_expires
-        );
-        let _ = std::fs::write(rew_dir.join(".grace_task"), grace_json);
+        let grace_file = rew_dir.join(".grace_tasks");
+        let mut entries: Vec<serde_json::Value> = {
+            std::fs::read_to_string(&grace_file)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default()
+        };
+        // Purge already-expired entries before appending.
+        let now_ts = Utc::now().timestamp();
+        entries.retain(|e| e.get("expires_secs").and_then(|v| v.as_i64()).unwrap_or(0) > now_ts);
+        entries.push(serde_json::json!({"task_id": task_id, "expires_secs": grace_expires}));
+        if let Ok(json) = serde_json::to_string(&entries) {
+            let tmp = grace_file.with_extension("tmp");
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, &grace_file);
+            }
+        }
 
         // Clean up session file and legacy markers.
-        // Remove the session-scoped file first so concurrent sessions
-        // stay intact (only this session's entry is removed).
-        if let Some(sid) = read_current_session_id(&rew_dir) {
-            let _ = std::fs::remove_file(rew_dir.join("sessions").join(&sid));
-            // Clean up session-scoped pre_tool dir
+        // Prefer the per-task marker written by `hook prompt` so we remove
+        // only THIS session's file even when concurrent tools have since
+        // overwritten `.current_session`.
+        let sessions_dir = rew_dir.join("sessions");
+        let task_sid_file = sessions_dir.join(format!(".task_{}", task_id));
+        let sid_to_remove = std::fs::read_to_string(&task_sid_file)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            // Fallback: legacy .current_session (may be wrong when concurrent)
+            .or_else(|| read_current_session_id(&rew_dir));
+
+        if let Some(sid) = sid_to_remove {
+            let _ = std::fs::remove_file(sessions_dir.join(&sid));
             let _ = std::fs::remove_dir_all(rew_dir.join(".pre_tool").join(&sid));
         }
-        let _ = std::fs::remove_file(rew_dir.join(".current_task"));
-        let _ = std::fs::remove_file(rew_dir.join(".current_session"));
+        // Always remove the per-task marker regardless.
+        let _ = std::fs::remove_file(&task_sid_file);
+
+        // Only remove legacy markers if no other sessions are still active.
+        let remaining_sessions = std::fs::read_dir(&sessions_dir)
+            .ok()
+            .map(|rd| rd.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).count())
+            .unwrap_or(0);
+        if remaining_sessions == 0 {
+            let _ = std::fs::remove_file(rew_dir.join(".current_task"));
+            let _ = std::fs::remove_file(rew_dir.join(".current_session"));
+        }
     }
 
     Ok(())
@@ -701,6 +754,25 @@ fn read_current_session_id(rew_dir: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Look up the task_id for a specific session, bypassing .current_session.
+fn read_task_id_for_session(rew_dir: &Path, session_id: &str) -> Option<String> {
+    let session_file = rew_dir.join("sessions").join(session_id);
+    std::fs::read_to_string(session_file).ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Resolve task_id: prefer explicit session_id from stdin, fall back to
+/// the global .current_session / .current_task chain.
+fn resolve_task_id(rew_dir: &Path, session_id: Option<&str>) -> Option<String> {
+    if let Some(sid) = session_id {
+        if let Some(tid) = read_task_id_for_session(rew_dir, sid) {
+            return Some(tid);
+        }
+    }
+    read_current_task_id(rew_dir)
+}
+
 /// Determine the AI tool source. Priority:
 /// 1. Explicit --source flag (most reliable)
 /// 2. Auto-detect from stdin JSON structure
@@ -795,11 +867,10 @@ fn path_key(path: &Path) -> String {
 /// Stored under `.pre_tool/{session_id}/{path_hash}` so that concurrent
 /// sessions (Claude Code + Cursor etc.) don't overwrite each other's state.
 /// Falls back to a flat `.pre_tool/{path_hash}` when no session is active.
-fn record_pre_tool_hash(path: &Path, hash: &str) {
+fn record_pre_tool_hash(path: &Path, hash: &str, session_id: Option<&str>) {
     let rew_dir = rew_home_dir();
-    let session_id = read_current_session_id(&rew_dir);
     let pre_dir = match session_id {
-        Some(ref sid) => rew_dir.join(".pre_tool").join(sid),
+        Some(sid) => rew_dir.join(".pre_tool").join(sid),
         None => rew_dir.join(".pre_tool"),
     };
     let _ = std::fs::create_dir_all(&pre_dir);
@@ -808,15 +879,15 @@ fn record_pre_tool_hash(path: &Path, hash: &str) {
 
 /// Read pre-tool old_hash for a file path.
 ///
-/// Tries the session-scoped directory first, then falls back to the flat
-/// layout for backward compatibility with older records.
-fn read_pre_tool_hash(path: &Path) -> Option<String> {
+/// Uses the explicit `session_id` to locate the correct session-scoped
+/// directory, then falls back to the flat layout for backward compatibility.
+fn read_pre_tool_hash(path: &Path, session_id: Option<&str>) -> Option<String> {
     let rew_dir = rew_home_dir();
     let key = path_key(path);
 
-    // Try session-scoped first
-    if let Some(sid) = read_current_session_id(&rew_dir) {
-        let session_pre = rew_dir.join(".pre_tool").join(&sid).join(&key);
+    // Try explicit session-scoped directory first
+    if let Some(sid) = session_id {
+        let session_pre = rew_dir.join(".pre_tool").join(sid).join(&key);
         if let Ok(h) = std::fs::read_to_string(&session_pre) {
             let _ = std::fs::remove_file(session_pre);
             return Some(h.trim().to_string());
