@@ -534,19 +534,35 @@ fn is_temp_file(path: &Path) -> bool {
         None => return false,
     };
 
-    // Claude Code Write tool: "foo.rs.tmp.73919.177..."
+    // Claude Code staging: "foo.rs.tmp.73919" (dot-separated)
     if name.contains(".tmp.") {
         return true;
     }
 
+    // Atomic-write temps with hex suffix: "foo.json.tmp-5885abc"
+    if let Some(idx) = name.find(".tmp-") {
+        if idx > 0 {
+            return true;
+        }
+    }
+
     // macOS safe-save (atomic write): "original.sb-XXXXXXXX-YYYYYY"
-    // The ".sb-" marker can appear anywhere after the real filename.
     if name.contains(".sb-") {
         return true;
     }
 
     // Generic temp extensions
     if name.ends_with(".tmp") || name.ends_with(".temp") {
+        return true;
+    }
+
+    // Lock files (transient — .json.lock, .jsonl.lock, .LOCK etc.)
+    if name.ends_with(".lock") || name.ends_with(".LOCK") {
+        return true;
+    }
+
+    // SQLite WAL / journal
+    if name.ends_with("-journal") || name.ends_with("-wal") || name.ends_with("-shm") {
         return true;
     }
 

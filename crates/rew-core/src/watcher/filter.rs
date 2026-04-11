@@ -56,6 +56,21 @@ impl PathFilter {
             format!("{}/Applications/**", home),
             format!("{}/.Trash/**", home),
             format!("{}/.local/**", home),
+            // ── AI tool runtime data (high-churn internal files) ────────────
+            // These dirs contain AI session state, history, plugin caches etc.
+            // that change constantly and are not user content worth protecting.
+            format!("{}/.claude-internal/**", home),
+            format!("{}/.claude/**", home),
+            format!("{}/.cursor/**", home),
+            format!("{}/.continue/**", home),
+            format!("{}/.codeium/**", home),
+            format!("{}/.copilot/**", home),
+            // ── CLI tool caches / logs ───────────────────────────────────────
+            format!("{}/.npm/_cacache/**", home),
+            format!("{}/.npm/_logs/**", home),
+            format!("{}/.npm/tmp/**", home),
+            format!("{}/.config/configstore/**", home),
+            format!("{}/.AppData/**", home),
             // ── App bundles / disk images ──────────────────────────────────
             "**/*.app/**".to_string(),
             "**/*.dmg".to_string(),
@@ -104,6 +119,10 @@ impl PathFilter {
             "**/.#*".to_string(),
             "**/*.tmp".to_string(),
             "**/*.temp".to_string(),
+            // ── Database journal / WAL files ─────────────────────────────────
+            "**/*.db-journal".to_string(),
+            "**/*.db-wal".to_string(),
+            "**/*.db-shm".to_string(),
         ]
     }
 
@@ -114,16 +133,33 @@ impl PathFilter {
         // Fast path: direct filename checks that don't rely on globset Unicode handling.
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             // macOS safe-save (atomic write) temp files: "original.sb-XXXXXXXX-YYYYYY"
-            // The ".sb-" marker can appear anywhere after the real filename.
             if name.contains(".sb-") {
                 return true;
             }
-            // Other common temp patterns
+            // Generic temp extensions
             if name.ends_with(".tmp") || name.ends_with(".temp") {
                 return true;
             }
-            // Claude Code staging files: "foo.rs.tmp.73919"
+            // Claude Code staging: "foo.rs.tmp.73919" (dot-separated)
             if name.contains(".tmp.") {
+                return true;
+            }
+            // Atomic-write temps with hex suffix: "foo.json.tmp-5885abc" or
+            // "foo.json.tmp-ID123" — used by Claude Code, npm, and many CLIs.
+            if let Some(idx) = name.find(".tmp-") {
+                // Only treat as temp if there's actual content before .tmp-
+                if idx > 0 {
+                    return true;
+                }
+            }
+            // Lock files for JSON/JSONL/DB files (transient, not user content)
+            // Note: Cargo.lock / package-lock.json do NOT end with .lock — they
+            // end with -lock.json, so this suffix check is safe.
+            if name.ends_with(".lock") || name.ends_with(".LOCK") {
+                return true;
+            }
+            // SQLite WAL / journal files
+            if name.ends_with("-journal") || name.ends_with("-wal") || name.ends_with("-shm") {
                 return true;
             }
             // Vim swap files
@@ -155,7 +191,10 @@ impl PathFilter {
                 let name_str = name.to_string_lossy();
                 if matches!(
                     name_str.as_ref(),
-                    "node_modules" | ".git" | "target" | "__pycache__" | ".rew" | "Library" | ".Trash"
+                    "node_modules" | ".git" | "target" | "__pycache__"
+                    | ".rew" | "Library" | ".Trash"
+                    | ".claude-internal" | ".claude" | ".cursor"
+                    | ".npm" | ".AppData"
                 ) {
                     return true;
                 }
