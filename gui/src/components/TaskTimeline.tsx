@@ -534,11 +534,6 @@ function TaskRow({
           {toolMeta && (
             <span className={`badge ${toolMeta.badgeClass}`}>{toolMeta.label}</span>
           )}
-          {!isWindow && task.cwd && (
-            <span className="badge bg-surface-hover text-ink-secondary" title={task.cwd}>
-              {task.cwd.split("/").filter(Boolean).pop() || task.cwd}
-            </span>
-          )}
           <span className={`text-[13px] truncate ${isWindow ? "text-ink-secondary font-mono" : "text-ink"}`}>
             {description}
           </span>
