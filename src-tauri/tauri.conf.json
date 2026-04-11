@@ -7,7 +7,7 @@
     "frontendDist": "../gui/dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "cd gui && pnpm dev",
-    "beforeBuildCommand": "cargo build --release -p rew-cli && cd gui && pnpm build"
+    "beforeBuildCommand": "cargo build --release -p rew-cli && cp \"${CARGO_TARGET_DIR:-target}/release/rew\" src-tauri/rew && cd gui && pnpm build"
   },
   "app": {
     "windows": [
@@ -46,7 +46,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "../target/release/rew"
+      "rew"
     ],
     "macOS": {
       "frameworks": [],

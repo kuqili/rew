@@ -7,6 +7,7 @@ control.json
 # Build outputs
 /target/
 /gui/dist/
+/src-tauri/rew
 
 # Dependencies
 /node_modules/
