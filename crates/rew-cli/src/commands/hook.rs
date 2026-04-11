@@ -556,9 +556,19 @@ fn is_temp_file(path: &Path) -> bool {
         return true;
     }
 
-    // Lock files (transient — .json.lock, .jsonl.lock, .LOCK etc.)
-    if name.ends_with(".lock") || name.ends_with(".LOCK") {
+    // Transient process-lock files (same heuristic as PathFilter::should_ignore)
+    if name.ends_with(".LOCK") {
         return true;
+    }
+    if name.ends_with(".lock") {
+        if name.starts_with('.') {
+            return true;
+        }
+        let stem = &name[..name.len() - 5];
+        if std::path::Path::new(stem).extension().is_some() {
+            return true;
+        }
+        // Bare stem (Cargo.lock, yarn.lock) → keep
     }
 
     // SQLite WAL / journal

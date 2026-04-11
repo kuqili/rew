@@ -1,9 +1,39 @@
 //! Path filter for ignoring noise files/directories.
 //!
 //! Uses `globset` for efficient glob matching against a list of ignore patterns.
+//!
+//! ## HOME hidden-directory strategy
+//!
+//! When watching `~`, most `~/.xxx/` directories are tool caches / runtime
+//! data (`.cargo`, `.npm`, `.cursor`, `.claude`, …) that change constantly and
+//! are not user content worth protecting.
+//!
+//! Strategy (applied in `should_ignore`):
+//!   - Hidden **directories** directly under HOME → excluded by default.
+//!   - Exception: a hard-coded whitelist of dirs that contain credentials or
+//!     important user config (`.ssh`, `.gnupg`, `.aws`, `.kube`, …).
+//!   - Hidden **files** directly under HOME (`.zshrc`, `.gitconfig`, …) are
+//!     NOT affected — they are always monitored regardless of this rule.
+//!   - Hidden dirs anywhere deeper in the tree (e.g. `project/.git/`) are
+//!     handled by the existing per-name fast-path and glob patterns.
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Hidden directories directly under HOME that contain user credentials or
+/// important configuration and must NOT be excluded by the broad hidden-dir
+/// rule below. Everything else under `~/.xxx/` is treated as tool data.
+const HOME_HIDDEN_DIR_WHITELIST: &[&str] = &[
+    ".ssh",    // SSH keys / authorized_keys
+    ".gnupg",  // GPG keys
+    ".gpg",    // alternate GPG dir
+    ".aws",    // AWS credentials & config
+    ".kube",   // Kubernetes kubeconfig
+    ".azure",  // Azure CLI credentials
+    ".gcloud", // Google Cloud credentials
+    ".config", // XDG config (contains many important per-app configs)
+    // Shell histories / sessions are FILES not dirs, so they are unaffected.
+];
 
 /// A path filter that determines whether a file event should be ignored.
 #[derive(Debug, Clone)]
@@ -12,6 +42,8 @@ pub struct PathFilter {
     ignore_set: GlobSet,
     /// Original patterns (for debugging/display)
     patterns: Vec<String>,
+    /// Resolved HOME directory for the hidden-dir rule (None = rule disabled)
+    home_dir: Option<PathBuf>,
 }
 
 impl PathFilter {
@@ -21,9 +53,11 @@ impl PathFilter {
         for pattern in patterns {
             builder.add(Glob::new(pattern)?);
         }
+        let home_dir = std::env::var("HOME").ok().map(PathBuf::from);
         Ok(Self {
             ignore_set: builder.build()?,
             patterns: patterns.to_vec(),
+            home_dir,
         })
     }
 
@@ -46,6 +80,10 @@ impl PathFilter {
     ///
     /// This is the **single source of truth** for all default ignore patterns.
     /// `RewConfig::default_ignore_patterns()` delegates here.
+    ///
+    /// Note: hidden directories directly under HOME are handled by a runtime
+    /// whitelist rule in `should_ignore()`, not by glob patterns, so they
+    /// don't need to be listed exhaustively here.
     pub fn builtin_patterns() -> Vec<String> {
         let home = std::env::var("HOME").unwrap_or_default();
         vec![
@@ -55,22 +93,6 @@ impl PathFilter {
             format!("{}/Library/**", home),
             format!("{}/Applications/**", home),
             format!("{}/.Trash/**", home),
-            format!("{}/.local/**", home),
-            // ── AI tool runtime data (high-churn internal files) ────────────
-            // These dirs contain AI session state, history, plugin caches etc.
-            // that change constantly and are not user content worth protecting.
-            format!("{}/.claude-internal/**", home),
-            format!("{}/.claude/**", home),
-            format!("{}/.cursor/**", home),
-            format!("{}/.continue/**", home),
-            format!("{}/.codeium/**", home),
-            format!("{}/.copilot/**", home),
-            // ── CLI tool caches / logs ───────────────────────────────────────
-            format!("{}/.npm/_cacache/**", home),
-            format!("{}/.npm/_logs/**", home),
-            format!("{}/.npm/tmp/**", home),
-            format!("{}/.config/configstore/**", home),
-            format!("{}/.AppData/**", home),
             // ── App bundles / disk images ──────────────────────────────────
             "**/*.app/**".to_string(),
             "**/*.dmg".to_string(),
@@ -130,7 +152,7 @@ impl PathFilter {
     pub fn should_ignore(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
 
-        // Fast path: direct filename checks that don't rely on globset Unicode handling.
+        // ── Fast path: filename-level checks ──────────────────────────────
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             // macOS safe-save (atomic write) temp files: "original.sb-XXXXXXXX-YYYYYY"
             if name.contains(".sb-") {
@@ -144,19 +166,34 @@ impl PathFilter {
             if name.contains(".tmp.") {
                 return true;
             }
-            // Atomic-write temps with hex suffix: "foo.json.tmp-5885abc" or
-            // "foo.json.tmp-ID123" — used by Claude Code, npm, and many CLIs.
+            // Atomic-write temps with hex suffix: "foo.json.tmp-5885abc"
+            // Used by Claude Code, npm, many CLIs.
             if let Some(idx) = name.find(".tmp-") {
-                // Only treat as temp if there's actual content before .tmp-
                 if idx > 0 {
                     return true;
                 }
             }
-            // Lock files for JSON/JSONL/DB files (transient, not user content)
-            // Note: Cargo.lock / package-lock.json do NOT end with .lock — they
-            // end with -lock.json, so this suffix check is safe.
-            if name.ends_with(".lock") || name.ends_with(".LOCK") {
-                return true;
+            // Transient process-lock files: distinguish from package-manager
+            // lock files (Cargo.lock, yarn.lock) which are important user content.
+            //
+            // Heuristic:
+            //   • Hidden file + .lock  → transient  (.claude.json.lock)
+            //   • Uppercase .LOCK      → transient  (.zsh_history.LOCK)
+            //   • Stem has an extension → transient  (foo.json.lock, db.sqlite.lock)
+            //   • Bare name + .lock    → keep        (Cargo.lock, yarn.lock)
+            if name.ends_with(".LOCK") {
+                return true; // e.g. .zsh_history.LOCK — always transient
+            }
+            if name.ends_with(".lock") {
+                if name.starts_with('.') {
+                    return true; // hidden file lock → transient
+                }
+                // Check if stem (name minus ".lock") has its own extension
+                let stem = &name[..name.len() - 5];
+                if Path::new(stem).extension().is_some() {
+                    return true; // e.g. foo.json.lock → transient
+                }
+                // Bare name like "Cargo" or "yarn" → package-manager lock → keep
             }
             // SQLite WAL / journal files
             if name.ends_with("-journal") || name.ends_with("-wal") || name.ends_with("-shm") {
@@ -176,16 +213,43 @@ impl PathFilter {
             }
         }
 
-        // Glob-based check for patterns supplied by the user / config
+        // ── HOME hidden-directory rule ────────────────────────────────────
+        //
+        // If this path is INSIDE a hidden directory directly under HOME
+        // (e.g. ~/.cargo/bin/rustc), exclude it UNLESS the hidden directory
+        // is in HOME_HIDDEN_DIR_WHITELIST (e.g. ~/.ssh/id_rsa → keep).
+        //
+        // Hidden FILES at the home root (e.g. ~/.zshrc, ~/.gitconfig) are
+        // NOT affected because they have no second path component.
+        if let Some(ref home) = self.home_dir {
+            if let Ok(rel) = path.strip_prefix(home) {
+                let mut comps = rel.components();
+                if let Some(std::path::Component::Normal(first)) = comps.next() {
+                    let dir_name = first.to_string_lossy();
+                    // Only applies to hidden directories (starts with '.')
+                    // AND only when path goes deeper than just the dir itself.
+                    if dir_name.starts_with('.') && comps.next().is_some() {
+                        let whitelisted = HOME_HIDDEN_DIR_WHITELIST
+                            .iter()
+                            .any(|w| dir_name.as_ref() == *w);
+                        if !whitelisted {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Glob-based check ──────────────────────────────────────────────
         if self.ignore_set.is_match(path) {
             return true;
         }
-        // Also check against the path as a string for patterns like **/.DS_Store
         if self.ignore_set.is_match(path_str.as_ref() as &str) {
             return true;
         }
-        // Check each component for directory-level matching
-        // e.g., /Users/foo/node_modules/bar.js should be caught by **/node_modules/**
+
+        // ── Component-level fast-path for common noisy dirs ───────────────
+        // Catches cases where globset might miss due to absolute path anchoring.
         for ancestor in path.ancestors() {
             if let Some(name) = ancestor.file_name() {
                 let name_str = name.to_string_lossy();
@@ -193,8 +257,6 @@ impl PathFilter {
                     name_str.as_ref(),
                     "node_modules" | ".git" | "target" | "__pycache__"
                     | ".rew" | "Library" | ".Trash"
-                    | ".claude-internal" | ".claude" | ".cursor"
-                    | ".npm" | ".AppData"
                 ) {
                     return true;
                 }
@@ -225,23 +287,16 @@ impl PathFilter {
             return false;
         }
 
-        // Check excluded sub-directory/file rules.
-        // Two matching modes (backward-compatible):
-        //   - Entry contains "/" → relative path from watch_dir. Matches if the
-        //     file's relative path equals it (file) or starts with it followed by "/" (dir).
-        //   - No "/" → component-name match at any depth (e.g. "node_modules" anywhere).
         if !cfg.exclude_dirs.is_empty() {
             if let Ok(rel) = path.strip_prefix(watch_dir) {
                 let rel_str = rel.to_string_lossy();
                 for excluded in &cfg.exclude_dirs {
                     if excluded.contains('/') {
-                        // Relative path match: dir prefix or exact file match
                         let ex_path = std::path::Path::new(excluded.as_str());
                         if rel == ex_path || rel.starts_with(ex_path) {
                             return true;
                         }
                     } else {
-                        // Component name match at any depth
                         for component in rel.components() {
                             if let std::path::Component::Normal(name) = component {
                                 if name.to_string_lossy() == excluded.as_str() {
@@ -251,11 +306,10 @@ impl PathFilter {
                         }
                     }
                 }
-                let _ = rel_str; // suppress unused warning
+                let _ = rel_str;
             }
         }
 
-        // Check excluded file extensions
         if !cfg.exclude_extensions.is_empty() {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 let ext_lower = ext.to_ascii_lowercase();
@@ -280,6 +334,10 @@ impl Default for PathFilter {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn home() -> String {
+        std::env::var("HOME").unwrap_or_else(|_| "/Users/testuser".to_string())
+    }
 
     #[test]
     fn test_ignore_node_modules() {
@@ -350,5 +408,53 @@ mod tests {
         assert!(filter.should_ignore(&PathBuf::from(
             "/Users/foo/project/src/.main.rs.swp"
         )));
+    }
+
+    #[test]
+    fn test_home_hidden_dir_rule() {
+        let filter = PathFilter::default();
+        let h = home();
+
+        // Hidden dirs under HOME → excluded (tool data)
+        assert!(filter.should_ignore(&PathBuf::from(format!("{}/.cargo/bin/rustc", h))));
+        assert!(filter.should_ignore(&PathBuf::from(format!("{}/.npm/_cacache/foo", h))));
+        assert!(filter.should_ignore(&PathBuf::from(format!("{}/.cursor/settings.json", h))));
+        assert!(filter.should_ignore(&PathBuf::from(format!("{}/.oh-my-zsh/themes/foo.zsh", h))));
+        assert!(filter.should_ignore(&PathBuf::from(format!("{}/.nvm/versions/node/v18/bin/node", h))));
+
+        // Whitelisted hidden dirs under HOME → kept (credentials/important config)
+        assert!(filter.should_process(&PathBuf::from(format!("{}/.ssh/id_rsa", h))));
+        assert!(filter.should_process(&PathBuf::from(format!("{}/.gnupg/pubring.kbx", h))));
+        assert!(filter.should_process(&PathBuf::from(format!("{}/.aws/credentials", h))));
+        assert!(filter.should_process(&PathBuf::from(format!("{}/.kube/config", h))));
+
+        // Hidden FILES directly at HOME root → never affected by this rule
+        assert!(filter.should_process(&PathBuf::from(format!("{}/.zshrc", h))));
+        assert!(filter.should_process(&PathBuf::from(format!("{}/.gitconfig", h))));
+    }
+
+    #[test]
+    fn test_tmp_hex_pattern() {
+        let filter = PathFilter::default();
+        assert!(filter.should_ignore(&PathBuf::from(
+            "/Users/foo/.config/foo.json.tmp-5885abc123"
+        )));
+        assert!(filter.should_ignore(&PathBuf::from(
+            "/tmp/update-notifier.json.tmp-1234567890abcdef"
+        )));
+    }
+
+    #[test]
+    fn test_lock_files() {
+        let filter = PathFilter::default();
+        // Transient process-lock files → ignored
+        assert!(filter.should_ignore(&PathBuf::from("/Users/foo/.claude.json.lock")));
+        assert!(filter.should_ignore(&PathBuf::from("/tmp/db.sqlite.lock")));
+        assert!(filter.should_ignore(&PathBuf::from("/tmp/foo.LOCK")));
+        assert!(filter.should_ignore(&PathBuf::from("/Users/foo/.zsh_history.LOCK")));
+        // Package-manager lock files (bare stem) → kept (important user content)
+        assert!(filter.should_process(&PathBuf::from("/Users/foo/project/Cargo.lock")));
+        assert!(filter.should_process(&PathBuf::from("/Users/foo/project/yarn.lock")));
+        assert!(filter.should_process(&PathBuf::from("/Users/foo/project/pnpm-lock.yaml")));
     }
 }
