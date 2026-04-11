@@ -137,8 +137,8 @@ export default function Sidebar({
               />
             ))}
 
-            {/* Fallback: show from status if scan progress not loaded yet */}
-            {!scanProgress &&
+            {/* Fallback: show from status if scan progress not loaded or has no dirs */}
+            {(!scanProgress || (dirs.length === 0 && !scanProgress.is_scanning)) &&
               status?.watch_dirs.map((dir, i) => {
                 const name = dir.split("/").pop() || dir;
                 const isSelected = selectedDir === dir || selectedDir?.startsWith(dir + "/");

@@ -124,9 +124,25 @@ pub fn start_daemon(app: &AppHandle) {
             }
         });
 
+        // Merge per-directory ignore rules into scan patterns so they apply
+        // during initial scan too (not just daemon batch processing).
+        let mut scan_patterns = scan_config.ignore_patterns.clone();
+        for (dir_str, dir_cfg) in &scan_config.dir_ignore {
+            for excluded in &dir_cfg.exclude_dirs {
+                if excluded.contains('/') {
+                    scan_patterns.push(format!("{}/{}/**", dir_str, excluded));
+                } else {
+                    scan_patterns.push(format!("{}/{}/**", dir_str, excluded));
+                }
+            }
+            for ext in &dir_cfg.exclude_extensions {
+                scan_patterns.push(format!("{}/**/*.{}", dir_str, ext));
+            }
+        }
+
         let result = rew_core::scanner::full_scan(
             &scan_config.watch_dirs,
-            &scan_config.ignore_patterns,
+            &scan_patterns,
             &rew_home_dir(),
             Some(callback),
             Some(dir_complete),
@@ -192,18 +208,21 @@ async fn run_pipeline(
     if valid_dirs.is_empty() {
         warn!("No valid watch directories found. Directories configured: {:?}", config.watch_dirs);
         warn!("Daemon will wait until directories are configured via the setup wizard.");
-        // Fall back to polling loop — wait for config changes
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            // Check if paused
-            let paused = app
-                .try_state::<AppState>()
-                .and_then(|s| s.paused.lock().ok().map(|p| *p))
-                .unwrap_or(false);
-            if paused {
-                continue;
+        // Poll until config is updated with valid directories (e.g. after setup wizard)
+        let config = loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            if let Some(state) = app.try_state::<AppState>() {
+                if let Ok(cfg) = state.config.lock() {
+                    let has_dirs = cfg.watch_dirs.iter().any(|d| d.exists());
+                    if has_dirs {
+                        info!("Watch directories now available, starting pipeline");
+                        break cfg.clone();
+                    }
+                }
             }
-        }
+        };
+        // Recurse with updated config
+        return Box::pin(run_pipeline(app, &config)).await;
     }
 
     info!(
@@ -245,6 +264,15 @@ async fn run_pipeline(
 
     // Create rule engine for anomaly detection
     let rule_engine = RuleEngine::new(config.anomaly_rules.clone(), config.watch_dirs.clone());
+
+    // Central path filter: merges built-in patterns (dist/, node_modules/,
+    // .git/, OS noise, etc.) with user-configured ignore_patterns.
+    // Used to filter ALL incoming FSEvents before any DB/window logic runs.
+    let path_filter = rew_core::watcher::filter::PathFilter::new(&config.ignore_patterns)
+        .unwrap_or_else(|e| {
+            warn!("PathFilter init failed ({e}), using defaults");
+            rew_core::watcher::filter::PathFilter::new(&[]).unwrap()
+        });
 
     // Create backup engine for file backups
     let backup_engine = BackupEngine::new(config)?;
@@ -382,7 +410,7 @@ async fn run_pipeline(
                         // once per batch based on .current_task, not on per-file heuristics.
 
                         let real_events: Vec<_> = event_batch.events.iter()
-                            .filter(|e| !is_temp_path(&e.path))
+                            .filter(|e| !path_filter.should_ignore(&e.path))
                             .collect();
 
                         if !real_events.is_empty() {
@@ -480,7 +508,38 @@ async fn run_pipeline(
                                             .map(|c| c.monitoring_window_secs)
                                             .unwrap_or(600);
 
-                                        // Collect (old_task_id_to_seal, new_task_id) before locking DB
+                                        // DB fallback: if in-memory window was lost (app lifecycle,
+                                        // unknown clear path, etc.), recover from DB before creating
+                                        // a brand-new window. Locks are acquired sequentially
+                                        // (fs_window_task → release → db → release → fs_window_task)
+                                        // to avoid holding two locks at once.
+                                        {
+                                            let need_recover = state.fs_window_task.lock()
+                                                .map(|g| g.is_none())
+                                                .unwrap_or(false);
+                                            if need_recover {
+                                                if let Ok(db) = state.db.lock() {
+                                                    if let Ok(Some(latest)) = db.get_latest_monitoring_window() {
+                                                        let age = (now - latest.started_at).num_seconds() as u64;
+                                                        if age < window_secs {
+                                                            if let Ok(mut wg) = state.fs_window_task.lock() {
+                                                                if wg.is_none() {
+                                                                    info!(
+                                                                        "Window recovered from DB: {} (age={}s)",
+                                                                        latest.id, age
+                                                                    );
+                                                                    *wg = Some(crate::state::FsWindowTask {
+                                                                        task_id: latest.id,
+                                                                        started_at: latest.started_at,
+                                                                    });
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
                                         let (task_id, old_to_seal) = {
                                             let mut window_guard = state.fs_window_task.lock().unwrap();
                                             let use_existing = window_guard.as_ref().map(|w| {
@@ -490,14 +549,12 @@ async fn run_pipeline(
 
                                             if use_existing {
                                                 let existing_id = window_guard.as_ref().unwrap().task_id.clone();
-                                                info!("WINDOW-DIAG: reuse {} (elapsed < {}s)", existing_id, window_secs);
                                                 (existing_id, None)
                                             } else {
                                                 is_new_window = true;
                                                 let old_id = window_guard.as_ref().map(|w| w.task_id.clone());
-                                                let reason = if window_guard.is_none() { "none" } else { "expired" };
                                                 let new_id = format!("fs_{}", now.format("%m%d%H%M%S%3f"));
-                                                info!("WINDOW-DIAG: create {} (prev={:?}, reason={})", new_id, old_id, reason);
+                                                info!("New monitoring window: {} (prev={:?})", new_id, old_id);
                                                 *window_guard = Some(crate::state::FsWindowTask {
                                                     task_id: new_id.clone(),
                                                     started_at: now,
@@ -545,7 +602,6 @@ async fn run_pipeline(
                                     // alive — they already have changes from earlier batches.
                                     if real_events.is_empty() {
                                         if active_ai_task_id.is_none() && is_new_window {
-                                            info!("WINDOW-DIAG: CLEAR-A {} (empty events + new window)", task_id);
                                             if let Ok(mut wg) = state.fs_window_task.lock() {
                                                 if wg.as_ref().map(|w| w.task_id == task_id).unwrap_or(false) {
                                                     *wg = None;
@@ -775,7 +831,6 @@ async fn run_pipeline(
                                         // already has changes from earlier batches; a no-op batch
                                         // (metadata touch / Spotlight) must not kill it.
                                         if active_ai_task_id.is_none() && is_new_window && changes_written == 0 {
-                                            info!("WINDOW-DIAG: CLEAR-B {} (new window + 0 changes)", task_id);
                                             let _ = db.delete_task(&task_id);
                                             if let Ok(mut wg) = state.fs_window_task.lock() {
                                                 if wg.as_ref().map(|w| w.task_id == task_id).unwrap_or(false) {
@@ -949,22 +1004,6 @@ fn is_av_file(path: &std::path::Path) -> bool {
 
 /// Returns true if this path is a temporary/system file that should be excluded
 /// from the change timeline (e.g. macOS safe-save intermediates, editor temps).
-///
-/// Rules kept in sync with `is_temp_file` in rew-cli hook.rs.
-fn is_temp_path(path: &std::path::Path) -> bool {
-    let name = match path.file_name().and_then(|n| n.to_str()) {
-        Some(n) => n,
-        None => return false,
-    };
-    if name.contains(".sb-") { return true; }         // macOS safe-save
-    if name.contains(".tmp.") { return true; }        // Claude Code staging: "foo.rs.tmp.73919"
-    if name.ends_with(".tmp") || name.ends_with(".temp") { return true; }
-    if name.starts_with(".#") { return true; }        // Emacs lock files
-    if name.ends_with(".swp") || name.ends_with(".swo") { return true; } // Vim swap
-    if name.ends_with('~') { return true; }           // Editor backup files
-    false
-}
-
 /// Read `~/.rew/.stop_suppress` (written by `rew hook stop`) and return the
 /// set of paths that should be suppressed in monitoring-window mode.
 ///
@@ -1172,9 +1211,9 @@ fn read_active_ai_task_id() -> Option<String> {
 /// Read the grace-period task ID written by `rew hook stop`.
 ///
 /// After an AI session ends, `hook stop` writes `.grace_task` with the task ID
-/// and an 8-second TTL.  This lets delayed FSEvents (e.g. from Bash `echo > file`
-/// operations that arrive after `.current_task` is removed) still be attributed
-/// to the correct AI task rather than a new monitoring window.
+/// and a 15-second TTL.  With hook-level recording (afterFileEdit etc.) as the
+/// primary capture path, this grace window only covers Cursor auto-save delays
+/// and FSEvents latency (~5 s typical).
 fn read_grace_task_id() -> Option<String> {
     let grace_file = rew_home_dir().join(".grace_task");
     let content = std::fs::read_to_string(&grace_file).ok()?;

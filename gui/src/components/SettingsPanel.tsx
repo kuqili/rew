@@ -5,8 +5,9 @@ import {
   analyzeDirectories, getStorageInfo, addWatchDir, removeWatchDir,
   getMonitoringWindow, setMonitoringWindow,
   getDirIgnoreConfig, updateDirIgnoreConfig, listDirContents, rescanWatchDir,
+  detectAiTools, installToolHook, uninstallToolHook,
   type FullAnalysis, type StorageInfo, type DirScanStatus,
-  type DirIgnoreConfigInfo, type DirContentItem,
+  type DirIgnoreConfigInfo, type DirContentItem, type AiToolInfo,
 } from "../lib/tauri";
 
 function fmt(b: number): string {
@@ -26,7 +27,7 @@ const WINDOW_OPTIONS: { label: string; secs: number }[] = [
 ];
 
 export default function SettingsPanel({ onClose }: Props) {
-  const [tab, setTab] = useState<"dirs" | "record" | "about">("dirs");
+  const [tab, setTab] = useState<"dirs" | "record" | "ai_tools" | "about">("dirs");
   const [analysis, setAnalysis] = useState<FullAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [storage, setStorage] = useState<StorageInfo | null>(null);
@@ -60,6 +61,7 @@ export default function SettingsPanel({ onClose }: Props) {
         status: "complete" as const,
         files_total: aDirs.find((d) => d.path === path)?.total_files ?? 0,
         files_done: aDirs.find((d) => d.path === path)?.total_files ?? 0,
+        files_failed: 0,
         percent: 100,
         last_completed_at: null,
       };
@@ -131,9 +133,10 @@ export default function SettingsPanel({ onClose }: Props) {
       </div>
       <div className="flex-shrink-0 border-b border-surface-border px-6 flex">
         {([
-          { k: "dirs" as const,   l: "目录管理" },
-          { k: "record" as const, l: "存档设置" },
-          { k: "about" as const,  l: "关于" },
+          { k: "dirs" as const,     l: "目录管理" },
+          { k: "record" as const,   l: "存档设置" },
+          { k: "ai_tools" as const, l: "AI 工具" },
+          { k: "about" as const,    l: "关于" },
         ]).map((t) => (
           <button key={t.k} onClick={() => setTab(t.k)}
             className={`px-4 py-2.5 text-[13px] border-b-2 transition-colors ${tab === t.k ? "border-st-blue text-st-blue font-medium" : "border-transparent text-ink-secondary hover:text-ink"}`}>
@@ -356,6 +359,8 @@ export default function SettingsPanel({ onClose }: Props) {
               )}
             </div>
           </div>
+        ) : tab === "ai_tools" ? (
+          <AiToolsTab />
         ) : (
           <div className="space-y-4 max-w-[640px]">
             <h3 className="text-[13px] font-semibold text-ink">rew — AI 时代的文件安全网</h3>
@@ -820,6 +825,164 @@ function ExcludeTreeNode({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── AI Tools Tab ───
+
+const TOOL_ICONS: Record<string, string> = {
+  claude_code: "🟠",
+  cursor: "🟣",
+};
+
+function AiToolsTab() {
+  const [tools, setTools] = useState<AiToolInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [operating, setOperating] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ toolId: string; ok: boolean; msg: string } | null>(null);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    detectAiTools()
+      .then(setTools)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const handleToggle = async (tool: AiToolInfo) => {
+    setOperating(tool.id);
+    setFeedback(null);
+    try {
+      if (tool.hook_installed) {
+        await uninstallToolHook(tool.id);
+        setFeedback({ toolId: tool.id, ok: true, msg: "Hook 已移除" });
+      } else {
+        await installToolHook(tool.id);
+        setFeedback({ toolId: tool.id, ok: true, msg: "Hook 已启用" });
+      }
+      refresh();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setFeedback({ toolId: tool.id, ok: false, msg });
+    } finally {
+      setOperating(null);
+      setTimeout(() => setFeedback(null), 4000);
+    }
+  };
+
+  return (
+    <div className="space-y-6 max-w-[580px]">
+      <div>
+        <h3 className="text-[13px] font-semibold text-ink mb-1">AI 工具 Hook 管理</h3>
+        <p className="text-2xs text-ink-muted leading-relaxed">
+          启用 hook 后，AI 工具的每次操作都会被 rew 自动记录，可随时回溯和撤销。
+          rew 会检测本机安装的 AI 工具，你可以逐个启用或关闭。
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-[13px] text-ink-secondary py-4">
+          <span className="inline-block animate-spin">◐</span> 正在检测 AI 工具…
+        </div>
+      ) : tools.length === 0 ? (
+        <div className="bg-surface-secondary rounded-lg px-4 py-6 border border-surface-border/60 text-center">
+          <div className="text-[15px] text-ink-secondary mb-1">未检测到 AI 工具</div>
+          <p className="text-2xs text-ink-muted leading-relaxed">
+            安装 Claude Code 或 Cursor 后，在此处即可一键启用 hook。
+          </p>
+          <button
+            onClick={refresh}
+            className="mt-3 px-3 py-1.5 text-[12px] text-st-blue hover:underline"
+          >
+            重新检测
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {tools.map((tool) => {
+            const isOperating = operating === tool.id;
+            const fb = feedback?.toolId === tool.id ? feedback : null;
+            return (
+              <div
+                key={tool.id}
+                className="bg-white border border-surface-border rounded-lg px-4 py-3"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-[18px]">{TOOL_ICONS[tool.id] ?? "🔧"}</span>
+                    <div>
+                      <div className="text-[13px] font-medium text-ink">{tool.name}</div>
+                      <div className="text-[11px] text-ink-muted mt-0.5">
+                        {tool.hook_installed ? (
+                          <span className="text-status-green">✓ Hook 已启用</span>
+                        ) : (
+                          <span className="text-ink-faint">未启用</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleToggle(tool)}
+                    disabled={isOperating}
+                    className={`px-4 py-1.5 rounded-lg text-[12px] font-medium transition-colors disabled:opacity-50 ${
+                      tool.hook_installed
+                        ? "border border-surface-border text-ink-secondary hover:border-status-red hover:text-status-red"
+                        : "bg-st-blue text-white hover:opacity-90"
+                    }`}
+                  >
+                    {isOperating ? (
+                      <span className="flex items-center gap-1">
+                        <span className="animate-spin text-[10px]">◐</span>
+                        处理中…
+                      </span>
+                    ) : tool.hook_installed ? (
+                      "关闭"
+                    ) : (
+                      "启用"
+                    )}
+                  </button>
+                </div>
+                {fb && (
+                  <div
+                    className={`mt-2 text-[11px] px-2 py-1 rounded ${
+                      fb.ok
+                        ? "bg-status-green-bg text-status-green"
+                        : "bg-status-red-bg text-status-red"
+                    }`}
+                  >
+                    {fb.ok ? "✓" : "✕"} {fb.msg}
+                  </div>
+                )}
+                {tool.config_path && (
+                  <div className="mt-2 text-[10px] text-ink-faint truncate" title={tool.config_path}>
+                    配置文件: {tool.config_path}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          <button
+            onClick={refresh}
+            className="text-[12px] text-ink-muted hover:text-st-blue transition-colors"
+          >
+            重新检测
+          </button>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <InfoNote>
+          <b>启用 Hook</b> 后，AI 工具（如 Cursor、Claude Code）的文件修改会被自动记录为「AI 任务」，
+          你可以在时间线中查看每次操作的详细变更，并支持一键回滚。
+        </InfoNote>
+        <InfoNote>
+          Hook 不会影响 AI 工具的正常运行。rew 只在操作前后做快照记录，不拦截、不修改任何 AI 行为。
+        </InfoNote>
+      </div>
     </div>
   );
 }

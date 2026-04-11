@@ -9,6 +9,7 @@ pub mod diff;
 pub mod db;
 pub mod detector;
 pub mod error;
+pub mod hooks;
 pub mod lifecycle;
 pub mod logging;
 pub mod notifier;
@@ -30,6 +31,12 @@ use std::path::PathBuf;
 pub fn rew_home_dir() -> PathBuf {
     let home = dirs::home_dir().expect("Could not determine home directory");
     home.join(".rew")
+}
+
+/// Returns the stable path for the rew CLI binary (~/.rew/bin/rew).
+/// All hook configurations point to this path so they survive app updates.
+pub fn rew_cli_bin_path() -> PathBuf {
+    rew_home_dir().join("bin").join("rew")
 }
 
 #[cfg(test)]

@@ -94,60 +94,10 @@ pub struct RetentionPolicyConfig {
 impl RewConfig {
     /// The canonical set of default ignore patterns.
     ///
-    /// Kept as a standalone function so both `Default` and `load()` can use it
-    /// to ensure existing configs on disk are always up-to-date.
-        pub fn default_ignore_patterns() -> Vec<String> {
-        vec![
-            // ── Version control ────────────────────────────────────────────
-            "**/.git/**".to_string(),
-            "**/.svn/**".to_string(),
-            "**/.hg/**".to_string(),
-            // ── Language / runtime build caches ────────────────────────────
-            "**/node_modules/**".to_string(),
-            "**/target/**".to_string(),
-            "**/__pycache__/**".to_string(),
-            "**/*.pyc".to_string(),
-            "**/*.pyo".to_string(),
-            "**/.venv/**".to_string(),
-            "**/venv/**".to_string(),
-            "**/.tox/**".to_string(),
-            "**/.gradle/**".to_string(),
-            "**/.m2/**".to_string(),
-            "**/vendor/**".to_string(),
-            // ── Frontend / bundler output ───────────────────────────────────
-            "**/.next/**".to_string(),
-            "**/.nuxt/**".to_string(),
-            "**/.output/**".to_string(),
-            "**/.cache/**".to_string(),
-            "**/dist/**".to_string(),
-            "**/build/**".to_string(),
-            "**/out/**".to_string(),
-            "**/.parcel-cache/**".to_string(),
-            "**/.turbo/**".to_string(),
-            // ── Compiled binary artifacts ───────────────────────────────────
-            "**/*.class".to_string(),
-            "**/*.o".to_string(),
-            "**/*.a".to_string(),
-            "**/*.so".to_string(),
-            "**/*.dylib".to_string(),
-            "**/*.dll".to_string(),
-            "**/*.exe".to_string(),
-            // ── OS / editor noise ───────────────────────────────────────────
-            "**/.DS_Store".to_string(),
-            "**/Thumbs.db".to_string(),
-            "**/*.swp".to_string(),
-            "**/*~".to_string(),
-            "**/*.sb-*".to_string(),
-            "**/.#*".to_string(),
-            "**/*.tmp".to_string(),
-            "**/*.temp".to_string(),
-            // ── Applications & installers (not user data) ───────────────────
-            "**/*.app/**".to_string(),
-            "**/*.dmg".to_string(),
-            "**/*.pkg".to_string(),
-            "**/*.iso".to_string(),
-            "**/*.msi".to_string(),
-        ]
+    /// Delegates to `PathFilter::builtin_patterns()` — the single source of
+    /// truth — so config.toml and runtime filtering always stay in sync.
+    pub fn default_ignore_patterns() -> Vec<String> {
+        crate::watcher::filter::PathFilter::builtin_patterns()
     }
 
     pub fn default_monitoring_window_secs() -> u64 {

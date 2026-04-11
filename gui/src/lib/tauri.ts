@@ -255,3 +255,24 @@ export interface StorageInfo {
 export async function getStorageInfo(): Promise<StorageInfo> {
   return invoke<StorageInfo>("get_storage_info");
 }
+
+// === AI Tool Hook Management ===
+
+export interface AiToolInfo {
+  id: string;
+  name: string;
+  hook_installed: boolean;
+  config_path: string | null;
+}
+
+export async function detectAiTools(): Promise<AiToolInfo[]> {
+  return invoke<AiToolInfo[]>("detect_ai_tools");
+}
+
+export async function installToolHook(toolId: string): Promise<void> {
+  return invoke("install_tool_hook", { toolId });
+}
+
+export async function uninstallToolHook(toolId: string): Promise<void> {
+  return invoke("uninstall_tool_hook", { toolId });
+}

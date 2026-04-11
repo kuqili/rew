@@ -295,18 +295,129 @@ pub async fn get_home_dir() -> Result<String, String> {
 
 #[tauri::command]
 pub async fn complete_setup(
+    app: AppHandle,
     state: State<'_, AppState>,
     watch_dirs: Vec<String>,
 ) -> Result<(), String> {
+    let dir_paths: Vec<PathBuf> = watch_dirs.iter().map(PathBuf::from).collect();
+
     // Save config with selected dirs
-    let mut config = state.config.lock().map_err(|e| e.to_string())?;
-    config.watch_dirs = watch_dirs.into_iter().map(PathBuf::from).collect();
-    let config_path = rew_home_dir().join("config.toml");
-    config.save(&config_path).map_err(|e| e.to_string())?;
+    {
+        let mut config = state.config.lock().map_err(|e| e.to_string())?;
+        config.watch_dirs = dir_paths.clone();
+        let config_path = rew_home_dir().join("config.toml");
+        config.save(&config_path).map_err(|e| e.to_string())?;
+    }
 
     // Mark setup as done
     let marker = rew_home_dir().join(".setup_done");
     std::fs::write(&marker, "done").map_err(|e| e.to_string())?;
+
+    // Populate scan_progress.dirs so the sidebar shows directories immediately
+    {
+        let mut progress = state.scan_progress.lock().map_err(|e| e.to_string())?;
+        for dir in &watch_dirs {
+            if !progress.dirs.iter().any(|d| &d.path == dir) {
+                progress.dirs.push(crate::state::DirScanStatus {
+                    path: dir.clone(),
+                    status: crate::state::DirStatus::Pending,
+                    files_total: 0,
+                    files_done: 0,
+                    files_stored: 0,
+                    files_skipped: 0,
+                    files_failed: 0,
+                    last_completed_at: None,
+                });
+            }
+        }
+        progress.is_scanning = true;
+        crate::state::save_scan_status(&progress);
+        let _ = app.emit("scan-progress", &*progress);
+    }
+
+    // Kick off background scan for each directory
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    for dir_path in &watch_dirs {
+        let sp = state.scan_progress.clone();
+        let dir_str = dir_path.clone();
+        let scan_config = config.clone();
+        let app_scan = app.clone();
+
+        std::thread::spawn(move || {
+            let path = PathBuf::from(&dir_str);
+            let sp2 = sp.clone();
+            let app_cb = app_scan.clone();
+            let dir_str2 = dir_str.clone();
+            let callback: rew_core::scanner::ProgressCallback = Box::new(move |update| {
+                if let Ok(mut progress) = sp2.lock() {
+                    if let Some(ds) = progress.dirs.iter_mut().find(|d| d.path == update.dir) {
+                        if ds.status != crate::state::DirStatus::Complete {
+                            ds.status = crate::state::DirStatus::Scanning;
+                        }
+                        ds.files_total = update.files_total_estimate;
+                        ds.files_done = update.files_scanned;
+                        ds.files_stored = update.files_stored;
+                        ds.files_skipped = update.files_skipped;
+                        ds.files_failed = update.files_failed;
+                    }
+                    let _ = app_cb.emit("scan-progress", &*progress);
+                }
+            });
+
+            let mut patterns = scan_config.ignore_patterns.clone();
+            let dir_key = path.display().to_string();
+            if let Some(dir_cfg) = scan_config.dir_ignore.get(&dir_key) {
+                for d in &dir_cfg.exclude_dirs {
+                    patterns.push(format!("**/{d}/**"));
+                }
+                for ext in &dir_cfg.exclude_extensions {
+                    patterns.push(format!("**/*.{ext}"));
+                }
+            }
+
+            let result = rew_core::scanner::full_scan(
+                &[path],
+                &patterns,
+                &rew_home_dir(),
+                Some(callback),
+                None,
+                scan_config.max_file_size_bytes,
+            );
+
+            if let Ok(mut progress) = sp.lock() {
+                if let Some(ds) = progress.dirs.iter_mut().find(|d| d.path == dir_str2) {
+                    ds.status = crate::state::DirStatus::Complete;
+                    ds.files_done = result.files_scanned;
+                    ds.files_stored = result.files_stored;
+                    ds.files_skipped = result.files_skipped;
+                    ds.files_failed = result.files_failed;
+                    if ds.files_total < result.files_scanned {
+                        ds.files_total = result.files_scanned;
+                    }
+                    ds.last_completed_at = Some(chrono::Utc::now().to_rfc3339());
+                }
+                // Check if all dirs are complete
+                let all_done = progress.dirs.iter().all(|d| d.status == crate::state::DirStatus::Complete);
+                if all_done {
+                    progress.is_scanning = false;
+                }
+                crate::state::save_scan_status(&progress);
+                let _ = app_scan.emit("scan-progress", &*progress);
+                if all_done {
+                    let _ = app_scan.emit("scan-complete", "setup");
+                }
+            }
+        });
+    }
+
+    // Hot-add directories to running FSEvents pipeline
+    if let Ok(tx_guard) = state.pipeline_tx.lock() {
+        if let Some(ref tx) = *tx_guard {
+            for path in &dir_paths {
+                let _ = tx.send(crate::state::PipelineCmd::AddPath(path.clone()));
+            }
+        }
+    }
 
     Ok(())
 }
@@ -913,7 +1024,7 @@ pub async fn add_watch_dir(
             }
         }
 
-        rew_core::scanner::full_scan(
+        let result = rew_core::scanner::full_scan(
             &[path],
             &patterns,
             &rew_home_dir(),
@@ -926,6 +1037,13 @@ pub async fn add_watch_dir(
         if let Ok(mut progress) = sp.lock() {
             if let Some(ds) = progress.dirs.iter_mut().find(|d| d.path == dir_path) {
                 ds.status = crate::state::DirStatus::Complete;
+                ds.files_done = result.files_scanned;
+                ds.files_stored = result.files_stored;
+                ds.files_skipped = result.files_skipped;
+                ds.files_failed = result.files_failed;
+                if ds.files_total < result.files_scanned {
+                    ds.files_total = result.files_scanned;
+                }
                 ds.last_completed_at = Some(chrono::Utc::now().to_rfc3339());
             }
             crate::state::save_scan_status(&progress);
@@ -1151,9 +1269,13 @@ pub async fn update_dir_ignore_config(
     exclude_extensions: Vec<String>,
 ) -> Result<(), String> {
     let mut config = state.config.lock().map_err(|e| e.to_string())?;
-    let entry = config.dir_ignore.entry(dir_path).or_default();
-    entry.exclude_dirs = exclude_dirs;
-    entry.exclude_extensions = exclude_extensions;
+    if exclude_dirs.is_empty() && exclude_extensions.is_empty() {
+        config.dir_ignore.remove(&dir_path);
+    } else {
+        let entry = config.dir_ignore.entry(dir_path).or_default();
+        entry.exclude_dirs = exclude_dirs;
+        entry.exclude_extensions = exclude_extensions;
+    }
     config.save(&rew_home_dir().join("config.toml")).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1438,4 +1560,32 @@ pub async fn create_manual_snapshot(
     let _ = app.emit("task-updated", &task_id);
 
     Ok(task_id)
+}
+
+// ================================================================
+// AI Tool Hook Management
+// ================================================================
+
+#[tauri::command]
+pub async fn detect_ai_tools() -> Result<Vec<rew_core::hooks::AiToolInfo>, String> {
+    let rew_bin = rew_core::rew_cli_bin_path()
+        .to_string_lossy()
+        .to_string();
+    Ok(rew_core::hooks::detect_ai_tools(&rew_bin))
+}
+
+#[tauri::command]
+pub async fn install_tool_hook(tool_id: String) -> Result<(), String> {
+    let rew_bin = rew_core::rew_cli_bin_path()
+        .to_string_lossy()
+        .to_string();
+    rew_core::hooks::install_hook(&tool_id, &rew_bin)
+}
+
+#[tauri::command]
+pub async fn uninstall_tool_hook(tool_id: String) -> Result<(), String> {
+    let rew_bin = rew_core::rew_cli_bin_path()
+        .to_string_lossy()
+        .to_string();
+    rew_core::hooks::uninstall_hook(&tool_id, &rew_bin)
 }

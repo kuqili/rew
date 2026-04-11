@@ -112,13 +112,29 @@ enum Commands {
 #[derive(Subcommand)]
 enum HookAction {
     /// Record user prompt and create a new task (UserPromptSubmit hook)
-    Prompt,
+    Prompt {
+        /// AI tool source identifier (e.g. cursor, claude-code, windsurf)
+        #[arg(long)]
+        source: Option<String>,
+    },
     /// Check scope + backup before AI writes (PreToolUse hook)
-    PreTool,
+    PreTool {
+        /// AI tool source identifier
+        #[arg(long)]
+        source: Option<String>,
+    },
     /// Record change after AI operation (PostToolUse hook)
-    PostTool,
+    PostTool {
+        /// AI tool source identifier
+        #[arg(long)]
+        source: Option<String>,
+    },
     /// Close current task (Stop hook)
-    Stop,
+    Stop {
+        /// AI tool source identifier
+        #[arg(long)]
+        source: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -192,23 +208,23 @@ fn run() -> RewResult<()> {
         Some(Commands::Uninstall) => return commands::install::uninstall(),
         Some(Commands::Hook { action }) => {
             match action {
-                HookAction::Prompt => {
-                    commands::hook::handle_prompt()?;
+                HookAction::Prompt { source } => {
+                    commands::hook::handle_prompt(source.as_deref())?;
                     return Ok(());
                 }
-                HookAction::PreTool => {
-                    let exit_code = commands::hook::handle_pre_tool()?;
+                HookAction::PreTool { source } => {
+                    let exit_code = commands::hook::handle_pre_tool(source.as_deref())?;
                     if exit_code != 0 {
                         std::process::exit(exit_code);
                     }
                     return Ok(());
                 }
-                HookAction::PostTool => {
-                    commands::hook::handle_post_tool()?;
+                HookAction::PostTool { source } => {
+                    commands::hook::handle_post_tool(source.as_deref())?;
                     return Ok(());
                 }
-                HookAction::Stop => {
-                    commands::hook::handle_stop()?;
+                HookAction::Stop { source } => {
+                    commands::hook::handle_stop(source.as_deref())?;
                     return Ok(());
                 }
             }

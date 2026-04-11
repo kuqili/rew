@@ -2,8 +2,9 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useTasks } from "../hooks/useTasks";
 import type { TaskInfo } from "../lib/tauri";
 import { truncate } from "../lib/format";
+import { getToolMeta } from "../lib/tools";
 
-type ViewMode = "scheduled" | "ai";
+export type ViewMode = "scheduled" | "ai";
 
 /** Date filter modes */
 type DateMode = "today" | "yesterday" | "24h" | "7d" | "custom";
@@ -17,6 +18,10 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string) => void;
   dirFilter?: string | null;
+  viewMode: ViewMode;
+  onViewModeChange: (mode: ViewMode) => void;
+  toolFilter: string | null;
+  onToolFilterChange: (tool: string | null) => void;
 }
 
 /** Returns true if this task is a file-monitoring window (not an AI task). */
@@ -286,19 +291,39 @@ function DateFilterPicker({ value, onChange }: DatePickerProps) {
 
 // ─── Timeline ─────────────────────────────────────────────────────────────────
 
-export default function TaskTimeline({ selectedId, onSelect, dirFilter }: Props) {
-  const [viewMode, setViewMode] = useState<ViewMode>("scheduled");
+export default function TaskTimeline({ selectedId, onSelect, dirFilter, viewMode, onViewModeChange, toolFilter, onToolFilterChange }: Props) {
   const [dateFilter, setDateFilter] = useState<DateFilter>({ mode: "today" });
   const { tasks: allTasks, loading, error } = useTasks(dirFilter);
 
-  // Apply date filter first, then view mode
+  // Apply date filter first, then view mode, then tool filter
   const dateTasks = allTasks.filter((t) => inDateRange(t, dateFilter));
-  const tasks = dateTasks.filter((t) =>
-    viewMode === "scheduled" ? isMonitoringWindow(t) : !isMonitoringWindow(t),
-  );
+  const aiTasks = dateTasks.filter((t) => !isMonitoringWindow(t));
+  const tasks = dateTasks.filter((t) => {
+    if (viewMode === "scheduled") return isMonitoringWindow(t);
+    if (!isMonitoringWindow(t) && toolFilter) {
+      const meta = getToolMeta(t.tool);
+      const taskToolKey = t.tool?.toLowerCase().replace(/_/g, "-") ?? "";
+      return taskToolKey === toolFilter || t.tool === toolFilter;
+    }
+    return !isMonitoringWindow(t);
+  });
+
+  // Collect unique tool keys that actually appear in this date range
+  const activeTools = (() => {
+    const seen = new Map<string, string>();
+    for (const t of aiTasks) {
+      if (!t.tool) continue;
+      const key = t.tool.toLowerCase().replace(/_/g, "-");
+      if (!seen.has(key)) {
+        const meta = getToolMeta(t.tool);
+        seen.set(key, meta?.label ?? t.tool);
+      }
+    }
+    return Array.from(seen.entries()).map(([key, label]) => ({ key, label }));
+  })();
 
   const scheduledCount = dateTasks.filter(isMonitoringWindow).length;
-  const aiCount = dateTasks.filter((t) => !isMonitoringWindow(t)).length;
+  const aiCount = aiTasks.length;
 
   if (loading) {
     return (
@@ -325,7 +350,7 @@ export default function TaskTimeline({ selectedId, onSelect, dirFilter }: Props)
       <div className="flex-shrink-0 border-b border-surface-border">
         <div className="flex items-center px-3 pt-1 gap-0">
           <button
-            onClick={() => setViewMode("scheduled")}
+            onClick={() => onViewModeChange("scheduled")}
             className={`px-3 py-1.5 text-[12px] border-b-2 transition-colors ${
               viewMode === "scheduled"
                 ? "border-st-blue text-st-blue font-medium"
@@ -335,7 +360,7 @@ export default function TaskTimeline({ selectedId, onSelect, dirFilter }: Props)
             定时存档{scheduledCount > 0 ? ` (${scheduledCount})` : ""}
           </button>
           <button
-            onClick={() => setViewMode("ai")}
+            onClick={() => onViewModeChange("ai")}
             className={`px-3 py-1.5 text-[12px] border-b-2 transition-colors ${
               viewMode === "ai"
                 ? "border-st-blue text-st-blue font-medium"
@@ -344,6 +369,39 @@ export default function TaskTimeline({ selectedId, onSelect, dirFilter }: Props)
           >
             AI 任务{aiCount > 0 ? ` (${aiCount})` : ""}
           </button>
+
+          {/* Tool filter chips — only visible in AI tab when 2+ tools exist */}
+          {viewMode === "ai" && activeTools.length >= 2 && (
+            <div className="flex items-center gap-1 ml-3 pl-3 border-l border-surface-border/60">
+              <button
+                onClick={() => onToolFilterChange(null)}
+                className={`px-2 py-0.5 rounded text-[11px] transition-colors border ${
+                  toolFilter === null
+                    ? "bg-st-blue text-white border-st-blue"
+                    : "text-ink-muted border-surface-border hover:border-st-blue/50 hover:text-st-blue bg-white"
+                }`}
+              >
+                全部
+              </button>
+              {activeTools.map(({ key, label }) => {
+                const meta = getToolMeta(key);
+                const active = toolFilter === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => onToolFilterChange(active ? null : key)}
+                    className={`px-2 py-0.5 rounded text-[11px] transition-colors border ${
+                      active
+                        ? "bg-st-blue text-white border-st-blue"
+                        : "text-ink-muted border-surface-border hover:border-st-blue/50 hover:text-st-blue bg-white"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <div className="flex-1" />
 
@@ -427,14 +485,7 @@ function TaskRow({
     description = task.prompt ? truncate(task.prompt, 80) : task.summary || "未记录操作";
   }
 
-  let toolLabel = "";
-  if (!isWindow) {
-    toolLabel = task.tool?.includes("claude")
-      ? "Claude Code"
-      : task.tool?.includes("cursor")
-        ? "Cursor"
-        : task.tool || "";
-  }
+  const toolMeta = !isWindow ? getToolMeta(task.tool) : null;
 
   const dotClass = isRolledBack
     ? "w-[10px] h-[10px] rounded-full border-2 border-status-red bg-white"
@@ -480,8 +531,8 @@ function TaskRow({
           {isActive && (
             <span className="badge bg-status-yellow-bg text-status-yellow">进行中</span>
           )}
-          {toolLabel && (
-            <span className="badge bg-st-blue-light text-st-blue">{toolLabel}</span>
+          {toolMeta && (
+            <span className={`badge ${toolMeta.badgeClass}`}>{toolMeta.label}</span>
           )}
           {!isWindow && task.cwd && (
             <span className="badge bg-surface-hover text-ink-secondary" title={task.cwd}>

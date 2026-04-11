@@ -21,6 +21,7 @@ use rew_core::error::RewResult;
 use rew_core::objects::{sha256_file, ObjectStore};
 use rew_core::scope::{ScopeEngine, ScopeResult};
 use rew_core::types::{Change, ChangeType, Task, TaskStatus};
+use rew_core::watcher::filter::PathFilter;
 use rew_core::rew_home_dir;
 
 use chrono::Utc;
@@ -144,7 +145,7 @@ fn normalize_pre_tool(raw: &str) -> Option<NormalizedPreTool> {
 }
 
 fn normalize_post_tool(raw: &str) -> Option<NormalizedPostTool> {
-    // Try Claude Code format first
+    // Try Claude Code / Cursor postToolUse format (has tool_name + tool_input)
     if let Ok(input) = serde_json::from_str::<ClaudeCodeInput>(raw) {
         if let Some(tool_name) = input.tool_name {
             let (file_path, _) = extract_from_tool_input(&input.tool_input);
@@ -157,6 +158,20 @@ fn normalize_post_tool(raw: &str) -> Option<NormalizedPostTool> {
                 success,
                 cwd: input.cwd,
             });
+        }
+    }
+
+    // Cursor afterFileEdit format: has file_path at top level but no tool_name
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+        if val.get("hook_event_name").and_then(|v| v.as_str()) == Some("afterFileEdit") {
+            if let Some(fp) = val.get("file_path").and_then(|v| v.as_str()) {
+                return Some(NormalizedPostTool {
+                    tool_name: "Write".to_string(),
+                    file_path: Some(fp.to_string()),
+                    success: Some(true),
+                    cwd: val.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                });
+            }
         }
     }
 
@@ -201,9 +216,19 @@ fn extract_from_tool_input(tool_input: &Option<serde_json::Value>) -> (Option<St
 ///
 /// Reads prompt from stdin (JSON or plain text), creates a new Task record.
 /// Exit code: always 0 (prompt recording should never block AI).
-pub fn handle_prompt() -> RewResult<()> {
+pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
     let raw = read_stdin_text();
+
+    let debug_log = rew_home_dir().join("hook_debug.log");
+    let _ = std::fs::OpenOptions::new()
+        .create(true).append(true).open(&debug_log)
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "[prompt {}] source={:?} raw={}", Utc::now(), source, &raw)
+        });
+
     let input = normalize_prompt(&raw);
+    let tool_source = resolve_tool_source(source, &raw);
 
     let rew_dir = rew_home_dir();
     std::fs::create_dir_all(&rew_dir)?;
@@ -214,7 +239,7 @@ pub fn handle_prompt() -> RewResult<()> {
     let task = Task {
         id: task_id.clone(),
         prompt: if input.prompt.is_empty() { None } else { Some(input.prompt) },
-        tool: Some("claude-code".to_string()),
+        tool: Some(tool_source),
         started_at: Utc::now(),
         completed_at: None,
         status: TaskStatus::Active,
@@ -264,15 +289,18 @@ pub fn handle_prompt() -> RewResult<()> {
 /// Exit code:
 /// - 0 = allow (continue AI operation)
 /// - 2 = deny (block AI operation, stderr has reason)
-pub fn handle_pre_tool() -> RewResult<i32> {
+pub fn handle_pre_tool(_source: Option<&str>) -> RewResult<i32> {
     let raw = read_stdin_text();
     let input = match normalize_pre_tool(&raw) {
         Some(v) => v,
         None => return Ok(0), // Can't parse → fail open
     };
 
-    // Load scope engine
-    let scope = load_scope_engine();
+    // Load scope engine — use file_path and cwd from input to find .rewscope
+    let scope = load_scope_engine_for_path(
+        input.file_path.as_deref(),
+        input.cwd.as_deref(),
+    );
 
     // Check based on tool type
     match input.tool_name.as_str() {
@@ -280,8 +308,7 @@ pub fn handle_pre_tool() -> RewResult<i32> {
             if let Some(ref path_str) = input.file_path {
                 let path = canonicalize_path(path_str);
 
-                // Skip temp files (e.g. Claude Code's .tmp.XXXXX staging files)
-                if is_temp_file(&path) {
+                if is_temp_file(&path) || should_ignore_path(&path) {
                     return Ok(0);
                 }
 
@@ -330,8 +357,18 @@ pub fn handle_pre_tool() -> RewResult<i32> {
 /// Handle `rew hook post-tool` — called after AI completes a tool operation.
 ///
 /// Records the change in the database (async, doesn't block AI).
-pub fn handle_post_tool() -> RewResult<()> {
+pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
     let raw = read_stdin_text();
+
+    // Debug: log raw input for diagnosing format issues
+    let debug_log = rew_home_dir().join("hook_debug.log");
+    let _ = std::fs::OpenOptions::new()
+        .create(true).append(true).open(&debug_log)
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "[post-tool {}] source={:?} raw={}", Utc::now(), _source, &raw)
+        });
+
     let input = match normalize_post_tool(&raw) {
         Some(v) => v,
         None => return Ok(()), // Can't parse → skip silently
@@ -343,8 +380,7 @@ pub fn handle_post_tool() -> RewResult<()> {
     if let (Some(task_id), Some(ref path_str)) = (task_id, input.file_path) {
         let path = canonicalize_path(path_str);
 
-        // Skip temp files (e.g. Claude Code's .tmp.XXXXX staging files)
-        if is_temp_file(&path) {
+        if is_temp_file(&path) || should_ignore_path(&path) {
             return Ok(());
         }
         let db = open_db()?;
@@ -406,7 +442,7 @@ pub fn handle_post_tool() -> RewResult<()> {
 /// Handle `rew hook stop` — called when AI finishes responding.
 ///
 /// Closes the current task, computes summary stats.
-pub fn handle_stop() -> RewResult<()> {
+pub fn handle_stop(_source: Option<&str>) -> RewResult<()> {
     let rew_dir = rew_home_dir();
     let task_id = read_current_task_id(&rew_dir);
 
@@ -456,12 +492,13 @@ pub fn handle_stop() -> RewResult<()> {
             let _ = std::fs::write(rew_dir.join(".stop_suppress"), json);
         }
 
-        // Write a short-lived grace-period file so the daemon can still
-        // attribute delayed FSEvents (e.g. from Bash tool file ops) to this
-        // AI task for a few seconds after the session ends.
-        // Grace window must be > pipeline accumulation window (3 s) + margin.
-        // 10 s gives ~7 s of headroom while keeping mis-attribution risk low.
-        let grace_expires = Utc::now().timestamp() + 10;
+        // Write a grace-period file so the daemon can still attribute delayed
+        // FSEvents to this AI task after the session ends.
+        // With the afterFileEdit hook fix, most changes are recorded in real-time
+        // by the hook itself.  This grace window only covers edge cases where
+        // Cursor delays the actual disk write (auto-save queuing).
+        // 15 s = 2 s FSEvents latency + 3 s pipeline window + 10 s headroom.
+        let grace_expires = Utc::now().timestamp() + 15;
         let grace_json = format!(
             "{{\"task_id\":\"{}\",\"expires_secs\":{}}}",
             task_id, grace_expires
@@ -524,6 +561,48 @@ fn is_temp_file(path: &Path) -> bool {
     }
 
     false
+}
+
+/// Check if a path should be ignored by hooks, using the same PathFilter as
+/// the daemon/scanner/watcher. Loads user config (ignore_patterns + dir_ignore)
+/// from config.toml so that all exclusions apply to AI hook operations too.
+fn should_ignore_path(path: &Path) -> bool {
+    use rew_core::config::RewConfig;
+
+    thread_local! {
+        static CONFIG: Option<RewConfig> = {
+            let config_path = rew_home_dir().join("config.toml");
+            RewConfig::load(&config_path).ok()
+        };
+        static FILTER: PathFilter = {
+            CONFIG.with(|cfg| {
+                let patterns = cfg.as_ref()
+                    .map(|c| c.ignore_patterns.clone())
+                    .unwrap_or_default();
+                PathFilter::new(&patterns).unwrap_or_default()
+            })
+        };
+    }
+
+    // Global pattern check
+    if FILTER.with(|f| f.should_ignore(path)) {
+        return true;
+    }
+
+    // Per-directory ignore check (exclude_dirs + exclude_extensions)
+    CONFIG.with(|cfg| {
+        if let Some(ref cfg) = cfg {
+            for (dir_str, dir_cfg) in &cfg.dir_ignore {
+                let dir_path = Path::new(dir_str);
+                if path.starts_with(dir_path) {
+                    if PathFilter::should_ignore_by_dir_config(path, dir_path, dir_cfg) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    })
 }
 
 fn read_stdin_text() -> String {
@@ -596,22 +675,74 @@ fn read_current_session_id(rew_dir: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn load_scope_engine() -> ScopeEngine {
-    // Try to load .rewscope from current directory, then project root
-    let cwd = std::env::current_dir().ok();
+/// Determine the AI tool source. Priority:
+/// 1. Explicit --source flag (most reliable)
+/// 2. Auto-detect from stdin JSON structure
+/// 3. Fallback to "ai-tool"
+fn resolve_tool_source(explicit: Option<&str>, raw_input: &str) -> String {
+    if let Some(s) = explicit {
+        return s.to_string();
+    }
 
-    if let Some(ref dir) = cwd {
-        let scope_file = dir.join(".rewscope");
-        if scope_file.exists() {
-            if let Ok(engine) = ScopeEngine::from_file(&scope_file) {
-                return engine;
+    // Auto-detect from JSON structure
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw_input) {
+        // Claude Code: has session_id and typically tool_input/tool_response
+        if val.get("session_id").is_some() {
+            return "claude-code".to_string();
+        }
+        // Cursor: has hook_event_name or specific cursor-style fields
+        if val.get("hook_event_name").is_some() {
+            return "cursor".to_string();
+        }
+        // Windsurf: has windsurf-specific fields
+        if val.get("windsurf_session").is_some() {
+            return "windsurf".to_string();
+        }
+    }
+
+    "ai-tool".to_string()
+}
+
+fn load_scope_engine_for_path(file_path: Option<&str>, cwd_hint: Option<&str>) -> ScopeEngine {
+    // Walk up from the target file path to find the nearest .rewscope.
+    // This works regardless of the hook process's CWD (which may be ~/.cursor/
+    // for user-level Cursor hooks).
+    let search_roots: Vec<PathBuf> = [
+        file_path.map(|p| PathBuf::from(p)),
+        cwd_hint.map(|p| PathBuf::from(p)),
+        std::env::current_dir().ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for start in &search_roots {
+        let mut dir = if start.is_file() || !start.exists() {
+            start.parent().map(|p| p.to_path_buf())
+        } else {
+            Some(start.clone())
+        };
+
+        // Walk up at most 20 levels
+        for _ in 0..20 {
+            if let Some(ref d) = dir {
+                let scope_file = d.join(".rewscope");
+                if scope_file.exists() {
+                    if let Ok(engine) = ScopeEngine::from_file(&scope_file) {
+                        return engine;
+                    }
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            } else {
+                break;
             }
         }
     }
 
-    // Fallback: default rules
-    ScopeEngine::default_rules(cwd).unwrap_or_else(|_| {
-        // Absolute fallback: no rules (allow all)
+    // Fallback: default rules with best-guess project root
+    let root = cwd_hint.map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    ScopeEngine::default_rules(root).unwrap_or_else(|_| {
         ScopeEngine::from_config(
             rew_core::scope::RewScopeFile::default(),
             None,

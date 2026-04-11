@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useTaskChanges } from "../hooks/useTasks";
 import { type TaskInfo, type ChangeInfo, getTask, restoreFile, getChangeDiff } from "../lib/tauri";
 import { timeAgo, formatDateTime, fileName, dirName } from "../lib/format";
+import { getToolMeta } from "../lib/tools";
 import DiffViewer from "./DiffViewer";
 import RollbackPanel from "./RollbackPanel";
 
@@ -56,9 +57,13 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
     getTask(taskId).then(setTask).catch(() => setTask(null));
   }, [taskId]);
 
-  // Auto-select first file when list loads
+  // Auto-select first file, or reset if current selection is no longer valid
   useEffect(() => {
-    if (changes.length > 0 && selectedFilePath === null) {
+    if (changes.length === 0) {
+      setSelectedFilePath(null);
+      return;
+    }
+    if (selectedFilePath === null || !changes.some((c) => c.file_path === selectedFilePath)) {
       setSelectedFilePath(changes[0].file_path);
     }
   }, [changes, selectedFilePath]);
@@ -100,10 +105,7 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
   const totalAdded = changes.reduce((s, c) => s + c.lines_added, 0);
   const totalRemoved = changes.reduce((s, c) => s + c.lines_removed, 0);
 
-  const toolBadge = isWindow ? null
-    : task.tool?.includes("claude") ? "Claude Code"
-    : task.tool?.includes("cursor") ? "Cursor"
-    : task.tool;
+  const toolMeta = isWindow ? null : getToolMeta(task.tool);
 
   const selectedChange = changes.find((c) => c.file_path === selectedFilePath) ?? null;
 
@@ -113,7 +115,7 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
       {/* ── Header: thin info bar ───────────────────────────────── */}
       <div className="flex-shrink-0 flex items-center gap-3 px-4 py-1.5 bg-surface-secondary border-b border-surface-border">
         {/* Badges */}
-        {toolBadge && <span className="badge bg-st-blue-light text-st-blue flex-shrink-0">{toolBadge}</span>}
+        {toolMeta && <span className={`badge ${toolMeta.badgeClass} flex-shrink-0`}>{toolMeta.label}</span>}
         {isWindow && (
           <span className="badge bg-surface-secondary text-ink-muted border border-surface-border/60 flex-shrink-0">
             文件监听

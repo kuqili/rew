@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import Sidebar from "./Sidebar";
 import Toolbar from "./Toolbar";
-import TaskTimeline from "./TaskTimeline";
+import TaskTimeline, { type ViewMode } from "./TaskTimeline";
 import TaskDetail from "./TaskDetail";
 import SettingsPanel from "./SettingsPanel";
 
@@ -10,6 +10,20 @@ export default function MainLayout() {
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Lifted from TaskTimeline so switching dirs doesn't reset the tab
+  const [viewMode, setViewMode] = useState<ViewMode>("scheduled");
+  const [toolFilter, setToolFilter] = useState<string | null>(null);
+
+  const handleViewModeChange = useCallback((mode: ViewMode) => {
+    setViewMode(mode);
+    setSelectedTaskId(null);
+  }, []);
+
+  const handleSelectDir = useCallback((dir: string | null) => {
+    setSelectedDir(dir);
+    setSelectedTaskId(null);
+  }, []);
 
   // Sidebar width (px), user can drag to resize
   const [sidebarWidth, setSidebarWidth] = useState(200);
@@ -42,7 +56,7 @@ export default function MainLayout() {
       {/* Left icon sidebar */}
       <Sidebar
         selectedDir={selectedDir}
-        onSelectDir={setSelectedDir}
+        onSelectDir={handleSelectDir}
         onOpenSettings={() => setShowSettings(true)}
         width={sidebarWidth}
         onWidthChange={setSidebarWidth}
@@ -75,6 +89,10 @@ export default function MainLayout() {
               selectedId={selectedTaskId}
               onSelect={setSelectedTaskId}
               dirFilter={selectedDir}
+              viewMode={viewMode}
+              onViewModeChange={handleViewModeChange}
+              toolFilter={toolFilter}
+              onToolFilterChange={setToolFilter}
               key={`${refreshKey}-${selectedDir ?? "all"}`}
             />
           </div>

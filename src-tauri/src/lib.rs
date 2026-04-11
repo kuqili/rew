@@ -9,6 +9,7 @@ use rew_core::config::RewConfig;
 use rew_core::db::Database;
 use state::AppState;
 use tauri::Manager;
+use tracing::{info, warn};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -86,8 +87,15 @@ pub fn run() {
             commands::set_monitoring_window,
             // Manual snapshot
             commands::create_manual_snapshot,
+            // AI tool hook management
+            commands::detect_ai_tools,
+            commands::install_tool_hook,
+            commands::uninstall_tool_hook,
         ])
         .setup(|app| {
+            // Install CLI binary from bundled resources to ~/.rew/bin/rew
+            install_cli_binary(app.handle());
+
             // Set up system tray
             tray::setup_tray(app.handle())?;
 
@@ -194,6 +202,70 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running rew");
+}
+
+/// Copy the bundled `rew` CLI binary from the .app resources to ~/.rew/bin/rew.
+/// In dev mode (resource not found), falls back to the cargo build output.
+fn install_cli_binary(app: &tauri::AppHandle) {
+    let dest = rew_core::rew_cli_bin_path();
+
+    // Resolve source: try Tauri resource first, then dev-mode fallback
+    let source = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|d| d.join("rew"))
+        .filter(|p| p.exists())
+        .or_else(|| {
+            // Dev-mode fallback: look in cargo target directory
+            let candidates = [
+                std::env::current_dir().ok().map(|d| d.join("target/release/rew")),
+                std::env::current_dir().ok().map(|d| d.join("target/debug/rew")),
+            ];
+            candidates.into_iter().flatten().find(|p| p.exists())
+        });
+
+    let source = match source {
+        Some(s) => s,
+        None => {
+            warn!("rew CLI binary not found in resources or target/, skipping install");
+            return;
+        }
+    };
+
+    // Skip if dest exists and has the same size (avoid redundant copy on every launch)
+    if dest.exists() {
+        let src_meta = std::fs::metadata(&source).ok();
+        let dst_meta = std::fs::metadata(&dest).ok();
+        if let (Some(s), Some(d)) = (src_meta, dst_meta) {
+            if s.len() == d.len() {
+                return;
+            }
+        }
+    }
+
+    // Ensure ~/.rew/bin/ exists
+    if let Some(parent) = dest.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            warn!("Failed to create {:?}: {}", parent, e);
+            return;
+        }
+    }
+
+    match std::fs::copy(&source, &dest) {
+        Ok(_) => {
+            // Ensure executable permission
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+            }
+            info!("Installed rew CLI to {:?}", dest);
+        }
+        Err(e) => {
+            warn!("Failed to install rew CLI: {}", e);
+        }
+    }
 }
 
 fn initialize_rew() -> Result<(Database, RewConfig), rew_core::error::RewError> {

@@ -33,7 +33,7 @@ impl PathFilter {
     /// included; `patterns` are merged on top so user config can add extras
     /// but never accidentally lose the baseline coverage.
     pub fn new(patterns: &[String]) -> Result<Self, globset::Error> {
-        let mut merged = Self::default_patterns();
+        let mut merged = Self::builtin_patterns();
         for p in patterns {
             if !merged.contains(p) {
                 merged.push(p.clone());
@@ -43,8 +43,24 @@ impl PathFilter {
     }
 
     /// Built-in patterns that are always active.
-    fn default_patterns() -> Vec<String> {
+    ///
+    /// This is the **single source of truth** for all default ignore patterns.
+    /// `RewConfig::default_ignore_patterns()` delegates here.
+    pub fn builtin_patterns() -> Vec<String> {
+        let home = std::env::var("HOME").unwrap_or_default();
         vec![
+            // ── rew's own data (MUST be first to avoid recursive storms) ──
+            format!("{}/.rew/**", home),
+            // ── macOS system / app directories (noisy + permission errors) ─
+            format!("{}/Library/**", home),
+            format!("{}/Applications/**", home),
+            format!("{}/.Trash/**", home),
+            format!("{}/.local/**", home),
+            // ── App bundles / disk images ──────────────────────────────────
+            "**/*.app/**".to_string(),
+            "**/*.dmg".to_string(),
+            "**/*.pkg".to_string(),
+            "**/*.iso".to_string(),
             // ── Version control ────────────────────────────────────────────
             "**/.git/**".to_string(),
             "**/.svn/**".to_string(),
@@ -106,6 +122,14 @@ impl PathFilter {
             if name.ends_with(".tmp") || name.ends_with(".temp") {
                 return true;
             }
+            // Claude Code staging files: "foo.rs.tmp.73919"
+            if name.contains(".tmp.") {
+                return true;
+            }
+            // Vim swap files
+            if name.ends_with(".swo") {
+                return true;
+            }
             // Emacs lock files
             if name.starts_with(".#") {
                 return true;
@@ -131,7 +155,7 @@ impl PathFilter {
                 let name_str = name.to_string_lossy();
                 if matches!(
                     name_str.as_ref(),
-                    "node_modules" | ".git" | "target" | "__pycache__"
+                    "node_modules" | ".git" | "target" | "__pycache__" | ".rew" | "Library" | ".Trash"
                 ) {
                     return true;
                 }
@@ -208,7 +232,7 @@ impl PathFilter {
 
 impl Default for PathFilter {
     fn default() -> Self {
-        Self::from_patterns(&Self::default_patterns())
+        Self::from_patterns(&Self::builtin_patterns())
             .expect("Default patterns should be valid")
     }
 }
