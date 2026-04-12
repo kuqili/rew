@@ -5,7 +5,7 @@
 
 use crate::error::{RewError, RewResult};
 use crate::types::{
-    Change, Snapshot, SnapshotTrigger, Task, TaskStatus,
+    Change, Snapshot, SnapshotTrigger, Task, TaskStats, TaskStatus, TaskWithStats,
 };
 use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -126,6 +126,29 @@ impl Database {
             "ALTER TABLE tasks ADD COLUMN cwd TEXT",
             [],
         );
+
+        // V5 migration: attribution column on changes (hook / fsevent_active / etc.)
+        let _ = self.conn.execute(
+            "ALTER TABLE changes ADD COLUMN attribution TEXT DEFAULT 'unknown'",
+            [],
+        );
+
+        // V6: AI task statistics table
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS task_stats (
+                task_id          TEXT PRIMARY KEY REFERENCES tasks(id),
+                model            TEXT,
+                duration_secs    REAL,
+                tool_calls       INTEGER NOT NULL DEFAULT 0,
+                files_changed    INTEGER NOT NULL DEFAULT 0,
+                input_tokens     INTEGER,
+                output_tokens    INTEGER,
+                total_cost_usd   REAL,
+                session_id       TEXT,
+                conversation_id  TEXT,
+                extra_json       TEXT
+            );"
+        )?;
 
         Ok(())
     }
@@ -297,20 +320,26 @@ impl Database {
     /// List all tasks ordered by started_at descending.
     /// In-progress monitoring windows (tool='文件监听' with NULL completed_at) are excluded
     /// so users only see fully-sealed archive entries.
-    pub fn list_tasks(&self) -> RewResult<Vec<Task>> {
+    pub fn list_tasks(&self) -> RewResult<Vec<TaskWithStats>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, prompt, tool, started_at, completed_at, status, risk_level, summary, cwd
-             FROM tasks
-             WHERE (tool != '文件监听' OR completed_at IS NOT NULL)
-             ORDER BY started_at DESC",
+            "SELECT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
+                    t.status, t.risk_level, t.summary, t.cwd,
+                    COUNT(c.id) AS changes_count,
+                    COALESCE(SUM(c.lines_added), 0) AS total_lines_added,
+                    COALESCE(SUM(c.lines_removed), 0) AS total_lines_removed
+             FROM tasks t
+             LEFT JOIN changes c ON c.task_id = t.id
+             WHERE (t.tool != '文件监听' OR t.completed_at IS NOT NULL)
+             GROUP BY t.id
+             ORDER BY t.started_at DESC",
         )?;
 
         let mut tasks = Vec::new();
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let task = Self::row_to_task(row)
+            let ts = Self::row_to_task_with_stats(row)
                 .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))))?;
-            tasks.push(task);
+            tasks.push(ts);
         }
 
         Ok(tasks)
@@ -437,6 +466,17 @@ impl Database {
         })
     }
 
+    /// Parse a row from a JOIN-aggregate query (columns 0..8 = task, 9..11 = stats).
+    fn row_to_task_with_stats(row: &rusqlite::Row) -> Result<TaskWithStats, String> {
+        let task = Self::row_to_task(row)?;
+        Ok(TaskWithStats {
+            task,
+            changes_count: row.get::<_, i64>(9).map_err(|e| e.to_string())? as u32,
+            total_lines_added: row.get::<_, i64>(10).map_err(|e| e.to_string())? as u32,
+            total_lines_removed: row.get::<_, i64>(11).map_err(|e| e.to_string())? as u32,
+        })
+    }
+
     // ================================================================
     // Change CRUD (V2)
     // ================================================================
@@ -444,8 +484,8 @@ impl Database {
     /// Record a file change within a task.
     pub fn insert_change(&self, change: &Change) -> RewResult<i64> {
         self.conn.execute(
-            "INSERT INTO changes (task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO changes (task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 change.task_id,
                 change.file_path.to_string_lossy().to_string(),
@@ -455,9 +495,22 @@ impl Database {
                 change.diff_text,
                 change.lines_added,
                 change.lines_removed,
+                change.attribution,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Return the recorded `old_hash` for `(task_id, file_path)` if it already
+    /// exists.  Used by hook.rs to compute cumulative line stats across multiple
+    /// edits to the same file within the same task.
+    pub fn get_task_file_old_hash(&self, task_id: &str, file_path: &Path) -> Option<String> {
+        let path_str = file_path.to_string_lossy().to_string();
+        self.conn.query_row(
+            "SELECT old_hash FROM changes WHERE task_id = ?1 AND file_path = ?2",
+            params![task_id, path_str],
+            |row| row.get::<_, Option<String>>(0),
+        ).optional().ok().flatten().flatten()
     }
 
     /// Insert or update a change record for (task_id, file_path).
@@ -479,10 +532,15 @@ impl Database {
         if let Some((existing_id, existing_old_hash)) = existing {
             // Keep the earliest old_hash (what the file looked like before this task)
             let preserved_old_hash = existing_old_hash.or(change.old_hash.clone());
+            // hook.rs always computes the cumulative diff (original old_hash → latest
+            // new_hash via get_task_file_old_hash), so unconditionally update all fields.
+            // The previous CASE WHEN guard is no longer needed — it caused "add then remove"
+            // scenarios to report incorrect non-zero counts.
             self.conn.execute(
                 "UPDATE changes SET change_type=?1, old_hash=?2, new_hash=?3,
-                 diff_text=?4, lines_added=?5, lines_removed=?6
-                 WHERE id=?7",
+                 diff_text=?4, lines_added=?5, lines_removed=?6,
+                 attribution=COALESCE(?7, attribution)
+                 WHERE id=?8",
                 params![
                     change.change_type.to_string(),
                     preserved_old_hash,
@@ -490,6 +548,7 @@ impl Database {
                     change.diff_text,
                     change.lines_added,
                     change.lines_removed,
+                    change.attribution,
                     existing_id,
                 ],
             )?;
@@ -502,7 +561,7 @@ impl Database {
     /// Get all changes for a task.
     pub fn get_changes_for_task(&self, task_id: &str) -> RewResult<Vec<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution
              FROM changes WHERE task_id = ?1 ORDER BY id ASC",
         )?;
 
@@ -518,51 +577,59 @@ impl Database {
     }
 
     /// List tasks that have at least one change under `dir_prefix`.
-    pub fn list_tasks_by_dir(&self, dir_prefix: &str) -> RewResult<Vec<Task>> {
+    pub fn list_tasks_by_dir(&self, dir_prefix: &str) -> RewResult<Vec<TaskWithStats>> {
         let like_pattern = format!("{}/%", dir_prefix);
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
-                    t.status, t.risk_level, t.summary, t.cwd
+            "SELECT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
+                    t.status, t.risk_level, t.summary, t.cwd,
+                    COUNT(c.id) AS changes_count,
+                    COALESCE(SUM(c.lines_added), 0) AS total_lines_added,
+                    COALESCE(SUM(c.lines_removed), 0) AS total_lines_removed
              FROM tasks t
              JOIN changes c ON c.task_id = t.id
              WHERE c.file_path LIKE ?1
                AND (t.tool != '文件监听' OR t.completed_at IS NOT NULL)
+             GROUP BY t.id
              ORDER BY t.started_at DESC",
         )?;
 
         let mut tasks = Vec::new();
         let mut rows = stmt.query(params![like_pattern])?;
         while let Some(row) = rows.next()? {
-            let task = Self::row_to_task(row)
+            let ts = Self::row_to_task_with_stats(row)
                 .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(
                     Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)),
                 )))?;
-            tasks.push(task);
+            tasks.push(ts);
         }
 
         Ok(tasks)
     }
 
     /// Filter tasks to those containing a specific file change (exact path match).
-    pub fn list_tasks_by_file(&self, file_path: &str) -> RewResult<Vec<Task>> {
+    pub fn list_tasks_by_file(&self, file_path: &str) -> RewResult<Vec<TaskWithStats>> {
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
-                    t.status, t.risk_level, t.summary, t.cwd
+            "SELECT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
+                    t.status, t.risk_level, t.summary, t.cwd,
+                    COUNT(c.id) AS changes_count,
+                    COALESCE(SUM(c.lines_added), 0) AS total_lines_added,
+                    COALESCE(SUM(c.lines_removed), 0) AS total_lines_removed
              FROM tasks t
              JOIN changes c ON c.task_id = t.id
              WHERE c.file_path = ?1
                AND (t.tool != '文件监听' OR t.completed_at IS NOT NULL)
+             GROUP BY t.id
              ORDER BY t.started_at DESC",
         )?;
 
         let mut tasks = Vec::new();
         let mut rows = stmt.query(params![file_path])?;
         while let Some(row) = rows.next()? {
-            let task = Self::row_to_task(row)
+            let ts = Self::row_to_task_with_stats(row)
                 .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(
                     Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)),
                 )))?;
-            tasks.push(task);
+            tasks.push(ts);
         }
 
         Ok(tasks)
@@ -593,7 +660,7 @@ impl Database {
     pub fn get_changes_for_task_in_dir(&self, task_id: &str, dir_prefix: &str) -> RewResult<Vec<Change>> {
         let like_pattern = format!("{}/%", dir_prefix);
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution
              FROM changes WHERE task_id = ?1 AND file_path LIKE ?2 ORDER BY id ASC",
         )?;
 
@@ -613,7 +680,7 @@ impl Database {
     /// Get changes for a task matching a specific file path exactly.
     pub fn get_changes_for_task_by_file(&self, task_id: &str, file_path: &str) -> RewResult<Vec<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution
              FROM changes WHERE task_id = ?1 AND file_path = ?2 ORDER BY id ASC",
         )?;
 
@@ -680,7 +747,7 @@ impl Database {
 
     pub fn get_latest_change_for_file(&self, file_path: &Path) -> RewResult<Option<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution
              FROM changes WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
         )?;
 
@@ -704,6 +771,8 @@ impl Database {
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc));
 
+        let attribution: Option<String> = row.get(10).unwrap_or(None);
+
         Ok(Change {
             id: row.get(0).map_err(|e| e.to_string())?,
             task_id: row.get(1).map_err(|e| e.to_string())?,
@@ -715,7 +784,87 @@ impl Database {
             lines_added: row.get(7).map_err(|e| e.to_string())?,
             lines_removed: row.get(8).map_err(|e| e.to_string())?,
             restored_at,
+            attribution,
         })
+    }
+
+    // ================================================================
+    // TaskStats CRUD (V6)
+    // ================================================================
+
+    /// Create an initial stats row for a task (called at prompt time).
+    pub fn create_task_stats(&self, stats: &TaskStats) -> RewResult<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO task_stats
+             (task_id, model, duration_secs, tool_calls, files_changed,
+              input_tokens, output_tokens, total_cost_usd,
+              session_id, conversation_id, extra_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                stats.task_id,
+                stats.model,
+                stats.duration_secs,
+                stats.tool_calls,
+                stats.files_changed,
+                stats.input_tokens,
+                stats.output_tokens,
+                stats.total_cost_usd,
+                stats.session_id,
+                stats.conversation_id,
+                stats.extra_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Increment tool_calls counter by 1 for a task.
+    pub fn increment_tool_calls(&self, task_id: &str) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE task_stats SET tool_calls = tool_calls + 1 WHERE task_id = ?1",
+            params![task_id],
+        )?;
+        Ok(())
+    }
+
+    /// Finalize stats at task stop: set duration_secs and files_changed.
+    pub fn finalize_task_stats(
+        &self,
+        task_id: &str,
+        duration_secs: f64,
+        files_changed: i32,
+    ) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE task_stats SET duration_secs = ?1, files_changed = ?2 WHERE task_id = ?3",
+            params![duration_secs, files_changed, task_id],
+        )?;
+        Ok(())
+    }
+
+    /// Retrieve stats for a task.
+    pub fn get_task_stats(&self, task_id: &str) -> RewResult<Option<TaskStats>> {
+        let result = self.conn.query_row(
+            "SELECT task_id, model, duration_secs, tool_calls, files_changed,
+                    input_tokens, output_tokens, total_cost_usd,
+                    session_id, conversation_id, extra_json
+             FROM task_stats WHERE task_id = ?1",
+            params![task_id],
+            |row| {
+                Ok(TaskStats {
+                    task_id: row.get(0)?,
+                    model: row.get(1)?,
+                    duration_secs: row.get(2)?,
+                    tool_calls: row.get(3)?,
+                    files_changed: row.get(4)?,
+                    input_tokens: row.get(5)?,
+                    output_tokens: row.get(6)?,
+                    total_cost_usd: row.get(7)?,
+                    session_id: row.get(8)?,
+                    conversation_id: row.get(9)?,
+                    extra_json: row.get(10)?,
+                })
+            },
+        ).optional()?;
+        Ok(result)
     }
 
     /// Mark a single file change as individually restored.
@@ -870,6 +1019,7 @@ mod tests {
             lines_added: 1,
             lines_removed: 0,
             restored_at: None,
+            attribution: None,
         };
         let id1 = db.insert_change(&change1).unwrap();
         assert!(id1 > 0);
@@ -885,6 +1035,7 @@ mod tests {
             lines_added: 1,
             lines_removed: 1,
             restored_at: None,
+            attribution: None,
         };
         db.insert_change(&change2).unwrap();
 

@@ -1,8 +1,5 @@
 /**
- * DiffViewer — renders a unified diff with proper old/new line numbers.
- *
- * Parses the `@@ -start,count +start,count @@` hunk headers to track
- * exact line numbers, giving a GitHub-style diff experience.
+ * DiffViewer — dark-themed unified diff with line numbers.
  */
 interface Props {
   diffText: string | null;
@@ -30,7 +27,6 @@ function parseDiff(text: string): DiffLine[] {
     }
 
     if (raw.startsWith("@@")) {
-      // @@ -start[,count] +start[,count] @@
       const m = raw.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
       if (m) {
         oldLine = parseInt(m[1], 10);
@@ -50,7 +46,6 @@ function parseDiff(text: string): DiffLine[] {
       continue;
     }
 
-    // Context line (space prefix or unrecognised)
     const content = raw.startsWith(" ") ? raw.slice(1) : raw;
     lines.push({ type: "ctx", content, oldLineNo: oldLine++, newLineNo: newLine++ });
   }
@@ -61,7 +56,7 @@ function parseDiff(text: string): DiffLine[] {
 export default function DiffViewer({ diffText, loading }: Props) {
   if (loading) {
     return (
-      <div className="px-6 py-3 text-ink-muted text-2xs flex items-center gap-2">
+      <div className="px-6 py-4 text-zinc-500 text-[12px] flex items-center gap-2 bg-zinc-900">
         <span className="animate-spin inline-block">◐</span> 加载 diff...
       </div>
     );
@@ -69,38 +64,37 @@ export default function DiffViewer({ diffText, loading }: Props) {
 
   if (!diffText) {
     return (
-      <div className="px-6 py-3 text-ink-muted text-2xs text-center">
+      <div className="px-6 py-4 text-zinc-600 text-[12px] text-center bg-zinc-900">
         二进制文件或无可用 diff
       </div>
     );
   }
 
-  // Simple notice messages (not actual diff)
   if (!diffText.includes("@@") && !diffText.startsWith("---")) {
     return (
-      <div className="px-6 py-3 text-ink-muted text-2xs text-center">{diffText.trim()}</div>
+      <div className="px-6 py-4 text-zinc-500 text-[12px] text-center bg-zinc-900">{diffText.trim()}</div>
     );
   }
 
   const lines = parseDiff(diffText);
 
   return (
-    <div className="overflow-x-auto max-h-[400px] overflow-y-auto text-[11px] font-mono leading-[1.55]">
+    <div className="overflow-x-auto overflow-y-auto text-[11px] font-mono leading-[1.6] bg-zinc-900">
       <table className="w-full border-collapse">
         <tbody>
           {lines.map((line, i) => {
             if (line.type === "header") {
               return (
-                <tr key={i} className="bg-surface-secondary text-ink-muted">
-                  <td colSpan={3} className="px-4 py-0.5 select-none">{line.content}</td>
+                <tr key={i} className="bg-zinc-800/50">
+                  <td colSpan={3} className="px-4 py-0.5 text-zinc-500 select-none">{line.content}</td>
                 </tr>
               );
             }
 
             if (line.type === "hunk") {
               return (
-                <tr key={i} className="bg-st-blue/5 text-st-blue">
-                  <td colSpan={3} className="px-4 py-0.5 select-none">{line.content}</td>
+                <tr key={i} className="bg-zinc-800">
+                  <td colSpan={3} className="px-4 py-1 text-blue-400 select-none text-[10px]">{line.content}</td>
                 </tr>
               );
             }
@@ -109,38 +103,35 @@ export default function DiffViewer({ diffText, loading }: Props) {
             const isDel = line.type === "del";
 
             const rowBg = isAdd
-              ? "bg-[#e6ffec]"
+              ? "bg-emerald-950/30"
               : isDel
-                ? "bg-[#ffebe9]"
+                ? "bg-red-950/30"
                 : "";
 
             const sign = isAdd ? "+" : isDel ? "−" : " ";
             const signColor = isAdd
-              ? "text-status-green"
+              ? "text-emerald-400"
               : isDel
-                ? "text-status-red"
-                : "text-ink-faint";
+                ? "text-red-400"
+                : "text-zinc-700";
+
+            const textColor = isAdd
+              ? "text-emerald-300"
+              : isDel
+                ? "text-red-300"
+                : "text-zinc-300";
 
             return (
               <tr key={i} className={rowBg}>
-                {/* Old line number */}
-                <td
-                  className="w-[44px] text-right pr-2 pl-2 border-r border-surface-border/30 text-ink-faint select-none tabular-nums"
-                  style={{ minWidth: 44 }}
-                >
+                <td className="w-[44px] text-right pr-2 pl-2 border-r border-zinc-800 text-zinc-600 select-none tabular-nums" style={{ minWidth: 44 }}>
                   {line.oldLineNo ?? ""}
                 </td>
-                {/* New line number */}
-                <td
-                  className="w-[44px] text-right pr-2 pl-2 border-r border-surface-border/30 text-ink-faint select-none tabular-nums"
-                  style={{ minWidth: 44 }}
-                >
+                <td className="w-[44px] text-right pr-2 pl-2 border-r border-zinc-800 text-zinc-600 select-none tabular-nums" style={{ minWidth: 44 }}>
                   {line.newLineNo ?? ""}
                 </td>
-                {/* Sign + content */}
                 <td className="pl-3 pr-4 whitespace-pre">
                   <span className={`mr-2 ${signColor} select-none`}>{sign}</span>
-                  <span className="text-ink">{line.content}</span>
+                  <span className={textColor}>{line.content}</span>
                 </td>
               </tr>
             );

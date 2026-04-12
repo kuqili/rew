@@ -1,286 +1,217 @@
-import { useState, useRef, useCallback } from "react";
+import { useState } from "react";
+import { Clock, Sparkles, FolderOpen, Settings } from "lucide-react";
 import { useStatus } from "../hooks/useTasks";
 import { useScanProgress } from "../hooks/useScanProgress";
 import { listDirContents, type DirContentItem, type DirScanStatus } from "../lib/tauri";
+import type { ViewMode } from "./MainLayout";
 
 interface Props {
   selectedDir: string | null;
   onSelectDir: (dir: string | null) => void;
+  viewMode: ViewMode;
+  onViewModeChange: (mode: ViewMode) => void;
   onOpenSettings: () => void;
-  width: number;
-  onWidthChange: (w: number) => void;
+  /** AI tool filter sub-items under "AI 任务历史" */
+  toolFilter: string | null;
+  onToolFilterChange: (tool: string | null) => void;
+  activeTools: { key: string; label: string }[];
 }
 
 export default function Sidebar({
   selectedDir,
   onSelectDir,
+  viewMode,
+  onViewModeChange,
   onOpenSettings,
-  width,
-  onWidthChange,
+  toolFilter,
+  onToolFilterChange,
+  activeTools,
 }: Props) {
   const status = useStatus();
   const scanProgress = useScanProgress();
-  const [search, setSearch] = useState("");
-
   const dirs = scanProgress?.dirs || [];
 
-  // Drag-to-resize handle
-  const dragging = useRef(false);
-  const onResizeMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      dragging.current = true;
-      const startX = e.clientX;
-      const startW = width;
-      const onMove = (me: MouseEvent) => {
-        if (!dragging.current) return;
-        const newW = Math.max(140, Math.min(startW + me.clientX - startX, 380));
-        onWidthChange(newW);
-      };
-      const onUp = () => {
-        dragging.current = false;
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    },
-    [width, onWidthChange]
-  );
-
-  const normalizedSearch = search.trim().toLowerCase();
+  const isRunning = status?.running ?? false;
 
   return (
-    <aside
-      className="relative bg-surface-sidebar flex flex-col h-full shadow-sidebar select-none flex-shrink-0"
-      style={{ width }}
-    >
-      {/* Drag region / title */}
-      <div data-tauri-drag-region className="h-[38px] flex items-end px-4 pb-1">
-        <span className="text-2xs font-semibold text-ink-muted uppercase tracking-wider">
-          WORKSPACE
+    <aside className="w-[220px] flex-shrink-0 bg-bg-sidebar backdrop-blur-xl flex flex-col h-full select-none border-r border-border">
+      {/* Status — sits at very top of column content, matching v7 */}
+      <div className="px-4 py-2 flex items-center gap-2 flex-shrink-0">
+        <div className={`w-[7px] h-[7px] rounded-full flex-shrink-0 ${isRunning ? "bg-sys-green" : "bg-t-4"}`} />
+        <span className="text-[13px] font-medium text-t-1">
+          {isRunning ? "rew 实时防护中" : "已暂停"}
         </span>
       </div>
 
       {/* Navigation */}
-      <nav className="mt-1 flex-1 overflow-y-auto overflow-x-hidden min-h-0">
-        <div className="nav-item active">
-          <span className="nav-icon">🕐</span>
-          <span>存档</span>
-        </div>
+      <nav className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
+        {/* WORKSPACE */}
+        <SectionLabel>Workspace</SectionLabel>
 
-        <div className="mt-6 px-4 mb-2">
-          <span className="text-2xs font-semibold text-ink-muted uppercase tracking-wider">
-            保护状态
-          </span>
-        </div>
+        <NavItem
+          icon={<Clock className="w-4 h-4" />}
+          label="最近活动"
+          active={viewMode === "all"}
+          onClick={() => onViewModeChange("all")}
+        />
+        <NavItem
+          icon={<svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M3.5 4h9M3.5 8h6M3.5 12h7.5"/></svg>}
+          label="AI 任务历史"
+          active={viewMode === "ai" && toolFilter === null}
+          onClick={() => onViewModeChange("ai")}
+        />
 
-        <div className="nav-item">
-          <span className="nav-icon">🛡️</span>
-          <span>{status?.running ? "保护中" : "已暂停"}</span>
-          {status?.running && (
-            <span className="ml-auto w-2 h-2 rounded-full bg-status-green" />
-          )}
-        </div>
-
-        {/* Protected directories */}
-        <div className="mt-5">
-          <div className="px-3 mb-2">
-            <span className="text-2xs font-semibold text-ink-muted uppercase tracking-wider block mb-1.5">
-              保护目录
-            </span>
-            {/* Search box */}
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索目录或文件…"
-              className="w-full px-2 py-1 rounded text-[11px] bg-surface-hover border border-surface-border/60 text-ink-secondary placeholder-ink-faint focus:outline-none focus:border-st-blue/60 focus:bg-white transition-colors"
+        {/* AI tool filter sub-items — disclosure children */}
+        {viewMode === "ai" && activeTools.length >= 1 && (
+          <div className="mt-0.5 mb-1">
+            <SubItem
+              label="全部"
+              selected={toolFilter === null}
+              onClick={() => onToolFilterChange(null)}
             />
-          </div>
-
-          {/* Scan progress banner */}
-          {scanProgress?.is_scanning && (
-            <div className="mx-3 mb-2 px-2 py-1.5 bg-surface-hover rounded text-2xs text-ink-secondary">
-              <div className="flex items-center gap-1.5 mb-1">
-                <span className="inline-block animate-spin text-[10px]">◐</span>
-                <span>正在初始化保护...</span>
-              </div>
-              <OverallProgressBar dirs={scanProgress.dirs} />
-            </div>
-          )}
-
-          {/* All directories option */}
-          {!normalizedSearch && (
-            <button
-              onClick={() => onSelectDir(null)}
-              className={`w-full flex items-center gap-2 px-4 py-1.5 text-2xs cursor-pointer transition-colors ${
-                selectedDir === null
-                  ? "bg-st-blue/10 text-st-blue font-medium border-l-2 border-st-blue"
-                  : "text-ink-secondary hover:bg-surface-hover border-l-2 border-transparent"
-              }`}
-            >
-              <span className="w-3 flex-shrink-0 text-center text-[10px]">◉</span>
-              <span className="truncate flex-1 text-left">全部目录</span>
-            </button>
-          )}
-
-          {/* Directory list with expandable sub-dirs and files */}
-          <div className="space-y-0">
-            {dirs.map((dir) => (
-              <DirEntry
-                key={dir.path}
-                dir={dir}
-                selectedDir={selectedDir}
-                onSelectDir={onSelectDir}
-                searchQuery={normalizedSearch}
+            {activeTools.map(({ key, label }) => (
+              <SubItem
+                key={key}
+                label={label}
+                selected={toolFilter === key}
+                onClick={() => onToolFilterChange(toolFilter === key ? null : key)}
               />
             ))}
-
-            {/* Fallback: show from status if scan progress not loaded or has no dirs */}
-            {(!scanProgress || (dirs.length === 0 && !scanProgress.is_scanning)) &&
-              status?.watch_dirs.map((dir, i) => {
-                const name = dir.split("/").pop() || dir;
-                const isSelected = selectedDir === dir || selectedDir?.startsWith(dir + "/");
-                return (
-                  <button
-                    key={i}
-                    onClick={() => onSelectDir(dir)}
-                    className={`w-full flex items-center gap-2 px-4 py-1 text-2xs cursor-pointer transition-colors ${
-                      isSelected
-                        ? "bg-st-blue/10 text-st-blue border-l-2 border-st-blue"
-                        : "text-ink-secondary hover:bg-surface-hover border-l-2 border-transparent"
-                    }`}
-                    title={dir}
-                  >
-                    <span className="opacity-40">○</span>
-                    <span className="truncate text-left">{name}</span>
-                  </button>
-                );
-              })}
           </div>
-        </div>
+        )}
+
+        {/* PROTECTED */}
+        <SectionLabel>Protected</SectionLabel>
+
+        {/* All directories */}
+        <NavItem
+          icon={<FolderOpen className="w-4 h-4" />}
+          label="全部目录"
+          active={selectedDir === null}
+          onClick={() => onSelectDir(null)}
+        />
+
+        {/* Expandable directory trees */}
+        {dirs.map((dir) => (
+          <DirTreeEntry
+            key={dir.path}
+            dir={dir}
+            selectedDir={selectedDir}
+            onSelectDir={onSelectDir}
+          />
+        ))}
+
+        {/* Fallback from status */}
+        {(!scanProgress || (dirs.length === 0 && !scanProgress.is_scanning)) &&
+          status?.watch_dirs.map((dir, i) => {
+            const name = dir.split("/").pop() || dir;
+            return (
+              <NavItem
+                key={i}
+                icon={<FolderOpen className="w-4 h-4" />}
+                label={name}
+                active={selectedDir === dir}
+                onClick={() => onSelectDir(selectedDir === dir ? null : dir)}
+              />
+            );
+          })}
       </nav>
 
-      {/* Bottom: manage button */}
-      <div className="p-3 border-t border-surface-border">
+      {/* Footer */}
+      <div className="mt-auto p-2 border-t border-border-light">
         <button
           onClick={onOpenSettings}
-          className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-2xs text-ink-secondary hover:bg-surface-hover hover:text-ink transition-colors"
+          className="w-full flex items-center gap-2 h-[28px] px-3 mx-2 rounded text-[12px] text-t-3 hover:bg-bg-hover cursor-default transition-colors"
         >
-          <span>⚙</span>
-          <span>管理保护目录</span>
+          <Settings className="w-[14px] h-[14px]" />
+          管理保护目录
         </button>
       </div>
-
-      {/* Right-edge resize handle */}
-      <div
-        onMouseDown={onResizeMouseDown}
-        className="absolute top-0 right-0 w-[4px] h-full cursor-col-resize hover:bg-st-blue/30 transition-colors z-10"
-      />
     </aside>
   );
 }
 
-function DirEntry({
-  dir,
-  selectedDir,
-  onSelectDir,
-  searchQuery,
-}: {
-  dir: DirScanStatus;
-  selectedDir: string | null;
-  onSelectDir: (dir: string | null) => void;
-  searchQuery: string;
-}) {
-  const isSelected = selectedDir === dir.path;
-  const hasChildSelected = selectedDir !== null && selectedDir.startsWith(dir.path + "/");
+// ─── Section Label ─────────────────────────────────────────────────
 
-  // When searching, filter the name at root level too
-  if (searchQuery && !dir.name.toLowerCase().includes(searchQuery) && !hasChildSelected) {
-    // Still show if a child is selected and search matches nothing at root, keep root visible
-    // Actually if search doesn't match root name, we still show it so children can be searched
-  }
-
+function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div>
-      <ContentRow
-        fullPath={dir.path}
-        name={dir.name}
-        isDir={true}
-        depth={0}
-        selectedDir={selectedDir}
-        onSelectDir={onSelectDir}
-        searchQuery={searchQuery}
-        statusIcon={
-          dir.status === "complete" ? (
-            <span className={isSelected || hasChildSelected ? "text-st-blue" : "text-status-green"}>
-              ✓
-            </span>
-          ) : dir.status === "scanning" ? (
-            <span className="inline-block animate-spin">◐</span>
-          ) : (
-            <span className="opacity-30">○</span>
-          )
-        }
-        rightLabel={
-          dir.status === "scanning" ? (
-            <span className="text-[10px] text-ink-faint tabular-nums flex-shrink-0">
-              {dir.percent?.toFixed(0)}%
-            </span>
-          ) : null
-        }
-        title={dir.path}
-      />
+    <div className="text-[11px] font-semibold text-t-3 uppercase tracking-wider px-4 pt-3 pb-1">
+      {children}
     </div>
   );
 }
 
-/** Recursively expandable directory/file row. */
-function ContentRow({
-  fullPath,
-  name,
-  isDir,
-  depth,
+// ─── Nav Item ──────────────────────────────────────────────────────
+
+function NavItem({
+  icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-2 h-[28px] px-3 mx-2 rounded text-[13px] cursor-default transition-colors
+        ${active ? "bg-sys-blue text-white" : "text-t-2 hover:bg-bg-hover"}`}
+    >
+      <span className={active ? "text-white" : "text-t-3"}>{icon}</span>
+      <span className="truncate flex-1 text-left">{label}</span>
+    </button>
+  );
+}
+
+// ─── Sub Item (tool filter) ───────────────────────────────────────
+
+function SubItem({
+  label,
+  selected,
+  onClick,
+}: {
+  label: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center h-[26px] pl-9 pr-3 mx-2 rounded text-[13px] cursor-default transition-colors
+        ${selected ? "bg-sys-blue text-white" : "text-t-2 hover:bg-bg-hover"}`}
+    >
+      {label}
+    </button>
+  );
+}
+
+// ─── Directory Tree Entry (expandable) ─────────────────────────────
+
+function DirTreeEntry({
+  dir,
   selectedDir,
   onSelectDir,
-  searchQuery,
-  statusIcon,
-  rightLabel,
-  title,
 }: {
-  fullPath: string;
-  name: string;
-  isDir: boolean;
-  depth: number;
+  dir: DirScanStatus;
   selectedDir: string | null;
   onSelectDir: (dir: string | null) => void;
-  searchQuery: string;
-  statusIcon?: React.ReactNode;
-  rightLabel?: React.ReactNode;
-  title?: string;
 }) {
-  // Auto-expand root dirs when searching
-  const [expandedByUser, setExpandedByUser] = useState<boolean | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<DirContentItem[] | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const isSearching = searchQuery.length > 0;
-  // When searching, auto-expand roots (depth=0)
-  const expanded = isSearching && depth === 0 ? true : (expandedByUser ?? false);
-
-  const isSelected = selectedDir === fullPath;
-  const hasChildSelected =
-    selectedDir !== null && selectedDir.startsWith(fullPath + "/");
+  const isSelected = selectedDir === dir.path;
 
   const handleToggle = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!isDir) return;
-    const willExpand = !(expandedByUser ?? false);
+    const willExpand = !expanded;
     if (willExpand && children === null) {
       setLoading(true);
       try {
-        const items = await listDirContents(fullPath);
+        const items = await listDirContents(dir.path);
         setChildren(items);
       } catch {
         setChildren([]);
@@ -288,123 +219,62 @@ function ContentRow({
         setLoading(false);
       }
     }
-    // Auto-load when searching + expanding root for first time
-    if (isSearching && depth === 0 && children === null && !loading) {
-      setLoading(true);
-      listDirContents(fullPath)
-        .then((items) => setChildren(items))
-        .catch(() => setChildren([]))
-        .finally(() => setLoading(false));
-    }
-    setExpandedByUser(willExpand);
+    setExpanded(willExpand);
   };
-
-  // Load children automatically when search starts (root dirs only)
-  if (isSearching && depth === 0 && children === null && !loading) {
-    setLoading(true);
-    listDirContents(fullPath)
-      .then((items) => setChildren(items))
-      .catch(() => setChildren([]))
-      .finally(() => setLoading(false));
-  }
-
-  // Filter children by search query
-  const visibleChildren = children
-    ? isSearching
-      ? children.filter((c) => c.name.toLowerCase().includes(searchQuery))
-      : children
-    : null;
-
-  // Whether this row itself matches the search
-  const matchesSearch = !isSearching || name.toLowerCase().includes(searchQuery);
-
-  const indent = depth * 10;
-
-  const rowClasses = `group flex items-center gap-1 py-1.5 text-2xs cursor-pointer transition-colors ${
-    isSelected || hasChildSelected
-      ? "bg-st-blue/10 text-st-blue font-medium border-l-2 border-st-blue"
-      : "text-ink-secondary hover:bg-surface-hover border-l-2 border-transparent"
-  }`;
-
-  // File extension icon
-  const fileIcon = (() => {
-    if (isDir) return null;
-    const ext = name.split(".").pop()?.toLowerCase();
-    if (["ts", "tsx", "js", "jsx"].includes(ext ?? "")) return "📄";
-    if (["css", "scss", "less"].includes(ext ?? "")) return "🎨";
-    if (["json", "toml", "yaml", "yml"].includes(ext ?? "")) return "⚙";
-    if (["md", "txt", "rst"].includes(ext ?? "")) return "📝";
-    if (["rs", "py", "go", "java", "cpp", "c", "h"].includes(ext ?? "")) return "📄";
-    if (["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext ?? "")) return "🖼";
-    return "📄";
-  })();
 
   return (
     <div>
-      {/* Only show this row if it matches search (or is a parent that has matching children) */}
-      {(matchesSearch || hasChildSelected || (isDir && isSearching)) && (
-        <div
-          className={rowClasses}
-          style={{ paddingLeft: `${12 + indent}px`, paddingRight: "8px" }}
-          title={title ?? fullPath}
-          onClick={() => onSelectDir(fullPath)}
+      <button
+        onClick={() => onSelectDir(isSelected ? null : dir.path)}
+        className={`w-full flex items-center gap-1.5 h-[28px] px-3 mx-2 rounded text-[13px] cursor-default transition-colors
+          ${isSelected ? "bg-sys-blue text-white" : "text-t-2 hover:bg-bg-hover"}`}
+      >
+        {/* Disclosure arrow */}
+        <span
+          onClick={handleToggle}
+          className={`text-[8px] flex-shrink-0 w-3 text-center ${
+            isSelected ? "text-white" : "text-t-4"
+          }`}
         >
-          {/* Expand toggle for dirs, file icon for files */}
-          {isDir ? (
-            <button
-              onClick={handleToggle}
-              className="w-4 h-4 flex items-center justify-center flex-shrink-0 text-[10px] text-ink-faint hover:text-ink-secondary rounded transition-colors"
-            >
-              {loading ? (
-                <span className="animate-spin">◐</span>
-              ) : expanded ? (
-                "▾"
-              ) : (
-                "▸"
-              )}
-            </button>
+          {loading ? (
+            <span className="animate-spin inline-block">◐</span>
+          ) : expanded ? (
+            "▼"
           ) : (
-            <span className="w-4 h-4 flex items-center justify-center flex-shrink-0 text-[10px] opacity-60">
-              {fileIcon}
-            </span>
+            "▶"
           )}
+        </span>
 
-          {/* Status icon (only for root dirs) */}
-          {statusIcon && (
-            <span className="w-3 flex-shrink-0 text-center text-[10px]">{statusIcon}</span>
-          )}
+        <FolderOpen className={`w-4 h-4 flex-shrink-0 ${isSelected ? "text-white" : "text-t-3"}`} />
+        <span className="truncate flex-1 text-left">{dir.name}</span>
 
-          <span className="truncate flex-1 min-w-0">{name}</span>
-          {rightLabel}
-        </div>
-      )}
+        {dir.status === "complete" && (
+          <span className={`text-[10px] flex-shrink-0 ${isSelected ? "text-white" : "text-sys-green"}`}>✓</span>
+        )}
+        {dir.status === "scanning" && (
+          <span className={`text-[10px] tabular-nums flex-shrink-0 ${isSelected ? "text-white" : "text-t-3"}`}>
+            {dir.percent?.toFixed(0)}%
+          </span>
+        )}
+      </button>
 
-      {/* Recursive children */}
-      {isDir && expanded && (
-        <div
-          className="border-l border-surface-border/40"
-          style={{ marginLeft: `${20 + indent}px` }}
-        >
+      {/* Children */}
+      {expanded && (
+        <div className="pl-4">
           {children === null || loading ? (
-            <div className="px-3 py-1 text-[10px] text-ink-faint flex items-center gap-1">
-              <span className="animate-spin">◐</span>
-              <span>加载中…</span>
+            <div className="px-3 py-1 text-[10px] text-t-4 flex items-center gap-1">
+              <span className="animate-spin">◐</span> 加载中…
             </div>
-          ) : (visibleChildren ?? []).length === 0 ? (
-            <div className="px-3 py-1 text-[10px] text-ink-faint">
-              {isSearching ? "无匹配项" : "（空目录）"}
-            </div>
+          ) : children.length === 0 ? (
+            <div className="px-3 py-1 text-[10px] text-t-4">（空目录）</div>
           ) : (
-            (visibleChildren ?? []).map((child) => (
-              <ContentRow
+            children.map((child) => (
+              <SubDirRow
                 key={child.full_path}
-                fullPath={child.full_path}
-                name={child.is_dir ? `${child.name}/` : child.name}
-                isDir={child.is_dir}
-                depth={depth + 1}
+                item={child}
+                depth={1}
                 selectedDir={selectedDir}
                 onSelectDir={onSelectDir}
-                searchQuery={searchQuery}
               />
             ))
           )}
@@ -414,17 +284,97 @@ function ContentRow({
   );
 }
 
-function OverallProgressBar({ dirs }: { dirs: DirScanStatus[] }) {
-  const totalFiles = dirs.reduce((s, d) => s + d.files_total, 0);
-  const doneFiles = dirs.reduce((s, d) => s + d.files_done, 0);
-  const percent = totalFiles > 0 ? (doneFiles / totalFiles) * 100 : 0;
+// ─── Sub-directory/file row (recursive) ────────────────────────────
+
+function SubDirRow({
+  item,
+  depth,
+  selectedDir,
+  onSelectDir,
+}: {
+  item: DirContentItem;
+  depth: number;
+  selectedDir: string | null;
+  onSelectDir: (dir: string | null) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [children, setChildren] = useState<DirContentItem[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const isSelected = selectedDir === item.full_path;
+
+  const handleToggle = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!item.is_dir) return;
+    const willExpand = !expanded;
+    if (willExpand && children === null) {
+      setLoading(true);
+      try {
+        const items = await listDirContents(item.full_path);
+        setChildren(items);
+      } catch {
+        setChildren([]);
+      } finally {
+        setLoading(false);
+      }
+    }
+    setExpanded(willExpand);
+  };
+
+  const paddingLeft = 16 + depth * 16;
 
   return (
-    <div className="w-full bg-surface-border rounded-full h-1 overflow-hidden">
-      <div
-        className="h-full bg-st-blue rounded-full transition-all duration-300"
-        style={{ width: `${Math.min(percent, 100)}%` }}
-      />
+    <div>
+      <button
+        onClick={() => onSelectDir(isSelected ? null : item.full_path)}
+        className={`w-full flex items-center gap-1.5 h-[26px] pr-3 mx-2 rounded text-[13px] cursor-default transition-colors
+          ${isSelected ? "bg-sys-blue text-white" : "text-t-2 hover:bg-bg-hover"}`}
+        style={{ paddingLeft: `${paddingLeft}px` }}
+      >
+        {/* Disclosure arrow for directories */}
+        {item.is_dir ? (
+          <span
+            onClick={handleToggle}
+            className={`text-[8px] flex-shrink-0 w-3 text-center ${
+              isSelected ? "text-white" : "text-t-4"
+            }`}
+          >
+            {loading ? (
+              <span className="animate-spin inline-block">◐</span>
+            ) : expanded ? (
+              "▼"
+            ) : (
+              "▶"
+            )}
+          </span>
+        ) : (
+          <span className="w-3 flex-shrink-0" />
+        )}
+
+        <span className="truncate flex-1 text-left">
+          {item.is_dir ? `${item.name}/` : item.name}
+        </span>
+      </button>
+
+      {item.is_dir && expanded && children && (
+        <div>
+          {children.length === 0 ? (
+            <div className="px-3 py-0.5 text-[10px] text-t-4" style={{ paddingLeft: `${paddingLeft + 16}px` }}>
+              （空）
+            </div>
+          ) : (
+            children.map((child) => (
+              <SubDirRow
+                key={child.full_path}
+                item={child}
+                depth={depth + 1}
+                selectedDir={selectedDir}
+                onSelectDir={onSelectDir}
+              />
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

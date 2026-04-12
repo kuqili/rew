@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { X, Plus, FolderOpen, RefreshCw, Trash2, ChevronDown, ChevronRight, Info, CheckCircle, Settings, Clock, Cpu, HelpCircle } from "lucide-react";
 import { useScanProgress } from "../hooks/useScanProgress";
+import { getToolBrandIcon } from "./ToolIcons";
 import {
   analyzeDirectories, getStorageInfo, addWatchDir, removeWatchDir,
   getMonitoringWindow, setMonitoringWindow,
@@ -20,10 +22,17 @@ function fmt(b: number): string {
 interface Props { onClose: () => void; }
 
 const WINDOW_OPTIONS: { label: string; secs: number }[] = [
-  { label: "每 5 分钟存档",  secs: 300 },
-  { label: "每 10 分钟存档", secs: 600 },
-  { label: "每 30 分钟存档", secs: 1800 },
-  { label: "每 1 小时存档",  secs: 3600 },
+  { label: "5 分钟",  secs: 300 },
+  { label: "10 分钟", secs: 600 },
+  { label: "30 分钟", secs: 1800 },
+  { label: "1 小时",  secs: 3600 },
+];
+
+const TABS = [
+  { k: "dirs" as const,     label: "目录",   icon: <FolderOpen className="w-3.5 h-3.5" /> },
+  { k: "record" as const,   label: "存档",   icon: <Clock className="w-3.5 h-3.5" /> },
+  { k: "ai_tools" as const, label: "AI 工具", icon: <Cpu className="w-3.5 h-3.5" /> },
+  { k: "about" as const,    label: "关于",   icon: <HelpCircle className="w-3.5 h-3.5" /> },
 ];
 
 export default function SettingsPanel({ onClose }: Props) {
@@ -39,21 +48,15 @@ export default function SettingsPanel({ onClose }: Props) {
   const [addSuccess, setAddSuccess] = useState<string | null>(null);
   const scanProgress = useScanProgress();
 
-  // Merge analysis dirs (persistent) with scanProgress dirs (live status).
-  // analysis?.dirs is always populated after the first analyzeDirectories() call
-  // and is the source of truth for which directories are being watched.
-  // scanProgress?.dirs overlays real-time scan progress on top.
   const allDirs = useMemo((): DirScanStatus[] => {
     const spDirs = scanProgress?.dirs ?? [];
     const aDirs = analysis?.dirs ?? [];
-    // Union of all paths, analysis is canonical for membership
     const paths = Array.from(
       new Set([...aDirs.map((d) => d.path), ...spDirs.map((d) => d.path)])
     );
     return paths.map((path) => {
       const sp = spDirs.find((d) => d.path === path);
-      if (sp) return sp; // live status takes priority during scan
-      // Synthesise a "complete" status from analysis data
+      if (sp) return sp;
       const name = path.split("/").filter(Boolean).pop() ?? path;
       return {
         path,
@@ -80,11 +83,9 @@ export default function SettingsPanel({ onClose }: Props) {
   useEffect(() => {
     refreshAnalysis();
     getMonitoringWindow().then(setWindowSecs).catch(() => {});
-    // Poll storage every 3s
     const storageTimer = setInterval(() => {
       getStorageInfo().then(setStorage).catch(() => {});
     }, 3000);
-    // Listen for scan-complete to refresh analysis numbers
     const unlistenComplete = listen("scan-complete", () => {
       refreshAnalysis();
     });
@@ -94,12 +95,10 @@ export default function SettingsPanel({ onClose }: Props) {
     };
   }, [refreshAnalysis]);
 
-  // Also refresh when scanProgress transitions from scanning → not scanning
   const wasScanningRef = useRef(false);
   useEffect(() => {
     const isNowScanning = scanProgress?.is_scanning ?? false;
     if (wasScanningRef.current && !isNowScanning) {
-      // Scan just completed — refresh analysis
       refreshAnalysis();
     }
     wasScanningRef.current = isNowScanning;
@@ -127,33 +126,41 @@ export default function SettingsPanel({ onClose }: Props) {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <div className="flex-shrink-0 bg-surface-secondary border-b border-surface-border px-6 py-4 flex items-center justify-between">
-        <h2 className="text-[15px] font-semibold text-ink">设置</h2>
-        <button onClick={onClose} className="text-ink-muted hover:text-ink text-lg">×</button>
-      </div>
-      <div className="flex-shrink-0 border-b border-surface-border px-6 flex">
-        {([
-          { k: "dirs" as const,     l: "目录管理" },
-          { k: "record" as const,   l: "存档设置" },
-          { k: "ai_tools" as const, l: "AI 工具" },
-          { k: "about" as const,    l: "关于" },
-        ]).map((t) => (
-          <button key={t.k} onClick={() => setTab(t.k)}
-            className={`px-4 py-2.5 text-[13px] border-b-2 transition-colors ${tab === t.k ? "border-st-blue text-st-blue font-medium" : "border-transparent text-ink-secondary hover:text-ink"}`}>
-            {t.l}
+      {/* Header with drag region */}
+      <div data-tauri-drag-region className="flex-shrink-0 px-5 pt-4 pb-0">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-[15px] font-semibold text-t-1">设置</h2>
+          <button onClick={onClose} className="w-5 h-5 rounded-full bg-bg-active text-t-2 flex items-center justify-center text-[11px] hover:bg-border cursor-default">
+            <X className="w-3 h-3" />
           </button>
-        ))}
+        </div>
+
+        {/* v4 icon tabs — System Preferences style */}
+        <div className="flex justify-center gap-5 py-3 border-b border-border">
+          {TABS.map((t) => (
+            <button key={t.k} onClick={() => setTab(t.k)}
+              className="flex flex-col items-center gap-[3px] p-1 rounded min-w-[56px] cursor-default hover:bg-bg-hover">
+              <div className={`w-6 h-6 rounded flex items-center justify-center ${tab === t.k ? 'bg-sys-blue text-white' : 'text-t-2'}`}>
+                {t.icon}
+              </div>
+              <span className={`text-[10px] ${tab === t.k ? 'text-sys-blue font-medium' : 'text-t-2'}`}>{t.label}</span>
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="flex-1 overflow-y-auto px-6 py-5">
+
+      <div className="flex-1 overflow-y-auto px-5 py-5">
         {tab === "record" ? (
           <div className="max-w-[520px] space-y-6">
             <div>
-              <h3 className="text-[13px] font-semibold text-ink mb-1">自动存档频率</h3>
-              <p className="text-2xs text-ink-muted leading-relaxed mb-3">
+              <h3 className="text-[13px] font-semibold text-t-1 mb-1">自动存档频率</h3>
+              <p className="text-[11px] text-t-3 leading-relaxed mb-3">
                 每隔固定时间自动创建一个存档点，记录该时间段内所有文件的净变更（相同文件反复修改只算一次）。
                 读档即可回到存档点之前的文件状态。间隔越长，存档条数越少，但每条覆盖的变更越多。
               </p>
-              <div className="flex gap-2 flex-wrap">
+
+              {/* Segmented control */}
+              <div className="inline-flex bg-bg-grouped rounded-md p-0.5 mb-3">
                 {WINDOW_OPTIONS.map((opt) => (
                   <button
                     key={opt.secs}
@@ -167,22 +174,21 @@ export default function SettingsPanel({ onClose }: Props) {
                       }
                     }}
                     disabled={savingWindow}
-                    className={`px-4 py-2 rounded-lg text-[13px] border transition-colors ${
-                      windowSecs === opt.secs
-                        ? "bg-st-blue text-white border-st-blue"
-                        : "bg-white text-ink-secondary border-surface-border hover:border-st-blue hover:text-st-blue"
-                    } disabled:opacity-40`}
+                    className={`px-3.5 py-1 rounded text-[12px] font-medium transition-colors
+                      ${windowSecs === opt.secs
+                        ? 'bg-white text-t-1 shadow-[0_0.5px_1.5px_rgba(0,0,0,0.08),0_0_0_0.5px_rgba(0,0,0,0.04)]'
+                        : 'text-t-2 hover:text-t-1'} disabled:opacity-40`}
                   >
                     {opt.label}
                   </button>
                 ))}
               </div>
-              <p className="mt-3 text-2xs text-ink-muted">
+
+              <p className="text-[11px] text-t-3">
                 当前设置：每 {windowSecs >= 3600 ? `${windowSecs / 3600} 小时` : `${windowSecs / 60} 分钟`} 自动存档一次
                 {savingWindow && " — 保存中..."}
               </p>
 
-              {/* Behavior notes */}
               <div className="mt-4 space-y-2">
                 <InfoNote>
                   <b>更改频率后</b>，当前正在积累的存档周期会<b>立即封存</b>，新频率从下一个周期开始生效。
@@ -197,21 +203,21 @@ export default function SettingsPanel({ onClose }: Props) {
         ) : tab === "dirs" ? (
           <div className="space-y-6 max-w-[680px]">
             {/* Global overview */}
-            <div className="bg-surface-secondary rounded-lg px-4 py-3 border border-surface-border/60">
+            <div className="bg-bg-grouped rounded-md px-5 py-4">
               {analyzing ? (
-                <div className="flex items-center gap-2 text-[13px] text-ink-secondary">
+                <div className="flex items-center gap-2 text-[13px] text-t-2">
                   <span className="inline-block animate-spin">◐</span> 正在分析保护目录...
                 </div>
               ) : analysis ? (
                 <div className="space-y-3">
                   <div>
-                    <div className="text-2xs text-ink-muted mb-0.5">保护范围</div>
+                    <div className="text-[11px] text-t-3 mb-0.5">保护范围</div>
                     <div className="flex items-baseline gap-2">
-                      <span className="text-[17px] font-semibold text-ink">{analysis.total_files.toLocaleString()}</span>
-                      <span className="text-[13px] text-ink-muted">个文件</span>
-                      <span className="text-[13px] text-ink-secondary">· {fmt(analysis.total_bytes)}</span>
+                      <span className="text-[17px] font-semibold text-t-1">{analysis.total_files.toLocaleString()}</span>
+                      <span className="text-[13px] text-t-3">个文件</span>
+                      <span className="text-[13px] text-t-2">· {fmt(analysis.total_bytes)}</span>
                     </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-2xs text-ink-muted mt-1">
+                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-t-3 mt-1">
                       {analysis.dirs.map((d) => (
                         <span key={d.path}>{d.path.split("/").pop()}: {fmt(d.total_bytes)}</span>
                       ))}
@@ -230,13 +236,13 @@ export default function SettingsPanel({ onClose }: Props) {
                       const pct = totalFiles > 0 ? Math.min((totalDone / totalFiles) * 100, 100) : 0;
                       return (
                         <div>
-                          <div className="text-2xs text-ink-muted mb-0.5">备份进度</div>
+                          <div className="text-[11px] text-t-3 mb-0.5">备份进度</div>
                           <div className="flex items-baseline gap-2 mb-1.5">
-                            <span className="text-[15px] font-semibold text-st-blue">{totalDone.toLocaleString()}</span>
-                            <span className="text-[13px] text-ink-muted">/ {totalFiles.toLocaleString()} 个文件已备份</span>
+                            <span className="text-[15px] font-semibold text-sys-blue">{totalDone.toLocaleString()}</span>
+                            <span className="text-[13px] text-t-3">/ {totalFiles.toLocaleString()} 个文件已备份</span>
                           </div>
-                          <div className="w-full h-1.5 bg-surface-border rounded-full overflow-hidden">
-                            <div className="h-full bg-st-blue rounded-full transition-all duration-300"
+                          <div className="w-full h-1.5 bg-border rounded-full overflow-hidden">
+                            <div className="h-full bg-sys-blue rounded-full transition-all duration-300"
                               style={{ width: `${pct}%` }} />
                           </div>
                         </div>
@@ -244,15 +250,14 @@ export default function SettingsPanel({ onClose }: Props) {
                     }
 
                     if (allComplete && totalFailed > 0) {
-                      // Partial success — guide user to rescan
                       return (
                         <div className="space-y-2">
                           <div className="flex items-baseline gap-2">
-                            <span className="text-[15px] font-semibold text-status-yellow">⚠ 部分文件未能备份</span>
+                            <span className="text-[15px] font-semibold text-sys-amber">⚠ 部分文件未能备份</span>
                           </div>
-                          <div className="text-[12px] text-ink-muted leading-relaxed">
+                          <div className="text-[12px] text-t-3 leading-relaxed">
                             共 {analysis.total_files.toLocaleString()} 个文件，其中
-                            <span className="text-status-yellow font-medium"> {totalFailed.toLocaleString()} 个备份失败</span>
+                            <span className="text-sys-amber font-medium"> {totalFailed.toLocaleString()} 个备份失败</span>
                             （通常是权限不足或文件被锁定），点击对应目录重新扫描。
                           </div>
                           <div className="flex flex-wrap gap-2 pt-0.5">
@@ -265,7 +270,7 @@ export default function SettingsPanel({ onClose }: Props) {
                                     try { await rescanWatchDir(d.path); refreshAnalysis(); }
                                     catch (e) { console.error(e); }
                                   }}
-                                  className="px-3 py-1.5 rounded-lg border border-status-yellow/40 bg-status-yellow-bg text-status-yellow text-[12px] hover:opacity-80 transition-opacity"
+                                  className="px-3 py-1.5 rounded-md border border-sys-amber/40 bg-sys-amber/10 text-sys-amber text-[12px] hover:opacity-80 transition-opacity"
                                 >
                                   重新扫描 {d.name}（{(d.files_failed ?? 0).toLocaleString()} 个失败）
                                 </button>
@@ -279,15 +284,15 @@ export default function SettingsPanel({ onClose }: Props) {
                     if (allComplete) {
                       return (
                         <div className="flex items-center gap-2">
-                          <span className="text-[15px] font-semibold text-status-green">✓ 初始备份已完成</span>
-                          <span className="text-[13px] text-ink-muted">{analysis.total_files.toLocaleString()} 个文件受保护</span>
+                          <span className="text-[15px] font-semibold text-sys-green">✓ 初始备份已完成</span>
+                          <span className="text-[13px] text-t-3">{analysis.total_files.toLocaleString()} 个文件受保护</span>
                         </div>
                       );
                     }
 
                     if (allDirs.length > 0) {
                       return (
-                        <div className="flex items-center gap-2 text-[13px] text-ink-muted">
+                        <div className="flex items-center gap-2 text-[13px] text-t-3">
                           <span className="animate-spin inline-block">◐</span>
                           <span>正在启动初始扫描...</span>
                         </div>
@@ -297,7 +302,7 @@ export default function SettingsPanel({ onClose }: Props) {
                     return null;
                   })()}
                   {storage && (
-                    <div className="text-2xs text-ink-muted leading-relaxed px-1">
+                    <div className="text-[11px] text-t-3 leading-relaxed px-1">
                       使用 APFS clonefile 技术备份，与原文件共享磁盘空间，不产生额外占用。
                     </div>
                   )}
@@ -308,11 +313,11 @@ export default function SettingsPanel({ onClose }: Props) {
             {/* Directory list */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <h3 className="text-[13px] font-semibold text-ink">保护目录</h3>
+                <h3 className="text-[13px] font-semibold text-t-1">保护目录</h3>
                 <button
                   onClick={handleAddDir}
                   disabled={addingDir}
-                  className="px-3 py-1 rounded-md bg-st-blue text-white text-[13px] font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
+                  className="px-3.5 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover disabled:opacity-50 flex items-center gap-1.5 cursor-default"
                 >
                   {addingDir ? (
                     <><span className="animate-spin text-[11px]">◐</span><span>添加中…</span></>
@@ -323,12 +328,12 @@ export default function SettingsPanel({ onClose }: Props) {
               </div>
 
               {addSuccess && (
-                <div className="mb-2 px-3 py-2 bg-status-green-bg text-status-green text-[12px] rounded-lg leading-relaxed flex items-center gap-2">
+                <div className="mb-2 px-3 py-2 bg-sys-green-bg text-[#1a7d36] text-[12px] rounded-md leading-relaxed flex items-center gap-2">
                   <span>✓</span><span>{addSuccess}</span>
                 </div>
               )}
               {addError && (
-                <div className="mb-2 px-3 py-2 bg-status-red-bg text-status-red text-[12px] rounded-lg leading-relaxed">
+                <div className="mb-2 px-3 py-2 bg-sys-red/10 text-sys-red text-[12px] rounded-md leading-relaxed">
                   {addError}
                 </div>
               )}
@@ -353,7 +358,7 @@ export default function SettingsPanel({ onClose }: Props) {
               </div>
 
               {allDirs.length === 0 && (
-                <div className="text-center py-8 text-ink-muted text-[13px]">
+                <div className="text-center py-8 text-t-3 text-[13px]">
                   还没有保护目录，点击「+ 添加目录」开始保护
                 </div>
               )}
@@ -363,18 +368,18 @@ export default function SettingsPanel({ onClose }: Props) {
           <AiToolsTab />
         ) : (
           <div className="space-y-4 max-w-[640px]">
-            <h3 className="text-[13px] font-semibold text-ink">rew — AI 时代的文件安全网</h3>
-            <p className="text-2xs text-ink-secondary leading-relaxed">
+            <h3 className="text-[13px] font-semibold text-t-1">rew — AI 时代的文件安全网</h3>
+            <p className="text-[11px] text-t-2 leading-relaxed">
               实时监控文件，AI 工具操作时自动备份。误删或改错，一键撤销。
             </p>
-            <div className="text-2xs text-ink-muted space-y-1">
+            <div className="text-[11px] text-t-3 space-y-1">
               <div>版本: 0.1.0</div>
               <div>存储: APFS clonefile (CoW)</div>
               {storage && <div>备份: {storage.object_count.toLocaleString()} 对象 · {fmt(storage.apparent_bytes)}</div>}
             </div>
-            <div className="mt-4 pt-3 border-t border-surface-border">
-              <h4 className="text-2xs font-semibold text-ink mb-2">默认不备份的文件类型</h4>
-              <div className="text-2xs text-ink-muted space-y-1 leading-relaxed">
+            <div className="mt-4 pt-3 border-t border-border">
+              <h4 className="text-[11px] font-semibold text-t-1 mb-2">默认不备份的文件类型</h4>
+              <div className="text-[11px] text-t-3 space-y-1 leading-relaxed">
                 <div>• <b>应用程序</b> — .app 包内文件</div>
                 <div>• <b>安装包</b> — .dmg, .pkg, .iso, .msi, .exe</div>
                 <div>• <b>开发产物</b> — node_modules, .git, target, __pycache__</div>
@@ -400,47 +405,48 @@ function DirCard({
   onRemove: () => Promise<void>;
 }) {
   return (
-    <div className="border border-surface-border rounded-lg overflow-hidden">
-      <button onClick={onToggle} className="w-full text-left px-4 py-3 hover:bg-surface-hover/50 transition-colors">
+    <div className="border border-border rounded-md overflow-hidden bg-white">
+      <button onClick={onToggle} className="w-full text-left px-4 py-3 hover:bg-bg-hover transition-colors cursor-default">
         <div className="flex items-center justify-between mb-0.5">
-          <div className="flex items-center gap-2">
-            <span className="text-[13px] font-medium text-ink">{dir.name}</span>
-            {dir.status === "complete" && <span className="badge bg-status-green-bg text-status-green">已保护</span>}
-            {dir.status === "scanning" && <span className="badge bg-status-yellow-bg text-status-yellow">扫描中 {dir.percent.toFixed(0)}%</span>}
-            {dir.status === "pending" && <span className="badge bg-surface-secondary text-ink-muted">等待</span>}
+          <div className="flex items-center gap-2.5">
+            <FolderOpen className="w-4 h-4 text-t-3 flex-shrink-0" />
+            <span className="text-[13px] font-medium text-t-1">{dir.name}</span>
+            {dir.status === "complete" && <span className="badge bg-sys-green-bg text-sys-green">已保护</span>}
+            {dir.status === "scanning" && <span className="badge bg-sys-amber/10 text-sys-amber">扫描中 {dir.percent.toFixed(0)}%</span>}
+            {dir.status === "pending" && <span className="badge bg-bg-grouped text-t-3">等待</span>}
           </div>
-          <span className="text-2xs text-ink-muted">{expanded ? "▾" : "▸"}</span>
+          {expanded ? <ChevronDown className="w-4 h-4 text-t-3" /> : <ChevronRight className="w-4 h-4 text-t-3" />}
         </div>
-        <div className="text-2xs text-ink-muted">{dir.path}</div>
+        <div className="text-[11px] text-t-3 ml-[26px]">{dir.path}</div>
         {da && (
-          <div className="text-2xs text-ink-secondary mt-1">
+          <div className="text-[11px] text-t-2 mt-1">
             {da.total_files.toLocaleString()} 个文件 · {fmt(da.total_bytes)}
           </div>
         )}
         {dir.status === "scanning" && (
-          <div className="mt-2 w-full bg-surface-border rounded-full h-1 overflow-hidden">
-            <div className="h-full bg-st-blue rounded-full transition-all duration-300" style={{ width: `${Math.min(dir.percent, 100)}%` }} />
+          <div className="mt-2 w-full bg-border rounded-full h-1 overflow-hidden">
+            <div className="h-full bg-sys-blue rounded-full transition-all duration-300" style={{ width: `${Math.min(dir.percent, 100)}%` }} />
           </div>
         )}
       </button>
 
       {expanded && (
-        <div className="border-t border-surface-border">
+        <div className="border-t border-border">
           {/* File type distribution */}
           {da && da.categories.length > 0 && (
-            <div className="bg-surface-secondary/50 px-4 py-3">
-              <div className="text-2xs font-medium text-ink-secondary mb-2">文件类型分布</div>
+            <div className="bg-bg-grouped/50 px-4 py-3">
+              <div className="text-[11px] font-medium text-t-2 mb-2">文件类型分布</div>
               <div className="space-y-1.5">
                 {da.categories.map((c) => {
                   const pct = da.total_bytes > 0 ? (c.total_bytes / da.total_bytes) * 100 : 0;
                   return (
-                    <div key={c.category} className="flex items-center gap-2 text-2xs">
-                      <div className="w-[70px] truncate text-ink-secondary">{c.category}</div>
-                      <div className="flex-1 h-1.5 bg-surface-border rounded-full overflow-hidden">
-                        <div className="h-full rounded-full bg-st-blue" style={{ width: `${Math.max(pct, 1)}%` }} />
+                    <div key={c.category} className="flex items-center gap-2 text-[11px]">
+                      <div className="w-[70px] truncate text-t-2">{c.category}</div>
+                      <div className="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+                        <div className="h-full rounded-full bg-sys-blue" style={{ width: `${Math.max(pct, 1)}%` }} />
                       </div>
-                      <div className="w-[55px] text-right tabular-nums text-ink-muted">{fmt(c.total_bytes)}</div>
-                      <div className="w-[45px] text-right tabular-nums text-ink-muted">{c.file_count} 个</div>
+                      <div className="w-[55px] text-right tabular-nums text-t-3">{fmt(c.total_bytes)}</div>
+                      <div className="w-[45px] text-right tabular-nums text-t-3">{c.file_count} 个</div>
                     </div>
                   );
                 })}
@@ -478,16 +484,17 @@ function RemoveDirButton({ dir, onRemove }: { dir: DirScanStatus; onRemove: () =
   };
 
   return (
-    <div className="px-4 py-2.5 border-t border-surface-border/60 bg-surface-secondary/30 flex items-center gap-3">
+    <div className="px-4 py-3 border-t border-border-light bg-bg-grouped/20 flex items-center gap-3">
       <button
         onClick={handleClick}
         disabled={removing || dir.status === "scanning"}
-        className={`text-2xs transition-colors disabled:opacity-30 ${
+        className={`flex items-center gap-1.5 text-[11px] transition-colors disabled:opacity-30 cursor-default ${
           confirm
-            ? "text-status-red font-medium"
-            : "text-ink-faint hover:text-status-red"
+            ? "text-sys-red font-medium"
+            : "text-t-4 hover:text-sys-red"
         }`}
       >
+        <Trash2 className="w-3.5 h-3.5" />
         {removing ? (
           <span className="flex items-center gap-1">
             <span className="animate-spin">◐</span> 移除中…
@@ -501,7 +508,7 @@ function RemoveDirButton({ dir, onRemove }: { dir: DirScanStatus; onRemove: () =
       {confirm && !removing && (
         <button
           onClick={(e) => { e.stopPropagation(); setConfirm(false); }}
-          className="text-2xs text-ink-faint hover:text-ink transition-colors"
+          className="text-[11px] text-t-4 hover:text-t-1 transition-colors cursor-default"
         >
           取消
         </button>
@@ -524,7 +531,6 @@ function DirFilterSection({ dirPath, scanStatus }: { dirPath: string; scanStatus
     getDirIgnoreConfig(dirPath).then(setConfig).catch(console.error);
   }, [dirPath]);
 
-  // When scan transitions to complete while we initiated a rescan, show toast
   useEffect(() => {
     if (scanStatus === "complete" && rescanning) {
       setRescanning(false);
@@ -544,7 +550,6 @@ function DirFilterSection({ dirPath, scanStatus }: { dirPath: string; scanStatus
   }, [dirPath]);
 
   const handleRescan = async () => {
-    // Flush any pending config save before rescanning
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
       saveTimer.current = null;
@@ -560,7 +565,6 @@ function DirFilterSection({ dirPath, scanStatus }: { dirPath: string; scanStatus
 
   if (!config) return null;
 
-  /** Toggle a relative path in exclude_dirs. */
   const toggleExcludePath = (relPath: string) => {
     const excluded = config.exclude_dirs.includes(relPath);
     const newDirs = excluded
@@ -583,46 +587,48 @@ function DirFilterSection({ dirPath, scanStatus }: { dirPath: string; scanStatus
   const isScanning = scanStatus === "scanning" || rescanning;
 
   return (
-    <div className="px-4 py-3 border-t border-surface-border/60 bg-white">
+    <div className="px-4 py-4 border-t border-border-light bg-white">
       {/* Header */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-2xs font-medium text-ink-secondary">
+      <div className="flex items-center justify-between mb-2.5">
+        <div className="text-[12px] font-medium text-t-2 flex items-center gap-1.5">
+          <Info className="w-3.5 h-3.5 text-t-4" />
           过滤配置
           {config.exclude_dirs.length > 0 && (
-            <span className="ml-1.5 text-[10px] text-ink-faint font-normal">
-              {config.exclude_dirs.length} 项已排除
+            <span className="text-[10px] text-t-4 font-normal">
+              ({config.exclude_dirs.length} 项已排除)
             </span>
           )}
         </div>
         <div className="flex items-center gap-2">
-          {saved && <span className="text-[10px] text-status-green">✓ 配置已保存</span>}
-          {rescanDone && <span className="text-[10px] text-status-green">✓ 扫描完成</span>}
+          {saved && <span className="text-[10px] text-sys-green flex items-center gap-0.5"><CheckCircle className="w-3 h-3" /> 已保存</span>}
+          {rescanDone && <span className="text-[10px] text-sys-green flex items-center gap-0.5"><CheckCircle className="w-3 h-3" /> 扫描完成</span>}
           {isScanning ? (
-            <span className="text-[10px] text-st-blue flex items-center gap-1">
-              <span className="animate-spin inline-block">◐</span>
+            <span className="text-[10px] text-sys-blue flex items-center gap-1">
+              <RefreshCw className="w-3 h-3 animate-spin" />
               {rescanning ? "重新扫描中…" : "扫描中…"}
             </span>
           ) : (
             <button
               onClick={handleRescan}
-              className="text-[10px] text-ink-muted hover:text-st-blue transition-colors"
+              className="flex items-center gap-1 text-[10px] text-t-3 hover:text-sys-blue transition-colors cursor-default"
               title="以当前过滤配置重新扫描此目录，更新保护统计"
             >
+              <RefreshCw className="w-3 h-3" />
               重新扫描
             </button>
           )}
         </div>
       </div>
 
-      <div className="mb-2.5 text-[10px] text-ink-muted leading-relaxed">
+      <div className="mb-3 text-[11px] text-t-3 leading-relaxed">
         勾选后该路径及其所有子内容将被排除，不记录、不存档。规则从<b>下次变更</b>起生效。
         「重新扫描」可更新保护文件统计，但<b>不会删除</b>已有的历史存档记录。
       </div>
 
       {/* Tree picker for exclude dirs/files */}
       <div className="mb-3">
-        <div className="text-[11px] text-ink-muted mb-1">排除目录或文件</div>
-        <div className="max-h-[200px] overflow-y-auto border border-surface-border/60 rounded bg-surface-secondary/30">
+        <div className="text-[11px] text-t-3 mb-1">排除目录或文件</div>
+        <div className="max-h-[200px] overflow-y-auto border border-border rounded-md bg-bg-grouped/30">
           <ExcludeTreeRoot
             watchDir={dirPath}
             excludeDirs={config.exclude_dirs}
@@ -633,17 +639,17 @@ function DirFilterSection({ dirPath, scanStatus }: { dirPath: string; scanStatus
 
       {/* Exclude extensions */}
       <div>
-        <div className="text-[11px] text-ink-muted mb-1.5">排除文件类型（任意层级）</div>
+        <div className="text-[11px] text-t-3 mb-1.5">排除文件类型（任意层级）</div>
         <div className="flex flex-wrap gap-1 mb-1.5">
           {config.exclude_extensions.map((e) => (
             <span
               key={e}
-              className="inline-flex items-center gap-0.5 bg-surface-secondary rounded px-1.5 py-0.5 text-[11px] text-ink-secondary"
+              className="inline-flex items-center gap-0.5 bg-bg-grouped rounded-md px-2 py-0.5 text-[11px] text-t-2"
             >
               .{e}
               <button
                 onClick={() => removeExt(e)}
-                className="text-ink-faint hover:text-status-red ml-0.5 leading-none"
+                className="text-t-4 hover:text-sys-red ml-0.5 leading-none cursor-default"
               >
                 ×
               </button>
@@ -656,9 +662,9 @@ function DirFilterSection({ dirPath, scanStatus }: { dirPath: string; scanStatus
             onChange={(e) => setExtInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addExt()}
             placeholder="如 log、tmp、DS_Store"
-            className="flex-1 min-w-0 px-2 py-1 bg-surface-secondary border border-surface-border rounded text-[11px] focus:outline-none focus:border-st-blue"
+            className="flex-1 min-w-0 px-3 py-1.5 bg-bg-grouped border border-border rounded-md text-[11px] focus:outline-none focus:border-sys-blue transition-colors"
           />
-          <button onClick={addExt} className="px-2 py-1 bg-st-blue text-white rounded text-[11px] hover:opacity-90">+</button>
+          <button onClick={addExt} className="px-3 py-1.5 bg-sys-blue text-white rounded-md text-[11px] hover:bg-sys-blue-hover transition-colors cursor-default">+</button>
         </div>
       </div>
     </div>
@@ -667,7 +673,6 @@ function DirFilterSection({ dirPath, scanStatus }: { dirPath: string; scanStatus
 
 // ─── Recursive exclude tree ───
 
-/** Root of the exclude tree — loads the first level of `watchDir`. */
 function ExcludeTreeRoot({
   watchDir,
   excludeDirs,
@@ -689,13 +694,13 @@ function ExcludeTreeRoot({
 
   if (loading) {
     return (
-      <div className="px-3 py-2 text-[10px] text-ink-faint flex items-center gap-1">
+      <div className="px-3 py-2 text-[10px] text-t-4 flex items-center gap-1">
         <span className="animate-spin">◐</span> 加载中…
       </div>
     );
   }
   if (!children || children.length === 0) {
-    return <div className="px-3 py-2 text-[10px] text-ink-faint">（无内容）</div>;
+    return <div className="px-3 py-2 text-[10px] text-t-4">（无内容）</div>;
   }
 
   return (
@@ -718,7 +723,6 @@ function ExcludeTreeRoot({
   );
 }
 
-/** One node in the exclude tree. */
 function ExcludeTreeNode({
   item,
   relPath,
@@ -741,9 +745,7 @@ function ExcludeTreeNode({
   const isChecked = excludeDirs.some(
     (e) => e === relPath || relPath.startsWith(e + "/") || relPath.startsWith(e)
   );
-  // Direct match (this path is in exclude list)
   const isDirectlyExcluded = excludeDirs.includes(relPath);
-  // Parent is excluded
   const isParentExcluded = !isDirectlyExcluded && isChecked;
 
   const handleToggle = async (e: React.MouseEvent) => {
@@ -767,7 +769,7 @@ function ExcludeTreeNode({
     <div>
       <div
         className={`flex items-center gap-1.5 py-0.5 pr-2 text-[11px] transition-colors ${
-          isParentExcluded ? "opacity-40" : "hover:bg-surface-hover/60"
+          isParentExcluded ? "opacity-40" : "hover:bg-bg-hover"
         }`}
         style={{ paddingLeft: `${8 + indent}px` }}
       >
@@ -776,13 +778,12 @@ function ExcludeTreeNode({
           checked={isDirectlyExcluded}
           disabled={isParentExcluded}
           onChange={() => onToggle(relPath)}
-          className="accent-st-blue w-3 h-3 flex-shrink-0 cursor-pointer disabled:cursor-not-allowed"
+          className="accent-sys-blue w-3 h-3 flex-shrink-0 cursor-pointer disabled:cursor-not-allowed"
         />
-        {/* Expand toggle for dirs */}
         {item.is_dir ? (
           <button
             onClick={handleToggle}
-            className="w-4 h-3.5 flex items-center justify-center text-[9px] text-ink-faint hover:text-ink-secondary flex-shrink-0"
+            className="w-4 h-3.5 flex items-center justify-center text-[9px] text-t-4 hover:text-t-2 flex-shrink-0 cursor-default"
           >
             {loading ? <span className="animate-spin">◐</span> : expanded ? "▾" : "▸"}
           </button>
@@ -793,7 +794,7 @@ function ExcludeTreeNode({
         )}
         <span
           className={`truncate flex-1 cursor-pointer select-none ${
-            isDirectlyExcluded ? "line-through text-ink-faint" : "text-ink-secondary"
+            isDirectlyExcluded ? "line-through text-t-4" : "text-t-2"
           }`}
           onClick={() => onToggle(relPath)}
           title={`${watchDir}/${relPath}`}
@@ -802,11 +803,10 @@ function ExcludeTreeNode({
         </span>
       </div>
 
-      {/* Children */}
       {item.is_dir && expanded && children !== null && (
-        <div className="border-l border-surface-border/30" style={{ marginLeft: `${20 + indent}px` }}>
+        <div className="border-l border-border-light" style={{ marginLeft: `${20 + indent}px` }}>
           {children.length === 0 ? (
-            <div className="px-3 py-0.5 text-[10px] text-ink-faint">（空）</div>
+            <div className="px-3 py-0.5 text-[10px] text-t-4">（空）</div>
           ) : (
             children.map((child) => {
               const childRel = `${relPath}/${child.name}`;
@@ -830,11 +830,6 @@ function ExcludeTreeNode({
 }
 
 // ─── AI Tools Tab ───
-
-const TOOL_ICONS: Record<string, string> = {
-  claude_code: "🟠",
-  cursor: "🟣",
-};
 
 function AiToolsTab() {
   const [tools, setTools] = useState<AiToolInfo[]>([]);
@@ -876,98 +871,96 @@ function AiToolsTab() {
   return (
     <div className="space-y-6 max-w-[580px]">
       <div>
-        <h3 className="text-[13px] font-semibold text-ink mb-1">AI 工具 Hook 管理</h3>
-        <p className="text-2xs text-ink-muted leading-relaxed">
+        <h3 className="text-[13px] font-semibold text-t-1 mb-1.5">AI 工具 Hook 管理</h3>
+        <p className="text-[12px] text-t-3 leading-relaxed">
           启用 hook 后，AI 工具的每次操作都会被 rew 自动记录，可随时回溯和撤销。
           rew 会检测本机安装的 AI 工具，你可以逐个启用或关闭。
         </p>
       </div>
 
       {loading ? (
-        <div className="flex items-center gap-2 text-[13px] text-ink-secondary py-4">
+        <div className="flex items-center gap-2 text-[13px] text-t-2 py-4">
           <span className="inline-block animate-spin">◐</span> 正在检测 AI 工具…
         </div>
       ) : tools.length === 0 ? (
-        <div className="bg-surface-secondary rounded-lg px-4 py-6 border border-surface-border/60 text-center">
-          <div className="text-[15px] text-ink-secondary mb-1">未检测到 AI 工具</div>
-          <p className="text-2xs text-ink-muted leading-relaxed">
+        <div className="bg-bg-grouped rounded-md px-5 py-8 text-center">
+          <div className="text-[15px] text-t-2 mb-1">未检测到 AI 工具</div>
+          <p className="text-[12px] text-t-3 leading-relaxed">
             安装 Claude Code 或 Cursor 后，在此处即可一键启用 hook。
           </p>
           <button
             onClick={refresh}
-            className="mt-3 px-3 py-1.5 text-[12px] text-st-blue hover:underline"
+            className="mt-3 px-4 py-1.5 text-[12px] text-sys-blue hover:underline cursor-default"
           >
             重新检测
           </button>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           {tools.map((tool) => {
             const isOperating = operating === tool.id;
             const fb = feedback?.toolId === tool.id ? feedback : null;
             return (
               <div
                 key={tool.id}
-                className="bg-white border border-surface-border rounded-lg px-4 py-3"
+                className="flex items-center gap-3 p-3 bg-bg-grouped rounded-md"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-[18px]">{TOOL_ICONS[tool.id] ?? "🔧"}</span>
-                    <div>
-                      <div className="text-[13px] font-medium text-ink">{tool.name}</div>
-                      <div className="text-[11px] text-ink-muted mt-0.5">
-                        {tool.hook_installed ? (
-                          <span className="text-status-green">✓ Hook 已启用</span>
-                        ) : (
-                          <span className="text-ink-faint">未启用</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleToggle(tool)}
-                    disabled={isOperating}
-                    className={`px-4 py-1.5 rounded-lg text-[12px] font-medium transition-colors disabled:opacity-50 ${
-                      tool.hook_installed
-                        ? "border border-surface-border text-ink-secondary hover:border-status-red hover:text-status-red"
-                        : "bg-st-blue text-white hover:opacity-90"
-                    }`}
-                  >
-                    {isOperating ? (
-                      <span className="flex items-center gap-1">
-                        <span className="animate-spin text-[10px]">◐</span>
-                        处理中…
+                {getToolBrandIcon(tool.id, 28)}
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] font-medium text-t-1">{tool.name}</div>
+                  <div className="text-[11px] mt-0.5">
+                    {tool.hook_installed ? (
+                      <span className="text-sys-green flex items-center gap-1">
+                        <CheckCircle className="w-3 h-3" /> Hook 已启用
                       </span>
-                    ) : tool.hook_installed ? (
-                      "关闭"
                     ) : (
-                      "启用"
+                      <span className="text-t-4">未启用</span>
                     )}
-                  </button>
+                  </div>
+                  {tool.config_path && (
+                    <div className="text-[10px] text-t-4 truncate mt-0.5" title={tool.config_path}>
+                      {tool.config_path}
+                    </div>
+                  )}
+                  {fb && (
+                    <div
+                      className={`mt-1.5 text-[11px] px-2.5 py-1 rounded-md inline-block ${
+                        fb.ok
+                          ? "bg-sys-green-bg text-sys-green"
+                          : "bg-sys-red/10 text-sys-red"
+                      }`}
+                    >
+                      {fb.ok ? "✓" : "✕"} {fb.msg}
+                    </div>
+                  )}
                 </div>
-                {fb && (
-                  <div
-                    className={`mt-2 text-[11px] px-2 py-1 rounded ${
-                      fb.ok
-                        ? "bg-status-green-bg text-status-green"
-                        : "bg-status-red-bg text-status-red"
-                    }`}
-                  >
-                    {fb.ok ? "✓" : "✕"} {fb.msg}
-                  </div>
-                )}
-                {tool.config_path && (
-                  <div className="mt-2 text-[10px] text-ink-faint truncate" title={tool.config_path}>
-                    配置文件: {tool.config_path}
-                  </div>
-                )}
+                <button
+                  onClick={() => handleToggle(tool)}
+                  disabled={isOperating}
+                  className={`text-[12px] px-2.5 py-[3px] rounded border font-medium cursor-default transition-colors disabled:opacity-50 ${
+                    tool.hook_installed
+                      ? "border-border bg-white text-t-2 hover:bg-bg-grouped hover:text-t-1"
+                      : "border-sys-blue bg-sys-blue text-white hover:bg-sys-blue-hover"
+                  }`}
+                >
+                  {isOperating ? (
+                    <span className="flex items-center gap-1">
+                      <span className="animate-spin text-[10px]">◐</span>
+                      处理中…
+                    </span>
+                  ) : tool.hook_installed ? (
+                    "关闭"
+                  ) : (
+                    "启用"
+                  )}
+                </button>
               </div>
             );
           })}
 
           <button
             onClick={refresh}
-            className="text-[12px] text-ink-muted hover:text-st-blue transition-colors"
+            className="text-[12px] text-t-3 hover:text-sys-blue transition-colors cursor-default"
           >
             重新检测
           </button>
@@ -990,9 +983,8 @@ function AiToolsTab() {
 // ─── Shared helper ───
 function InfoNote({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex gap-2 bg-surface-secondary border border-surface-border/60 rounded-lg px-3 py-2 text-[11px] text-ink-secondary leading-relaxed">
-      <span className="text-ink-faint flex-shrink-0 mt-px">ℹ</span>
-      <span>{children}</span>
+    <div className="text-[12px] text-t-3 leading-relaxed p-3 bg-bg-grouped rounded-md mb-2">
+      {children}
     </div>
   );
 }

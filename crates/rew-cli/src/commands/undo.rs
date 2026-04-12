@@ -24,7 +24,7 @@ pub fn run(
             let recent = tasks.first().ok_or_else(|| {
                 rew_core::error::RewError::Config("No tasks found. Nothing to undo.".to_string())
             })?;
-            recent.id.clone()
+            recent.task.id.clone()
         }
     };
 

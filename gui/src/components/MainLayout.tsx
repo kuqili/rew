@@ -1,22 +1,40 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import Sidebar from "./Sidebar";
-import Toolbar from "./Toolbar";
-import TaskTimeline, { type ViewMode } from "./TaskTimeline";
+import TaskTimeline from "./TaskTimeline";
 import TaskDetail from "./TaskDetail";
 import SettingsPanel from "./SettingsPanel";
+import { useTasks } from "../hooks/useTasks";
+import { getToolMeta } from "../lib/tools";
+
+export type ViewMode = "all" | "ai";
 
 export default function MainLayout() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-
-  // Lifted from TaskTimeline so switching dirs doesn't reset the tab
-  const [viewMode, setViewMode] = useState<ViewMode>("scheduled");
+  const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [toolFilter, setToolFilter] = useState<string | null>(null);
+
+  // Load tasks to compute active tools for sidebar
+  const { tasks: allTasks } = useTasks(selectedDir);
+
+  const activeTools = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const t of allTasks) {
+      if (!t.tool || t.tool === "文件监听") continue;
+      const key = t.tool.toLowerCase().replace(/_/g, "-");
+      if (!seen.has(key)) {
+        const meta = getToolMeta(t.tool);
+        seen.set(key, meta?.label ?? t.tool);
+      }
+    }
+    return Array.from(seen.entries()).map(([key, label]) => ({ key, label }));
+  }, [allTasks]);
 
   const handleViewModeChange = useCallback((mode: ViewMode) => {
     setViewMode(mode);
+    setToolFilter(null);
     setSelectedTaskId(null);
   }, []);
 
@@ -25,114 +43,76 @@ export default function MainLayout() {
     setSelectedTaskId(null);
   }, []);
 
-  // Sidebar width (px), user can drag to resize
-  const [sidebarWidth, setSidebarWidth] = useState(200);
-
-  // Vertical split: height of the top timeline pane in px
-  const [topHeight, setTopHeight] = useState(260);
-  const splitAreaRef = useRef<HTMLDivElement>(null);
-  const dragging = useRef(false);
-
-  const onDividerMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-    const onMove = (me: MouseEvent) => {
-      if (!dragging.current || !splitAreaRef.current) return;
-      const rect = splitAreaRef.current.getBoundingClientRect();
-      const newH = Math.max(120, Math.min(me.clientY - rect.top, rect.height - 180));
-      setTopHeight(newH);
-    };
-    const onUp = () => {
-      dragging.current = false;
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, []);
-
   return (
-    <div className="flex h-screen bg-white overflow-hidden">
-      {/* Left icon sidebar */}
-      <Sidebar
-        selectedDir={selectedDir}
-        onSelectDir={handleSelectDir}
-        onOpenSettings={() => setShowSettings(true)}
-        width={sidebarWidth}
-        onWidthChange={setSidebarWidth}
-      />
-
-      {/* Main content area */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Toolbar */}
-        <Toolbar
-          onBack={undefined}
-          onSettings={() => setShowSettings(true)}
-        />
-
-        {/* Settings overlay */}
-        {showSettings && (
-          <div className="absolute inset-0 z-50 bg-white">
+    <div className="flex flex-col h-screen bg-white overflow-hidden">
+      {/* Settings modal overlay */}
+      {showSettings && (
+        <div className="modal-overlay">
+          <div className="w-[520px] max-h-[460px] bg-white rounded-[10px] shadow-lg border border-border flex flex-col overflow-hidden">
             <SettingsPanel onClose={() => setShowSettings(false)} />
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Three-pane body: top timeline | drag | bottom detail */}
-        <div ref={splitAreaRef} className="flex-1 flex flex-col overflow-hidden min-h-0">
+      {/* Drag region: 52px (v7) - 28px (native titlebar) = 24px */}
+      <div data-tauri-drag-region className="h-[24px] flex-shrink-0 w-full" />
 
-          {/* ── Top pane: Timeline ───────────────────────────────── */}
-          <div
-            className="flex-shrink-0 overflow-hidden border-b border-surface-border"
-            style={{ height: topHeight }}
-          >
-            <TaskTimeline
-              selectedId={selectedTaskId}
-              onSelect={setSelectedTaskId}
+      {/* Three columns below titlebar */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left: Sidebar (220px) */}
+        <Sidebar
+          selectedDir={selectedDir}
+          onSelectDir={handleSelectDir}
+          viewMode={viewMode}
+          onViewModeChange={handleViewModeChange}
+          onOpenSettings={() => setShowSettings(true)}
+          toolFilter={toolFilter}
+          onToolFilterChange={setToolFilter}
+          activeTools={activeTools}
+        />
+
+        {/* Middle: Timeline (400px) */}
+        <div className="w-[400px] flex-shrink-0 border-r border-border bg-white flex flex-col overflow-hidden">
+          <TaskTimeline
+            selectedId={selectedTaskId}
+            onSelect={setSelectedTaskId}
+            dirFilter={selectedDir}
+            viewMode={viewMode}
+            toolFilter={toolFilter}
+            key={`${refreshKey}-${selectedDir ?? "all"}-${viewMode}`}
+          />
+        </div>
+
+        {/* Right: Inspector (flex-1) */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-white">
+          {selectedTaskId ? (
+            <TaskDetail
+              key={`${selectedTaskId}-${selectedDir ?? "all"}`}
+              taskId={selectedTaskId}
               dirFilter={selectedDir}
-              viewMode={viewMode}
-              onViewModeChange={handleViewModeChange}
-              toolFilter={toolFilter}
-              onToolFilterChange={setToolFilter}
-              key={`${refreshKey}-${selectedDir ?? "all"}`}
+              onTaskUpdated={() => setRefreshKey((k) => k + 1)}
+              onBack={() => setSelectedTaskId(null)}
             />
-          </div>
-
-          {/* ── Drag handle ─────────────────────────────────────── */}
-          <div
-            onMouseDown={onDividerMouseDown}
-            className="flex-shrink-0 h-[5px] bg-surface-border/30 hover:bg-st-blue/30 cursor-row-resize flex items-center justify-center group transition-colors"
-          >
-            <div className="w-10 h-[3px] rounded-full bg-surface-border/60 group-hover:bg-st-blue/50 transition-colors" />
-          </div>
-
-          {/* ── Bottom pane: File list + Diff ───────────────────── */}
-          <div className="flex-1 overflow-hidden min-h-0">
-            {selectedTaskId ? (
-              <TaskDetail
-                key={`${selectedTaskId}-${selectedDir ?? "all"}`}
-                taskId={selectedTaskId}
-                dirFilter={selectedDir}
-                onTaskUpdated={() => setRefreshKey((k) => k + 1)}
-                onBack={() => setSelectedTaskId(null)}
-              />
-            ) : (
-              <EmptyDetail />
-            )}
-          </div>
-
+          ) : (
+            <EmptyInspector />
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function EmptyDetail() {
+function EmptyInspector() {
   return (
-    <div className="h-full flex flex-col items-center justify-center select-none">
-      <div className="text-[32px] opacity-10 mb-3">📂</div>
-      <div className="text-[13px] text-ink-muted font-medium mb-1">选择一条存档记录</div>
-      <div className="text-[11px] text-ink-faint max-w-[260px] text-center leading-relaxed">
-        点击上方时间线中的任意记录，查看该存档点内的文件变更，或从中读档回到历史状态。
+    <div className="h-full flex flex-col items-center justify-center select-none text-center px-8 bg-bg-grouped">
+      <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center mb-4">
+        <svg className="w-8 h-8 text-t-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+        </svg>
+      </div>
+      <div className="text-[14px] text-t-2 font-medium mb-1.5">选择一条存档记录</div>
+      <div className="text-[12px] text-t-3 max-w-[240px] leading-relaxed">
+        点击左侧时间线中的任意记录，查看该存档点内的文件变更，或从中读档回到历史状态。
       </div>
     </div>
   );

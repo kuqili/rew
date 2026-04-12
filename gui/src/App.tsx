@@ -21,8 +21,8 @@ export default function App() {
   // Loading
   if (isFirstRun === null) {
     return (
-      <div className="flex items-center justify-center h-screen bg-bg-primary">
-        <div className="text-text-muted text-sm">Loading...</div>
+      <div className="flex items-center justify-center h-screen bg-surface-primary">
+        <div className="text-ink-muted text-sm">Loading...</div>
       </div>
     );
   }

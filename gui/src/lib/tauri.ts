@@ -14,6 +14,8 @@ export interface TaskInfo {
   summary: string | null;
   changes_count: number;
   cwd: string | null;
+  total_lines_added: number;
+  total_lines_removed: number;
 }
 
 export interface ChangeInfo {
@@ -28,6 +30,20 @@ export interface ChangeInfo {
   lines_removed: number;
   /** ISO-8601 timestamp when this file was individually restored, or null. */
   restored_at: string | null;
+  attribution: string | null;
+}
+
+export interface TaskStatsInfo {
+  task_id: string;
+  model: string | null;
+  duration_secs: number | null;
+  tool_calls: number;
+  files_changed: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_cost_usd: number | null;
+  session_id: string | null;
+  conversation_id: string | null;
 }
 
 export interface ChangeDiffResult {
@@ -275,4 +291,10 @@ export async function installToolHook(toolId: string): Promise<void> {
 
 export async function uninstallToolHook(toolId: string): Promise<void> {
   return invoke("uninstall_tool_hook", { toolId });
+}
+
+// === Task Statistics ===
+
+export async function getTaskStats(taskId: string): Promise<TaskStatsInfo | null> {
+  return invoke<TaskStatsInfo | null>("get_task_stats", { taskId });
 }

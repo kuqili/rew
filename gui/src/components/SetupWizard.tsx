@@ -63,14 +63,14 @@ function StepIndicator({ current }: { current: Step }) {
         return (
           <div key={s} className="flex items-center gap-1.5">
             {i > 0 && (
-              <div className={`w-6 h-px ${done || active ? "bg-st-blue" : "bg-surface-border"}`} />
+              <div className={`w-6 h-px ${done || active ? "bg-safe-blue" : "bg-surface-border"}`} />
             )}
             <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-semibold transition-all ${
               done
-                ? "bg-st-blue text-white"
+                ? "bg-safe-blue text-white"
                 : active
-                  ? "bg-st-blue text-white ring-2 ring-st-blue/30"
-                  : "bg-surface-secondary text-ink-muted border border-surface-border"
+                  ? "bg-safe-blue text-white ring-2 ring-safe-blue/30"
+                  : "bg-surface-primary text-ink-muted border border-surface-border"
             }`}>
               {done ? "✓" : i + 1}
             </div>
@@ -103,7 +103,7 @@ function StepWelcome({ onNext }: { onNext: () => void }) {
 
       <button
         onClick={onNext}
-        className="w-full py-2.5 rounded-xl bg-st-blue text-white text-[13px] font-medium hover:opacity-90 transition-opacity"
+        className="w-full py-2.5 rounded-xl bg-safe-blue text-white text-[13px] font-medium hover:opacity-90 transition-opacity"
       >
         开始设置 →
       </button>
@@ -113,7 +113,7 @@ function StepWelcome({ onNext }: { onNext: () => void }) {
 
 function FeatureRow({ icon, title, desc }: { icon: string; title: string; desc: string }) {
   return (
-    <div className="flex items-start gap-3 px-3 py-2.5 bg-surface-secondary/60 rounded-lg">
+    <div className="flex items-start gap-3 px-3 py-2.5 bg-surface-primary/60 rounded-lg">
       <span className="text-lg mt-0.5 flex-shrink-0">{icon}</span>
       <div>
         <div className="text-[12px] font-semibold text-ink">{title}</div>
@@ -215,27 +215,27 @@ function StepDirs({ onNext }: { onNext: (dirs: string[]) => void }) {
       <div className="space-y-1.5 mb-3">
         {dirs.map((d, i) => (
           <label key={i} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all border ${
-            d.checked ? "bg-st-blue/5 border-st-blue/40" : "border-surface-border hover:bg-surface-secondary/60"
+            d.checked ? "bg-safe-blue/5 border-safe-blue/40" : "border-surface-border hover:bg-surface-primary/60"
           }`}>
             <input
               type="checkbox"
               checked={d.checked}
               onChange={() => toggle(i)}
-              className="w-4 h-4 rounded accent-st-blue flex-shrink-0"
+              className="w-4 h-4 rounded accent-safe-blue flex-shrink-0"
             />
             <span className="text-xl flex-shrink-0">{d.icon}</span>
             <div className="flex-1 min-w-0">
               <div className="text-[13px] font-medium text-ink">{d.label}</div>
               <div className="text-[11px] text-ink-muted">{d.description}</div>
             </div>
-            {d.checked && <span className="text-st-blue text-[11px] flex-shrink-0">✓ 已选</span>}
+            {d.checked && <span className="text-safe-blue text-[11px] flex-shrink-0">✓ 已选</span>}
           </label>
         ))}
       </div>
 
       {/* Custom dirs */}
       {customDirs.map((p) => (
-        <div key={p} className="flex items-center gap-2 px-3 py-2 mb-1.5 bg-st-blue/5 border border-st-blue/30 rounded-xl">
+        <div key={p} className="flex items-center gap-2 px-3 py-2 mb-1.5 bg-safe-blue/5 border border-safe-blue/30 rounded-xl">
           <span className="text-base flex-shrink-0">📁</span>
           <span className="flex-1 text-[12px] text-ink truncate">{p.split("/").pop()}</span>
           <span className="text-[10px] text-ink-muted truncate max-w-[120px] hidden sm:block">{p}</span>
@@ -245,7 +245,7 @@ function StepDirs({ onNext }: { onNext: (dirs: string[]) => void }) {
       ))}
 
       <button onClick={pickCustom}
-        className="w-full py-2 mb-4 rounded-xl border border-dashed border-surface-border text-[12px] text-ink-muted hover:border-st-blue hover:text-st-blue transition-colors">
+        className="w-full py-2 mb-4 rounded-xl border border-dashed border-surface-border text-[12px] text-ink-muted hover:border-safe-blue hover:text-safe-blue transition-colors">
         + 选择其他目录
       </button>
 
@@ -256,7 +256,7 @@ function StepDirs({ onNext }: { onNext: (dirs: string[]) => void }) {
       <button
         onClick={handleNext}
         disabled={loading}
-        className="w-full py-2.5 rounded-xl bg-st-blue text-white text-[13px] font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
+        className="w-full py-2.5 rounded-xl bg-safe-blue text-white text-[13px] font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
       >
         {loading
           ? <span className="flex items-center justify-center gap-2"><span className="animate-spin">◐</span>正在初始化...</span>
@@ -338,9 +338,9 @@ function StepScanning({ selectedDirs, onNext }: { selectedDirs: string[]; onNext
             <span>{isDone ? "✓ 全部完成" : `已扫描 ${doneFiles.toLocaleString()} / ${totalFiles.toLocaleString()} 个文件`}</span>
             <span>{Math.round(overallPct)}%</span>
           </div>
-          <div className="w-full h-2 bg-surface-secondary rounded-full overflow-hidden">
+          <div className="w-full h-2 bg-surface-primary rounded-full overflow-hidden">
             <div
-              className={`h-full rounded-full transition-all duration-500 ${isDone ? "bg-status-green" : "bg-st-blue"}`}
+              className={`h-full rounded-full transition-all duration-500 ${isDone ? "bg-success-green" : "bg-safe-blue"}`}
               style={{ width: `${overallPct}%` }}
             />
           </div>
@@ -351,7 +351,7 @@ function StepScanning({ selectedDirs, onNext }: { selectedDirs: string[]; onNext
       {dirs.length > 0 && (
         <div className="space-y-1.5 mb-5">
           {dirs.map((dir) => (
-            <div key={dir.path} className="flex items-center gap-3 px-3 py-2 bg-surface-secondary/60 rounded-lg">
+            <div key={dir.path} className="flex items-center gap-3 px-3 py-2 bg-surface-primary/60 rounded-lg">
               <span className="text-base flex-shrink-0">
                 {dir.status === "complete" ? "✅" : dir.status === "scanning" ? "🔄" : "⏳"}
               </span>
@@ -367,7 +367,7 @@ function StepScanning({ selectedDirs, onNext }: { selectedDirs: string[]; onNext
               </div>
               {dir.status === "scanning" && (
                 <div className="w-12 h-1 bg-surface-border rounded-full overflow-hidden flex-shrink-0">
-                  <div className="h-full bg-st-blue rounded-full" style={{ width: `${Math.min(dir.percent, 100)}%` }} />
+                  <div className="h-full bg-safe-blue rounded-full" style={{ width: `${Math.min(dir.percent, 100)}%` }} />
                 </div>
               )}
             </div>
@@ -387,7 +387,7 @@ function StepScanning({ selectedDirs, onNext }: { selectedDirs: string[]; onNext
         {isDone && (
           <button
             onClick={onNext}
-            className="w-full py-2.5 rounded-xl bg-st-blue text-white text-[13px] font-medium hover:opacity-90 transition-opacity"
+            className="w-full py-2.5 rounded-xl bg-safe-blue text-white text-[13px] font-medium hover:opacity-90 transition-opacity"
           >
             继续设置 →
           </button>
@@ -447,8 +447,8 @@ function StepInterval({ onNext }: { onNext: () => void }) {
             onClick={() => setSelected(opt.secs)}
             className={`w-full flex items-start gap-3 px-4 py-3 rounded-xl border text-left transition-all ${
               selected === opt.secs
-                ? "bg-st-blue/5 border-st-blue/50 ring-1 ring-st-blue/20"
-                : "border-surface-border hover:border-st-blue/30 hover:bg-surface-secondary/40"
+                ? "bg-safe-blue/5 border-safe-blue/50 ring-1 ring-safe-blue/20"
+                : "border-surface-border hover:border-safe-blue/30 hover:bg-surface-primary/40"
             }`}
           >
             <span className="text-xl flex-shrink-0 mt-0.5">{opt.icon}</span>
@@ -456,26 +456,26 @@ function StepInterval({ onNext }: { onNext: () => void }) {
               <div className="flex items-baseline gap-2">
                 <span className="text-[13px] font-semibold text-ink">{opt.label}</span>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                  selected === opt.secs ? "bg-st-blue text-white" : "bg-surface-secondary text-ink-muted"
+                  selected === opt.secs ? "bg-safe-blue text-white" : "bg-surface-primary text-ink-muted"
                 }`}>{opt.sublabel}</span>
               </div>
               <div className="text-[11px] text-ink-muted mt-0.5 leading-relaxed">{opt.desc}</div>
             </div>
             {selected === opt.secs && (
-              <span className="text-st-blue text-[13px] flex-shrink-0 mt-1">✓</span>
+              <span className="text-safe-blue text-[13px] flex-shrink-0 mt-1">✓</span>
             )}
           </button>
         ))}
       </div>
 
-      <div className="px-3 py-2.5 bg-surface-secondary/60 rounded-lg mb-4 text-[11px] text-ink-muted leading-relaxed">
+      <div className="px-3 py-2.5 bg-surface-primary/60 rounded-lg mb-4 text-[11px] text-ink-muted leading-relaxed">
         💡 <b>AI 任务期间不受此频率影响</b>——AI 工具（Cursor、Claude Code 等）操作完成后会<b>立即</b>创建存档，不等计时器。
       </div>
 
       <button
         onClick={handleNext}
         disabled={saving}
-        className="w-full py-2.5 rounded-xl bg-st-blue text-white text-[13px] font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
+        className="w-full py-2.5 rounded-xl bg-safe-blue text-white text-[13px] font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
       >
         {saving ? <span className="flex items-center justify-center gap-2"><span className="animate-spin">◐</span>保存中...</span> : "确认，完成设置 →"}
       </button>
@@ -509,7 +509,7 @@ function StepDone({ onComplete }: { onComplete: () => void }) {
 
       <button
         onClick={onComplete}
-        className="w-full py-2.5 rounded-xl bg-st-blue text-white text-[13px] font-medium hover:opacity-90 transition-opacity"
+        className="w-full py-2.5 rounded-xl bg-safe-blue text-white text-[13px] font-medium hover:opacity-90 transition-opacity"
       >
         进入 rew →
       </button>
@@ -519,7 +519,7 @@ function StepDone({ onComplete }: { onComplete: () => void }) {
 
 function TipRow({ icon, text }: { icon: string; text: string }) {
   return (
-    <div className="flex items-start gap-3 px-3 py-2.5 bg-surface-secondary/60 rounded-lg">
+    <div className="flex items-start gap-3 px-3 py-2.5 bg-surface-primary/60 rounded-lg">
       <span className="text-base flex-shrink-0 mt-0.5">{icon}</span>
       <p className="text-[11px] text-ink-secondary leading-relaxed">{text}</p>
     </div>
@@ -533,7 +533,7 @@ export default function SetupWizard({ onComplete }: Props) {
   const [selectedDirs, setSelectedDirs] = useState<string[]>([]);
 
   return (
-    <div className="flex items-center justify-center h-screen bg-gradient-to-br from-surface-secondary to-white p-4">
+    <div className="flex items-center justify-center h-screen bg-gradient-to-br from-surface-primary to-white p-4">
       <div className="bg-white rounded-2xl shadow-panel border border-surface-border p-8 w-[460px] max-h-[90vh] overflow-y-auto">
         {step === "welcome" && (
           <StepWelcome onNext={() => setStep("dirs")} />

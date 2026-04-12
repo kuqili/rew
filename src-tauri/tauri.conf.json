@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "rew — AI 时代的文件安全网",
+        "title": "",
         "width": 1000,
         "height": 680,
         "resizable": true,

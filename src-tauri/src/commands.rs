@@ -446,6 +446,8 @@ pub struct TaskInfo {
     pub summary: Option<String>,
     pub changes_count: usize,
     pub cwd: Option<String>,
+    pub total_lines_added: u32,
+    pub total_lines_removed: u32,
 }
 
 /// Change data sent to the frontend.
@@ -462,6 +464,7 @@ pub struct ChangeInfo {
     pub lines_removed: u32,
     /// ISO-8601 timestamp set when this file was individually restored. None = not restored.
     pub restored_at: Option<String>,
+    pub attribution: Option<String>,
 }
 
 /// Undo preview info for the frontend.
@@ -515,38 +518,27 @@ pub async fn list_tasks(
 
     // Remove the active window so the frontend never sees an in-progress entry
     if let Some(ref id) = active_window_id {
-        tasks.retain(|t| &t.id != id);
+        tasks.retain(|tw| &tw.task.id != id);
     }
 
     tracing::info!("list_tasks: found {} tasks in DB (dir_filter={:?})", tasks.len(), dir_filter);
 
-    let mut result = Vec::new();
-    for task in tasks {
-        let changes_count = if let Some(ref path) = dir_filter {
-            if is_file_filter {
-                db.count_changes_for_file(&task.id, path).unwrap_or(0)
-            } else {
-                db.count_changes_in_dir(&task.id, path).unwrap_or(0)
-            }
-        } else {
-            db.get_changes_for_task(&task.id)
-                .map(|c| c.len())
-                .unwrap_or(0)
-        };
-
-        result.push(TaskInfo {
-            id: task.id,
-            prompt: task.prompt,
-            tool: task.tool,
-            started_at: task.started_at.to_rfc3339(),
-            completed_at: task.completed_at.map(|t| t.to_rfc3339()),
-            status: task.status.to_string(),
-            risk_level: task.risk_level.map(|r| r.to_string()),
-            summary: task.summary,
-            changes_count,
-            cwd: task.cwd,
-        });
-    }
+    let result: Vec<TaskInfo> = tasks.into_iter().map(|tw| {
+        TaskInfo {
+            id: tw.task.id,
+            prompt: tw.task.prompt,
+            tool: tw.task.tool,
+            started_at: tw.task.started_at.to_rfc3339(),
+            completed_at: tw.task.completed_at.map(|t| t.to_rfc3339()),
+            status: tw.task.status.to_string(),
+            risk_level: tw.task.risk_level.map(|r| r.to_string()),
+            summary: tw.task.summary,
+            changes_count: tw.changes_count as usize,
+            cwd: tw.task.cwd,
+            total_lines_added: tw.total_lines_added,
+            total_lines_removed: tw.total_lines_removed,
+        }
+    }).collect();
 
     tracing::info!("list_tasks: returning {} tasks to frontend", result.len());
     Ok(result)
@@ -559,9 +551,11 @@ pub async fn get_task(state: State<'_, AppState>, task_id: String) -> Result<Tas
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task '{}' not found", task_id))?;
 
-    let changes_count = db.get_changes_for_task(&task.id)
-        .map(|c| c.len())
-        .unwrap_or(0);
+    let changes = db.get_changes_for_task(&task.id)
+        .unwrap_or_default();
+    let changes_count = changes.len();
+    let total_lines_added: u32 = changes.iter().map(|c| c.lines_added).sum();
+    let total_lines_removed: u32 = changes.iter().map(|c| c.lines_removed).sum();
 
     Ok(TaskInfo {
         id: task.id,
@@ -574,6 +568,8 @@ pub async fn get_task(state: State<'_, AppState>, task_id: String) -> Result<Tas
         summary: task.summary,
         changes_count,
         cwd: task.cwd,
+        total_lines_added,
+        total_lines_removed,
     })
 }
 
@@ -608,7 +604,47 @@ pub async fn get_task_changes(
         lines_added: c.lines_added,
         lines_removed: c.lines_removed,
         restored_at: c.restored_at.map(|t| t.to_rfc3339()),
+        attribution: c.attribution,
     }).collect())
+}
+
+// ----------------------------------------------------------------
+// Task statistics
+// ----------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStatsInfo {
+    pub task_id: String,
+    pub model: Option<String>,
+    pub duration_secs: Option<f64>,
+    pub tool_calls: i32,
+    pub files_changed: i32,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_cost_usd: Option<f64>,
+    pub session_id: Option<String>,
+    pub conversation_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_task_stats(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<Option<TaskStatsInfo>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let stats = db.get_task_stats(&task_id).map_err(|e| e.to_string())?;
+    Ok(stats.map(|s| TaskStatsInfo {
+        task_id: s.task_id,
+        model: s.model,
+        duration_secs: s.duration_secs,
+        tool_calls: s.tool_calls,
+        files_changed: s.files_changed,
+        input_tokens: s.input_tokens,
+        output_tokens: s.output_tokens,
+        total_cost_usd: s.total_cost_usd,
+        session_id: s.session_id,
+        conversation_id: s.conversation_id,
+    }))
 }
 
 // ----------------------------------------------------------------

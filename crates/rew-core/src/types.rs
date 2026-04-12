@@ -333,4 +333,32 @@ pub struct Change {
     /// Set when the user individually restores this file (single-file rollback).
     /// NULL = not yet restored; non-NULL = timestamp of restoration.
     pub restored_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// How this change was attributed: "hook", "bash_predicted",
+    /// "fsevent_active", "fsevent_grace", "monitoring", or "unknown".
+    pub attribution: Option<String>,
+}
+
+/// Task with aggregated change statistics (returned by list queries).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskWithStats {
+    pub task: Task,
+    pub changes_count: u32,
+    pub total_lines_added: u32,
+    pub total_lines_removed: u32,
+}
+
+/// AI task performance statistics (one row per task).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStats {
+    pub task_id: String,
+    pub model: Option<String>,
+    pub duration_secs: Option<f64>,
+    pub tool_calls: i32,
+    pub files_changed: i32,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_cost_usd: Option<f64>,
+    pub session_id: Option<String>,
+    pub conversation_id: Option<String>,
+    pub extra_json: Option<String>,
 }

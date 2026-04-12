@@ -72,7 +72,7 @@ export default function UndoConfirm({ taskId, task, onClose, onUndone }: Props) 
 
         {/* Prompt */}
         {task.prompt && (
-          <div className="bg-surface-secondary rounded-lg px-4 py-3 mb-4 text-[13px] text-ink border border-surface-border/60">
+          <div className="bg-surface-primary rounded-lg px-4 py-3 mb-4 text-[13px] text-ink border border-surface-border/60">
             "{task.prompt}"
           </div>
         )}
@@ -81,13 +81,13 @@ export default function UndoConfirm({ taskId, task, onClose, onUndone }: Props) 
         {loading ? (
           <div className="py-6 text-center text-ink-muted text-sm">分析中...</div>
         ) : error ? (
-          <div className="py-4 text-status-red text-sm whitespace-pre-wrap bg-status-red-bg rounded-lg px-4">
+          <div className="py-4 text-danger-red text-sm whitespace-pre-wrap bg-danger-red-light rounded-lg px-4">
             {error}
           </div>
         ) : result ? (
           <div className="py-4 text-center">
             <div className="text-2xl mb-2">✅</div>
-            <div className="text-sm text-status-green">{result}</div>
+            <div className="text-sm text-success-green">{result}</div>
           </div>
         ) : preview ? (
           <div className="space-y-2 mb-4 text-[13px]">
@@ -97,7 +97,7 @@ export default function UndoConfirm({ taskId, task, onClose, onUndone }: Props) 
 
             {preview.files_to_restore.length > 0 && (
               <div className="flex items-center gap-2">
-                <span className="change-icon bg-status-yellow-bg text-status-yellow">M</span>
+                <span className="change-icon bg-warn-yellow-bg text-warn-yellow">M</span>
                 <span className="text-ink">
                   恢复 {preview.files_to_restore.length} 个文件到之前的版本
                 </span>
@@ -106,14 +106,14 @@ export default function UndoConfirm({ taskId, task, onClose, onUndone }: Props) 
 
             {preview.files_to_delete.length > 0 && (
               <div className="flex items-center gap-2">
-                <span className="change-icon bg-status-red-bg text-status-red">D</span>
+                <span className="change-icon bg-danger-red-light text-danger-red">D</span>
                 <span className="text-ink">
                   删除 {preview.files_to_delete.length} 个新创建的文件
                 </span>
               </div>
             )}
 
-            <div className="mt-3 flex items-start gap-2 text-2xs text-ink-muted bg-surface-secondary rounded-lg px-3 py-2 border border-surface-border/60">
+            <div className="mt-3 flex items-start gap-2 text-2xs text-ink-muted bg-surface-primary rounded-lg px-3 py-2 border border-surface-border/60">
               <span>ℹ</span>
               <span>撤销前会自动创建安全快照作为备份</span>
             </div>
@@ -132,7 +132,7 @@ export default function UndoConfirm({ taskId, task, onClose, onUndone }: Props) 
             {error && (error.includes("请重试") || error.includes("请重新点击")) ? (
               <button
                 onClick={() => { setError(null); handleUndo(); }}
-                className="px-4 py-2 rounded-md bg-st-blue text-white text-sm font-medium hover:opacity-90 transition-opacity"
+                className="px-4 py-2 rounded-md bg-safe-blue text-white text-sm font-medium hover:opacity-90 transition-opacity"
               >
                 重试撤销
               </button>
@@ -140,7 +140,7 @@ export default function UndoConfirm({ taskId, task, onClose, onUndone }: Props) 
               <button
                 onClick={handleUndo}
                 disabled={loading || undoing || !!error}
-                className="px-4 py-2 rounded-md bg-status-red text-white text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-40"
+                className="px-4 py-2 rounded-md bg-danger-red text-white text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-40"
               >
                 {undoing ? "撤销中..." : "确认撤销"}
               </button>

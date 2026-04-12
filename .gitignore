@@ -8,6 +8,11 @@ control.json
 /target/
 /gui/dist/
 /src-tauri/rew
+/src-tauri/target/
+/src-tauri/icon_source.png
+
+# Design mockups (local reference only)
+/design-mockup/
 
 # Dependencies
 /node_modules/

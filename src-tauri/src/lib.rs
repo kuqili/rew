@@ -91,6 +91,8 @@ pub fn run() {
             commands::detect_ai_tools,
             commands::install_tool_hook,
             commands::uninstall_tool_hook,
+            // Task statistics
+            commands::get_task_stats,
         ])
         .setup(|app| {
             // Install CLI binary from bundled resources to ~/.rew/bin/rew
@@ -233,13 +235,20 @@ fn install_cli_binary(app: &tauri::AppHandle) {
         }
     };
 
-    // Skip if dest exists and has the same size (avoid redundant copy on every launch)
+    // Skip if dest exists and size matches AND content matches.
+    // We compare sizes first as a fast pre-check, then fall back to full content
+    // comparison only when sizes are equal (catches same-size but different-code binaries).
     if dest.exists() {
-        let src_meta = std::fs::metadata(&source).ok();
-        let dst_meta = std::fs::metadata(&dest).ok();
-        if let (Some(s), Some(d)) = (src_meta, dst_meta) {
-            if s.len() == d.len() {
-                return;
+        let src_size = std::fs::metadata(&source).map(|m| m.len()).ok();
+        let dst_size = std::fs::metadata(&dest).map(|m| m.len()).ok();
+        if src_size != dst_size {
+            // sizes differ → definitely need to update, fall through
+        } else {
+            // same size → compare content to catch code-only changes
+            let src_bytes = std::fs::read(&source).ok();
+            let dst_bytes = std::fs::read(&dest).ok();
+            if src_bytes.is_some() && src_bytes == dst_bytes {
+                return; // identical, skip
             }
         }
     }
@@ -267,6 +276,7 @@ fn install_cli_binary(app: &tauri::AppHandle) {
         }
     }
 }
+
 
 fn initialize_rew() -> Result<(Database, RewConfig), rew_core::error::RewError> {
     let rew_dir = rew_core::rew_home_dir();

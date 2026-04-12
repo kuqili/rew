@@ -478,8 +478,21 @@ async fn run_pipeline(
                                     // delayed FSEvents from Bash tool ops (e.g.
                                     // `echo > file`) still land in the AI task
                                     // rather than a new monitoring window.
-                                    let active_ai_task_id = read_active_ai_task_id()
-                                        .or_else(read_grace_task_id);
+                                    let direct_ai_task_id = read_active_ai_task_id();
+                                    let grace_ai_task_id = if direct_ai_task_id.is_none() {
+                                        read_grace_task_id()
+                                    } else {
+                                        None
+                                    };
+                                    let active_ai_task_id = direct_ai_task_id.as_ref().or(grace_ai_task_id.as_ref()).cloned();
+
+                                    let fsevent_attribution = if direct_ai_task_id.is_some() {
+                                        "fsevent_active"
+                                    } else if grace_ai_task_id.is_some() {
+                                        "fsevent_grace"
+                                    } else {
+                                        "monitoring"
+                                    };
 
                                     let now = chrono::Utc::now();
 
@@ -794,6 +807,7 @@ async fn run_pipeline(
                                                 lines_added,
                                                 lines_removed,
                                                 restored_at: None,
+                                                attribution: Some(fsevent_attribution.to_string()),
                                             };
 
                                             // Before upserting, record which new_hash currently

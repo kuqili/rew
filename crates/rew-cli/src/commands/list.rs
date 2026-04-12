@@ -23,7 +23,8 @@ pub fn run(ctx: &AppContext) -> RewResult<()> {
             "Prompt".bold().underline(),
         );
 
-        for t in &tasks {
+        for tw in &tasks {
+            let t = &tw.task;
             let time = t.started_at.format("%Y-%m-%d %H:%M");
             let status = match t.status {
                 rew_core::types::TaskStatus::Active => "active".yellow(),
@@ -40,11 +41,10 @@ pub fn run(ctx: &AppContext) -> RewResult<()> {
                 .take(40)
                 .collect::<String>();
 
-            let changes = ctx.db.get_changes_for_task(&t.id).unwrap_or_default();
-            let change_summary = if changes.is_empty() {
+            let change_summary = if tw.changes_count == 0 {
                 String::new()
             } else {
-                format!(" ({})", t.summary.as_deref().unwrap_or(&format!("{} files", changes.len())))
+                format!(" ({})", t.summary.as_deref().unwrap_or(&format!("{} files", tw.changes_count)))
             };
 
             println!(

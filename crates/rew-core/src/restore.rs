@@ -1200,6 +1200,7 @@ mod tests {
             lines_added: 1,
             lines_removed: 0,
             restored_at: None,
+            attribution: None,
         };
         db.insert_change(&change).unwrap();
 
@@ -1240,6 +1241,7 @@ mod tests {
             lines_added: 1,
             lines_removed: 1,
             restored_at: None,
+            attribution: None,
         };
         db.insert_change(&change).unwrap();
 
@@ -1279,6 +1281,7 @@ mod tests {
             lines_added: 0,
             lines_removed: 5,
             restored_at: None,
+            attribution: None,
         };
         db.insert_change(&change).unwrap();
 
@@ -1320,21 +1323,21 @@ mod tests {
             file_path: f1.clone(), change_type: ChangeType::Created,
             old_hash: None, new_hash: Some("x".into()),
             diff_text: None, lines_added: 1, lines_removed: 0,
-            restored_at: None,
+            restored_at: None, attribution: None,
         }).unwrap();
         db.insert_change(&Change {
             id: None, task_id: "t004".to_string(),
             file_path: f2.clone(), change_type: ChangeType::Modified,
             old_hash: Some(f2_hash), new_hash: Some("y".into()),
             diff_text: None, lines_added: 1, lines_removed: 1,
-            restored_at: None,
+            restored_at: None, attribution: None,
         }).unwrap();
         db.insert_change(&Change {
             id: None, task_id: "t004".to_string(),
             file_path: f3.clone(), change_type: ChangeType::Deleted,
             old_hash: Some(f3_hash), new_hash: None,
             diff_text: None, lines_added: 0, lines_removed: 3,
-            restored_at: None,
+            restored_at: None, attribution: None,
         }).unwrap();
 
         let result = engine.undo_task(&db, "t004").unwrap();
@@ -1368,14 +1371,14 @@ mod tests {
             file_path: f1.clone(), change_type: ChangeType::Modified,
             old_hash: Some(f1_hash), new_hash: Some("x".into()),
             diff_text: None, lines_added: 1, lines_removed: 1,
-            restored_at: None,
+            restored_at: None, attribution: None,
         }).unwrap();
         db.insert_change(&Change {
             id: None, task_id: "t005".to_string(),
             file_path: f2.clone(), change_type: ChangeType::Modified,
             old_hash: Some(f2_hash), new_hash: Some("y".into()),
             diff_text: None, lines_added: 1, lines_removed: 1,
-            restored_at: None,
+            restored_at: None, attribution: None,
         }).unwrap();
 
         // Only undo f1
@@ -1398,14 +1401,14 @@ mod tests {
             file_path: PathBuf::from("/tmp/created.rs"), change_type: ChangeType::Created,
             old_hash: None, new_hash: Some("x".into()),
             diff_text: None, lines_added: 10, lines_removed: 0,
-            restored_at: None,
+            restored_at: None, attribution: None,
         }).unwrap();
         db.insert_change(&Change {
             id: None, task_id: "t006".to_string(),
             file_path: PathBuf::from("/tmp/modified.rs"), change_type: ChangeType::Modified,
             old_hash: Some("oldhash".into()), new_hash: Some("y".into()),
             diff_text: None, lines_added: 5, lines_removed: 3,
-            restored_at: None,
+            restored_at: None, attribution: None,
         }).unwrap();
 
         let preview = engine.preview_undo(&db, "t006").unwrap();
