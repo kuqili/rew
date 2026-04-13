@@ -283,6 +283,7 @@ fn install_cli_binary(app: &tauri::AppHandle) {
 fn initialize_rew() -> Result<(Database, RewConfig), rew_core::error::RewError> {
     let rew_dir = rew_core::rew_home_dir();
     std::fs::create_dir_all(&rew_dir)?;
+    let _ = std::fs::remove_file(rew_dir.join(".scan_manifest.json"));
 
     // Load or create config
     let config_path = rew_dir.join("config.toml");

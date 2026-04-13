@@ -595,7 +595,7 @@ impl TaskRestoreEngine {
         let mut failures = Vec::new();
 
         for change in &changes {
-            match self.undo_single_change(change) {
+            match self.undo_single_change(db, change) {
                 Ok(UndoAction::Restored) => files_restored += 1,
                 Ok(UndoAction::Deleted) => files_deleted += 1,
                 Err(e) => {
@@ -656,7 +656,7 @@ impl TaskRestoreEngine {
         let mut failures = Vec::new();
         let (mut files_restored, mut files_deleted) = (0, 0);
 
-        match self.undo_single_change(change) {
+        match self.undo_single_change(db, change) {
             Ok(UndoAction::Restored) => files_restored = 1,
             Ok(UndoAction::Deleted) => files_deleted = 1,
             Err(e) => failures.push((file_path.to_path_buf(), e)),
@@ -672,6 +672,7 @@ impl TaskRestoreEngine {
     /// Undo a single change, returning what action was taken.
     fn undo_single_change(
         &self,
+        db: &crate::db::Database,
         change: &crate::types::Change,
     ) -> Result<UndoAction, String> {
         use crate::types::ChangeType;
@@ -689,77 +690,72 @@ impl TaskRestoreEngine {
             }
             ChangeType::Modified => {
                 if let Some(ref hash) = change.old_hash {
-                    self.restore_from_object(hash, &change.file_path)?;
-                    Ok(UndoAction::Restored)
+                    self.restore_from_object(hash, &change.file_path)
+                        .or_else(|_| self.restore_from_file_index(db, &change.file_path).map(|_| ()))?;
                 } else {
-                    // Try scan manifest fallback
-                    self.restore_from_manifest(&change.file_path)
+                    self.restore_from_file_index(db, &change.file_path)?;
                 }
+                Ok(UndoAction::Restored)
             }
             ChangeType::Deleted => {
                 if let Some(ref hash) = change.old_hash {
-                    self.restore_from_object(hash, &change.file_path)?;
-                    Ok(UndoAction::Restored)
+                    self.restore_from_object(hash, &change.file_path)
+                        .or_else(|_| self.restore_from_file_index(db, &change.file_path).map(|_| ()))?;
                 } else {
-                    // Try scan manifest fallback
-                    self.restore_from_manifest(&change.file_path)
+                    self.restore_from_file_index(db, &change.file_path)?;
                 }
+                Ok(UndoAction::Restored)
             }
             ChangeType::Renamed => {
                 if let Some(ref old_path) = change.old_file_path {
                     if let Some(ref hash) = change.old_hash {
-                        self.restore_from_object(hash, old_path)?;
+                        self.restore_from_object(hash, old_path)
+                            .or_else(|_| self.restore_from_file_index(db, old_path).map(|_| ()))?;
+                    } else {
+                        self.restore_from_file_index(db, old_path)?;
                     }
                     if change.file_path.exists() && change.file_path != *old_path {
                         let _ = std::fs::remove_file(&change.file_path);
                     }
                     Ok(UndoAction::Restored)
                 } else if let Some(ref hash) = change.old_hash {
-                    self.restore_from_object(hash, &change.file_path)?;
+                    self.restore_from_object(hash, &change.file_path)
+                        .or_else(|_| self.restore_from_file_index(db, &change.file_path).map(|_| ()))?;
                     Ok(UndoAction::Restored)
                 } else {
-                    self.restore_from_manifest(&change.file_path)
+                    self.restore_from_file_index(db, &change.file_path)
                 }
             }
         }
     }
 
-    /// Try to restore a file from the scan manifest's fast key.
-    /// This is the fallback when old_hash is empty but scanner has a backup.
-    fn restore_from_manifest(&self, file_path: &Path) -> Result<UndoAction, String> {
-        let manifest_path = crate::rew_home_dir().join(".scan_manifest.json");
-        let manifest_str = std::fs::read_to_string(&manifest_path)
-            .map_err(|_| format!(
-                "该文件没有备份记录（old_hash 为空）。\n\n\
-                 可能原因：文件在 rew 启动前从未被修改过，因此没有被备份。\n\
-                 下次启动 rew 后，后台全量扫描会自动备份所有文件，\n\
-                 之后删除的文件都可以恢复。\n\n\
-                 建议：检查废纸篓是否还有该文件。"
-            ))?;
-
-        let manifest: std::collections::HashMap<String, serde_json::Value> =
-            serde_json::from_str(&manifest_str).map_err(|e| format!("Manifest parse error: {}", e))?;
-
+    /// Try to restore a file from the scanner baseline stored in file_index.
+    /// This is the fallback when old_hash is empty or its object is gone.
+    fn restore_from_file_index(
+        &self,
+        db: &crate::db::Database,
+        file_path: &Path,
+    ) -> Result<UndoAction, String> {
         let path_key = file_path.to_string_lossy().to_string();
-        let entry = manifest.get(&path_key).ok_or_else(|| format!(
-            "该文件没有备份记录（old_hash 为空）。\n\n\
-             可能原因：文件在 rew 启动前从未被修改过，因此没有被备份。\n\
-             下次启动 rew 后，后台全量扫描会自动备份所有文件，\n\
-             之后删除的文件都可以恢复。\n\n\
-             建议：检查废纸篓是否还有该文件。"
-        ))?;
 
-        let hash = entry.get("hash")
-            .and_then(|h| h.as_str())
-            .ok_or("Manifest entry has no hash")?;
+        if let Ok(Some(content_hash)) = db.get_file_index_hash(&path_key) {
+            self.restore_from_object(&content_hash, file_path)?;
+            return Ok(UndoAction::Restored);
+        }
 
-        // Try to restore from this key (could be SHA-256 or fast key)
-        self.restore_from_object(hash, file_path)?;
-        Ok(UndoAction::Restored)
+        if let Ok(Some((_, fast_hash, _))) = db.get_file_index(&path_key) {
+            self.restore_from_object(&fast_hash, file_path)?;
+            return Ok(UndoAction::Restored);
+        }
+
+        Err(format!(
+            "该文件没有可用备份记录（old_hash 为空，file_index 也未命中）。\n\n\
+             可能原因：文件在 rew 建立基线前从未被扫描或备份。\n\
+             建议：检查废纸篓，或重新扫描目录后再继续使用。"
+        ))
     }
 
     /// Restore a file from the object store.
-    /// Falls back to scan manifest if the hash-based object is not found.
     fn restore_from_object(
         &self,
         hash: &str,
@@ -768,16 +764,11 @@ impl TaskRestoreEngine {
         let obj_path = self.object_path(hash);
 
         if !obj_path.exists() {
-            // Hash-based object not found — try manifest fallback (fast key)
-            return match self.restore_from_manifest(target) {
-                Ok(UndoAction::Restored) => Ok(()),
-                Ok(_) => Err(format!(
-                    "Object {} not found and manifest fallback failed for {}",
-                    &hash[..12.min(hash.len())],
-                    target.display()
-                )),
-                Err(e) => Err(e),
-            };
+            return Err(format!(
+                "Object {} not found for {}",
+                &hash[..12.min(hash.len())],
+                target.display()
+            ));
         }
 
         // Create parent dir if needed

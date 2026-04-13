@@ -30,6 +30,9 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+const HOOK_DEBUG_ENV: &str = "REW_HOOK_DEBUG";
+const HOOK_DEBUG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
 // ================================================================
 // Normalized input types (tool-agnostic)
 // ================================================================
@@ -366,14 +369,7 @@ fn extract_session_key(raw: &str, tool_source: &str) -> String {
 /// Exit code: always 0 (prompt recording should never block AI).
 pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
     let raw = read_stdin_text();
-
-    let debug_log = rew_home_dir().join("hook_debug.log");
-    let _ = std::fs::OpenOptions::new()
-        .create(true).append(true).open(&debug_log)
-        .and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "[prompt {}] source={:?} raw={}", Utc::now(), source, &raw)
-        });
+    append_hook_debug_log("prompt", source, &raw);
 
     let input = normalize_prompt(&raw);
     let generation_id: Option<String> = serde_json::from_str::<ClaudeCodeInput>(&raw)
@@ -514,14 +510,7 @@ pub fn handle_pre_tool(source: Option<&str>) -> RewResult<i32> {
 /// Records the change in the database. All state lookups via DB.
 pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
     let raw = read_stdin_text();
-
-    let debug_log = rew_home_dir().join("hook_debug.log");
-    let _ = std::fs::OpenOptions::new()
-        .create(true).append(true).open(&debug_log)
-        .and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "[post-tool {}] source={:?} raw={}", Utc::now(), source, &raw)
-        });
+    append_hook_debug_log("post-tool", source, &raw);
 
     let input = match normalize_post_tool(&raw) {
         Some(v) => v,
@@ -854,7 +843,9 @@ fn canonicalize_path(path_str: &str) -> PathBuf {
 }
 
 fn open_db() -> RewResult<Database> {
-    let db_path = rew_home_dir().join("snapshots.db");
+    let rew_dir = rew_home_dir();
+    let _ = std::fs::remove_file(rew_dir.join(".scan_manifest.json"));
+    let db_path = rew_dir.join("snapshots.db");
     let db = Database::open(&db_path)?;
     db.initialize()?;
     Ok(db)
@@ -875,6 +866,39 @@ fn rand_u32() -> u32 {
     std::time::SystemTime::now().hash(&mut hasher);
     std::thread::current().id().hash(&mut hasher);
     hasher.finish() as u32
+}
+
+fn append_hook_debug_log(kind: &str, source: Option<&str>, raw: &str) {
+    if !hook_debug_enabled() {
+        return;
+    }
+
+    let debug_log = rew_home_dir().join("hook_debug.log");
+    prune_hook_debug_log(&debug_log);
+
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&debug_log)
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "[{} {}] source={:?} raw={}", kind, Utc::now(), source, raw)
+        });
+}
+
+fn hook_debug_enabled() -> bool {
+    matches!(
+        std::env::var(HOOK_DEBUG_ENV).ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+    )
+}
+
+fn prune_hook_debug_log(path: &Path) {
+    let Ok(meta) = std::fs::metadata(path) else { return };
+    if meta.len() <= HOOK_DEBUG_MAX_BYTES {
+        return;
+    }
+    let _ = std::fs::remove_file(path);
 }
 
 /// Determine the AI tool source. Priority:

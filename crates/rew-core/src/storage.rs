@@ -16,8 +16,10 @@ use crate::db::Database;
 use crate::error::RewResult;
 use crate::snapshot::tmutil::TmutilWrapper;
 use crate::types::{Snapshot, SnapshotTrigger};
+use crate::backup::engine::delete_backup_dir;
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -48,6 +50,7 @@ pub struct StorageManager {
     policy: RetentionPolicyConfig,
     /// Disk usage alert threshold in bytes (default: 10GB).
     disk_threshold_bytes: u64,
+    backup_root: PathBuf,
 }
 
 impl StorageManager {
@@ -58,12 +61,19 @@ impl StorageManager {
             tmutil,
             policy,
             disk_threshold_bytes: 10 * 1024 * 1024 * 1024, // 10GB
+            backup_root: crate::rew_home_dir().join("backups"),
         }
     }
 
     /// Create with a custom disk threshold.
     pub fn with_disk_threshold(mut self, threshold_bytes: u64) -> Self {
         self.disk_threshold_bytes = threshold_bytes;
+        self
+    }
+
+    /// Override the backup root directory, primarily for tests.
+    pub fn with_backup_root(mut self, backup_root: PathBuf) -> Self {
+        self.backup_root = backup_root;
         self
     }
 
@@ -244,6 +254,8 @@ impl StorageManager {
             }
         }
 
+        delete_backup_dir(&snapshot.id, &self.backup_root)?;
+
         // Delete from database
         self.db.delete_snapshot(&snapshot.id)?;
         Ok(())
@@ -340,6 +352,13 @@ mod tests {
         };
         db.save_snapshot(&snapshot).unwrap();
         snapshot
+    }
+
+    fn create_snapshot_backup_dir(backup_root: &std::path::Path, snapshot_id: Uuid) -> PathBuf {
+        let dir = backup_root.join(snapshot_id.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("payload.txt"), b"backup").unwrap();
+        dir
     }
 
     #[test]
@@ -443,6 +462,46 @@ mod tests {
         let result = manager.run_cleanup_at(now).unwrap();
         assert_eq!(result.deleted_count, 5);
         assert_eq!(result.retained_count, 0);
+    }
+
+    #[test]
+    fn test_cleanup_deletes_snapshot_backup_directories() {
+        let (manager, dir) = test_storage_manager();
+        let backup_root = dir.path().join("backups");
+        let manager = manager.with_backup_root(backup_root.clone());
+        let now = Utc::now();
+
+        let old_snapshot = insert_snapshot_at(
+            manager.db(),
+            now - Duration::days(45),
+            SnapshotTrigger::Auto,
+            false,
+        );
+        let kept_snapshot = insert_snapshot_at(
+            manager.db(),
+            now - Duration::minutes(5),
+            SnapshotTrigger::Auto,
+            false,
+        );
+
+        let old_backup_dir = create_snapshot_backup_dir(&backup_root, old_snapshot.id);
+        let kept_backup_dir = create_snapshot_backup_dir(&backup_root, kept_snapshot.id);
+
+        assert!(old_backup_dir.exists());
+        assert!(kept_backup_dir.exists());
+
+        let result = manager.run_cleanup_at(now).unwrap();
+
+        assert_eq!(result.deleted_count, 1);
+        assert!(result.deleted_ids.contains(&old_snapshot.id));
+        assert!(
+            !old_backup_dir.exists(),
+            "deleted snapshot backup dir should be removed"
+        );
+        assert!(
+            kept_backup_dir.exists(),
+            "retained snapshot backup dir should remain"
+        );
     }
 
     #[test]

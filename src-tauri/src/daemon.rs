@@ -801,7 +801,7 @@ async fn run_pipeline(
                                         // Phase 2: Look up shadow/DB hashes for deleted files
                                         for event in real_events.iter() {
                                             if !event.path.exists() && !file_hashes.contains_key(&event.path) {
-                                                if let Some(h) = rew_core::pipeline::read_shadow_hash(&event.path) {
+                                                if let Some(h) = rew_core::pipeline::take_shadow_hash(&event.path) {
                                                     file_hashes.insert(event.path.clone(), h);
                                                 } else if let Ok(Some(prev)) = db.get_latest_change_for_file(&event.path) {
                                                     if let Some(h) = prev.new_hash.or(prev.old_hash) {
@@ -867,8 +867,7 @@ async fn run_pipeline(
                                                         (None, None)
                                                     } else {
                                                         let old = baseline.hash
-                                                            .or_else(|| file_hashes.get(&event.path).cloned())
-                                                            .or_else(|| rew_core::pipeline::read_shadow_hash(&event.path));
+                                                            .or_else(|| file_hashes.get(&event.path).cloned());
                                                         (old, None)
                                                     }
                                                 }

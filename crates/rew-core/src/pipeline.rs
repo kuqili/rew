@@ -12,7 +12,9 @@ use crate::watcher::filter::PathFilter;
 use crate::watcher::macos::MacOSWatcher;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{info, debug, warn};
+use tracing::{debug, info};
+
+const SHADOW_HASH_RETENTION_SECS: u64 = 24 * 3600;
 
 /// A handle to the running pipeline, used to control and stop it.
 pub struct PipelineHandle {
@@ -78,6 +80,8 @@ pub fn start_pipeline_with_config(
     config: &RewConfig,
     processor_config: ProcessorConfig,
 ) -> RewResult<PipelineHandle> {
+    cleanup_shadow_hashes(Duration::from_secs(SHADOW_HASH_RETENTION_SECS));
+
     // Build path filter from config
     let filter = PathFilter::new(&config.ignore_patterns)
         .map_err(|e| crate::error::RewError::Config(format!("Invalid glob pattern: {}", e)))?;
@@ -188,6 +192,43 @@ pub fn read_shadow_hash(path: &std::path::Path) -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Read and consume a shadow hash for a given file path.
+pub fn take_shadow_hash(path: &std::path::Path) -> Option<String> {
+    let shadow_dir = crate::rew_home_dir().join(".shadow_hashes");
+    let key = path_to_shadow_key(path);
+    let file = shadow_dir.join(key);
+    let hash = std::fs::read_to_string(&file)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if hash.is_some() {
+        let _ = std::fs::remove_file(file);
+    }
+    hash
+}
+
+/// Remove stale shadow hash mapping files that were never consumed.
+pub fn cleanup_shadow_hashes(max_age: Duration) {
+    let shadow_dir = crate::rew_home_dir().join(".shadow_hashes");
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(max_age)
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+    let entries = match std::fs::read_dir(&shadow_dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+        let is_stale = meta.modified().map(|t| t < cutoff).unwrap_or(false);
+        if meta.is_file() && is_stale {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 #[cfg(test)]

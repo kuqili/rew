@@ -5,6 +5,7 @@
 //! concurrent snapshot request serialization via a `Mutex`.
 
 use crate::db::Database;
+use crate::backup::engine::delete_backup_dir;
 use crate::error::{RewError, RewResult};
 use crate::types::{EventBatch, FileEventKind, Snapshot, SnapshotTrigger};
 use chrono::Utc;
@@ -164,6 +165,9 @@ impl MacOSSnapshotEngine {
             }
         }
 
+        let backup_root = crate::rew_home_dir().join("backups");
+        delete_backup_dir(id, &backup_root)?;
+
         // Remove from database
         self.db.delete_snapshot(id)?;
         info!("Deleted snapshot: {}", id);
@@ -192,6 +196,8 @@ impl MacOSSnapshotEngine {
                     "OS snapshot {} no longer exists, removing DB record for {}",
                     snap.os_snapshot_ref, snap.id
                 );
+                let backup_root = crate::rew_home_dir().join("backups");
+                let _ = delete_backup_dir(&snap.id, &backup_root);
                 self.db.delete_snapshot(&snap.id)?;
                 removed_count += 1;
             }

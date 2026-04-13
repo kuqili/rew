@@ -3,7 +3,7 @@
 use crate::config::RewConfig;
 use crate::error::RewResult;
 use crate::types::{FileEvent, FileEventKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use super::copy_strategy::FileCopyStrategy;
 
@@ -146,12 +146,22 @@ impl BackupEngine {
 
     /// Delete a backup directory for a snapshot.
     pub fn delete_backup(&self, snapshot_id: &Uuid, backup_root: &PathBuf) -> RewResult<()> {
-        let snapshot_dir = backup_root.join(snapshot_id.to_string());
-        if snapshot_dir.exists() {
-            std::fs::remove_dir_all(snapshot_dir)?;
-        }
-        Ok(())
+        delete_backup_dir(snapshot_id, backup_root)
     }
+}
+
+/// Return the backup directory path for a snapshot.
+pub fn snapshot_backup_dir(snapshot_id: &Uuid, backup_root: &Path) -> PathBuf {
+    backup_root.join(snapshot_id.to_string())
+}
+
+/// Delete a backup directory for a snapshot.
+pub fn delete_backup_dir(snapshot_id: &Uuid, backup_root: &Path) -> RewResult<()> {
+    let snapshot_dir = snapshot_backup_dir(snapshot_id, backup_root);
+    if snapshot_dir.exists() {
+        std::fs::remove_dir_all(snapshot_dir)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
