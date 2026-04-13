@@ -93,6 +93,10 @@ impl PathFilter {
             format!("{}/Library/**", home),
             format!("{}/Applications/**", home),
             format!("{}/.Trash/**", home),
+            // Photos Library internal analysis / search indexes are system-
+            // generated churn, not user-authored content.
+            "**/*.photoslibrary/private/**".to_string(),
+            "**/*.photoslibrary/database/search/**".to_string(),
             // ── Shell history & caches (change on every command / login) ───
             format!("{}/.zsh_history", home),
             format!("{}/.zsh_history.*", home),
@@ -502,5 +506,20 @@ mod tests {
         assert!(filter.should_process(&PathBuf::from("/Users/foo/project/Cargo.lock")));
         assert!(filter.should_process(&PathBuf::from("/Users/foo/project/yarn.lock")));
         assert!(filter.should_process(&PathBuf::from("/Users/foo/project/pnpm-lock.yaml")));
+    }
+
+    #[test]
+    fn test_ignore_photos_library_noise() {
+        let filter = PathFilter::default();
+        assert!(filter.should_ignore(&PathBuf::from(
+            "/Users/foo/Pictures/Photos Library.photoslibrary/private/com.apple.mediaanalysisd/mediaanalysis.db"
+        )));
+        assert!(filter.should_ignore(&PathBuf::from(
+            "/Users/foo/Pictures/Photos Library.photoslibrary/database/search/store.db"
+        )));
+        // Keep non-noise asset paths outside the known churn subdirs.
+        assert!(filter.should_process(&PathBuf::from(
+            "/Users/foo/Pictures/Photos Library.photoslibrary/originals/2026/IMG_0001.HEIC"
+        )));
     }
 }

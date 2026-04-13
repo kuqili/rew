@@ -10,24 +10,12 @@
 //! - **Respects ignore patterns**: uses the same PathFilter as the watcher
 //! - **Progress callback**: optional callback for UI progress reporting
 
+use crate::db::Database;
 use crate::objects::ObjectStore;
 use crate::watcher::filter::PathFilter;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::{info, warn, debug};
-
-/// Manifest entry: tracks a file's mtime and its object hash.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ManifestEntry {
-    /// File modification time (seconds since epoch)
-    mtime_secs: u64,
-    /// SHA-256 hash in the ObjectStore
-    hash: String,
-}
-
-/// Manifest: maps file paths to their last-known state.
-type Manifest = HashMap<String, ManifestEntry>;
 
 /// Result of a full scan operation.
 #[derive(Debug, Clone)]
@@ -93,13 +81,13 @@ pub fn count_files(dir: &Path, filter: &PathFilter) -> usize {
 
 /// Run a full scan of the given directories, storing all files in ObjectStore.
 ///
-/// Uses a manifest file at `rew_home/.scan_manifest.json` to skip unchanged files.
-/// This makes subsequent scans incremental (seconds instead of minutes).
+/// Uses the `file_index` DB table to skip unchanged files (incremental).
 ///
 /// # Arguments
 /// - `watch_dirs`: directories to scan
 /// - `ignore_patterns`: glob patterns to skip (e.g. `**/node_modules/**`)
 /// - `rew_home`: the `.rew/` directory
+/// - `db`: reference to the Database for file_index reads/writes
 /// - `on_progress`: optional callback for UI progress reporting (None = silent)
 ///
 /// # Returns
@@ -108,6 +96,7 @@ pub fn full_scan(
     watch_dirs: &[PathBuf],
     ignore_patterns: &[String],
     rew_home: &Path,
+    db: &Database,
     on_progress: Option<ProgressCallback>,
     on_dir_complete: Option<DirCompleteCallback>,
     max_file_size: Option<u64>,
@@ -115,13 +104,7 @@ pub fn full_scan(
     let start = std::time::Instant::now();
 
     let objects_root = rew_home.join("objects");
-    let manifest_path = rew_home.join(".scan_manifest.json");
 
-    // Load existing manifest for incremental scan
-    let mut manifest = load_manifest(&manifest_path);
-    let old_manifest_size = manifest.len();
-
-    // Build path filter
     let filter = match PathFilter::new(ignore_patterns) {
         Ok(f) => f,
         Err(e) => {
@@ -130,7 +113,6 @@ pub fn full_scan(
         }
     };
 
-    // Open object store
     let obj_store = match ObjectStore::new(objects_root) {
         Ok(s) => s,
         Err(e) => {
@@ -150,17 +132,14 @@ pub fn full_scan(
     let mut files_skipped = 0usize;
     let mut files_failed = 0usize;
 
-    // Walk each watch directory
     for dir in watch_dirs {
         if !dir.exists() {
             warn!("Scan: skipping non-existent directory: {}", dir.display());
             continue;
         }
 
-        // Notify that scanning is starting for this dir (before count_files)
         fire_progress(&on_progress, dir, 0, 0, 0, 0, 0);
 
-        // Pre-count for progress estimation
         let estimated_total = count_files(dir, &filter);
         info!("Scan: walking {} (~{} files)", dir.display(), estimated_total);
 
@@ -169,11 +148,14 @@ pub fn full_scan(
         let mut dir_skipped = 0usize;
         let mut dir_failed = 0usize;
 
+        // Wrap each directory in a transaction for batch insert performance
+        let _ = db.begin_transaction();
+
         walk_and_store(
             dir,
             &filter,
             &obj_store,
-            &mut manifest,
+            db,
             &mut dir_scanned,
             &mut dir_stored,
             &mut dir_skipped,
@@ -184,17 +166,13 @@ pub fn full_scan(
             max_file_size,
         );
 
+        let _ = db.commit_transaction();
+
         files_scanned += dir_scanned;
         files_stored += dir_stored;
         files_skipped += dir_skipped;
         files_failed += dir_failed;
 
-        // Save manifest after each directory (survives mid-scan kills)
-        if let Err(e) = save_manifest(&manifest_path, &manifest) {
-            warn!("Failed to save scan manifest: {}", e);
-        }
-
-        // Notify that this directory is complete
         if let Some(ref cb) = on_dir_complete {
             cb(dir.display().to_string());
         }
@@ -203,10 +181,9 @@ pub fn full_scan(
     let elapsed = start.elapsed();
 
     info!(
-        "Full scan complete: scanned={}, stored={}, skipped={}, failed={}, elapsed={:.1}s (manifest: {} → {} entries)",
+        "Full scan complete: scanned={}, stored={}, skipped={}, failed={}, elapsed={:.1}s",
         files_scanned, files_stored, files_skipped, files_failed,
         elapsed.as_secs_f64(),
-        old_manifest_size, manifest.len(),
     );
 
     ScanResult {
@@ -219,13 +196,13 @@ pub fn full_scan(
 }
 
 /// Iteratively walk a directory and store files in the ObjectStore.
-/// No depth limit — relies on PathFilter to skip node_modules/.git/etc.
+/// Uses file_index DB table for incremental skip logic.
 #[allow(clippy::too_many_arguments)]
 fn walk_and_store(
     dir: &Path,
     filter: &PathFilter,
     store: &ObjectStore,
-    manifest: &mut Manifest,
+    db: &Database,
     scanned: &mut usize,
     stored: &mut usize,
     skipped: &mut usize,
@@ -254,13 +231,11 @@ fn walk_and_store(
 
             let path = entry.path();
 
-            // Skip filtered paths (node_modules, .git, etc.)
             if filter.should_ignore(&path) {
                 continue;
             }
 
             if path.is_dir() {
-                // Skip hidden directories and .app bundles
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if name.starts_with('.') && name != ".." && name != "." {
                     continue;
@@ -268,12 +243,10 @@ fn walk_and_store(
                 if name.ends_with(".app") {
                     continue;
                 }
-                // Recurse
                 stack.push(path);
             } else if path.is_file() {
                 *scanned += 1;
 
-                // Skip files exceeding size limit (before expensive hash)
                 if let Some(max_size) = max_file_size {
                     if let Ok(meta) = std::fs::metadata(&path) {
                         if meta.len() > max_size {
@@ -286,13 +259,13 @@ fn walk_and_store(
                     }
                 }
 
-                // Check manifest: skip if mtime unchanged
                 let path_key = path.to_string_lossy().to_string();
                 let current_mtime = file_mtime_secs(&path);
 
-                if let Some(entry) = manifest.get(&path_key) {
-                    if let Some(mtime) = current_mtime {
-                        if entry.mtime_secs == mtime && store.exists(&entry.hash) {
+                // Check file_index in DB: skip if mtime unchanged and object exists
+                if let Some(mtime) = current_mtime {
+                    if let Ok(Some((db_mtime, db_hash, _))) = db.get_file_index(&path_key) {
+                        if db_mtime == mtime && store.exists(&db_hash) {
                             *skipped += 1;
                             if *scanned % 100 == 0 {
                                 fire_progress(on_progress, root_dir, *scanned, *stored, *skipped, *failed, total_estimate);
@@ -302,15 +275,11 @@ fn walk_and_store(
                     }
                 }
 
-                // Store the file (fast mode: clonefile without SHA-256 hash)
                 match store.store_fast(&path) {
                     Ok(hash) => {
                         *stored += 1;
                         if let Some(mtime) = current_mtime {
-                            manifest.insert(path_key, ManifestEntry {
-                                mtime_secs: mtime,
-                                hash,
-                            });
+                            let _ = db.upsert_file_index(&path_key, mtime, &hash, None);
                         }
                     }
                     Err(e) => {
@@ -319,12 +288,10 @@ fn walk_and_store(
                     }
                 }
 
-                // Throttled progress callback: every 100 files
                 if *scanned % 100 == 0 {
                     fire_progress(on_progress, root_dir, *scanned, *stored, *skipped, *failed, total_estimate);
                 }
 
-                // Log progress every 1000 files
                 if *scanned % 1000 == 0 {
                     info!("Scan progress: {} files scanned, {} stored, {} skipped", scanned, stored, skipped);
                 }
@@ -364,31 +331,23 @@ fn file_mtime_secs(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-/// Load manifest from JSON file.
-fn load_manifest(path: &Path) -> Manifest {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
-        Err(_) => HashMap::new(),
-    }
-}
-
-/// Save manifest to JSON file.
-fn save_manifest(path: &Path, manifest: &Manifest) -> Result<(), String> {
-    let json = serde_json::to_string(manifest)
-        .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
-    std::fs::write(path, json)
-        .map_err(|e| format!("Failed to write manifest: {}", e))
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn test_db(rew_home: &Path) -> Database {
+        let db = Database::open(&rew_home.join("snapshots.db")).unwrap();
+        db.initialize().unwrap();
+        db
+    }
+
     #[test]
     fn test_full_scan_basic() {
         let dir = tempdir().unwrap();
         let rew_home = tempdir().unwrap();
+        let db = test_db(rew_home.path());
 
         std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
         std::fs::write(dir.path().join("b.txt"), "world").unwrap();
@@ -400,6 +359,7 @@ mod tests {
             &[dir.path().to_path_buf()],
             &["**/.DS_Store".to_string()],
             rew_home.path(),
+            &db,
             None,
             None,
             None,
@@ -415,14 +375,15 @@ mod tests {
     fn test_incremental_scan_skips_unchanged() {
         let dir = tempdir().unwrap();
         let rew_home = tempdir().unwrap();
+        let db = test_db(rew_home.path());
 
         std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
         std::fs::write(dir.path().join("b.txt"), "world").unwrap();
 
-        let r1 = full_scan(&[dir.path().to_path_buf()], &[], rew_home.path(), None, None, None);
+        let r1 = full_scan(&[dir.path().to_path_buf()], &[], rew_home.path(), &db, None, None, None);
         assert_eq!(r1.files_stored, 2);
 
-        let r2 = full_scan(&[dir.path().to_path_buf()], &[], rew_home.path(), None, None, None);
+        let r2 = full_scan(&[dir.path().to_path_buf()], &[], rew_home.path(), &db, None, None, None);
         assert_eq!(r2.files_stored, 0);
         assert_eq!(r2.files_skipped, 2);
     }
@@ -431,15 +392,16 @@ mod tests {
     fn test_incremental_scan_detects_changes() {
         let dir = tempdir().unwrap();
         let rew_home = tempdir().unwrap();
+        let db = test_db(rew_home.path());
 
         std::fs::write(dir.path().join("a.txt"), "v1").unwrap();
-        let r1 = full_scan(&[dir.path().to_path_buf()], &[], rew_home.path(), None, None, None);
+        let r1 = full_scan(&[dir.path().to_path_buf()], &[], rew_home.path(), &db, None, None, None);
         assert_eq!(r1.files_stored, 1);
 
         std::thread::sleep(std::time::Duration::from_millis(1100));
         std::fs::write(dir.path().join("a.txt"), "v2-modified").unwrap();
 
-        let r2 = full_scan(&[dir.path().to_path_buf()], &[], rew_home.path(), None, None, None);
+        let r2 = full_scan(&[dir.path().to_path_buf()], &[], rew_home.path(), &db, None, None, None);
         assert_eq!(r2.files_stored, 1);
         assert_eq!(r2.files_skipped, 0);
     }
@@ -448,6 +410,7 @@ mod tests {
     fn test_scan_respects_ignore_patterns() {
         let dir = tempdir().unwrap();
         let rew_home = tempdir().unwrap();
+        let db = test_db(rew_home.path());
 
         std::fs::write(dir.path().join("good.txt"), "keep").unwrap();
         let nm = dir.path().join("node_modules");
@@ -458,6 +421,7 @@ mod tests {
             &[dir.path().to_path_buf()],
             &["**/node_modules/**".to_string()],
             rew_home.path(),
+            &db,
             None,
             None,
             None,
@@ -470,7 +434,8 @@ mod tests {
     #[test]
     fn test_scan_nonexistent_dir() {
         let rew_home = tempdir().unwrap();
-        let result = full_scan(&[PathBuf::from("/nonexistent/path/abc")], &[], rew_home.path(), None, None, None);
+        let db = test_db(rew_home.path());
+        let result = full_scan(&[PathBuf::from("/nonexistent/path/abc")], &[], rew_home.path(), &db, None, None, None);
         assert_eq!(result.files_scanned, 0);
     }
 
@@ -494,8 +459,8 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let rew_home = tempdir().unwrap();
+        let db = test_db(rew_home.path());
 
-        // Create 200+ files to trigger at least one callback (fires every 100)
         for i in 0..210 {
             std::fs::write(dir.path().join(format!("f{}.txt", i)), format!("content{}", i)).unwrap();
         }
@@ -507,6 +472,7 @@ mod tests {
             &[dir.path().to_path_buf()],
             &[],
             rew_home.path(),
+            &db,
             Some(Box::new(move |_update| {
                 cc.fetch_add(1, Ordering::Relaxed);
             })),

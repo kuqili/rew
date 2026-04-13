@@ -31,6 +31,8 @@ export interface ChangeInfo {
   /** ISO-8601 timestamp when this file was individually restored, or null. */
   restored_at: string | null;
   attribution: string | null;
+  /** Original file path before rename (only for renamed changes). */
+  old_file_path: string | null;
 }
 
 export interface TaskStatsInfo {
@@ -69,7 +71,6 @@ export interface StatusInfo {
   running: boolean;
   paused: boolean;
   watch_dirs: string[];
-  total_snapshots: number;
   anomaly_count: number;
   has_warning: boolean;
 }

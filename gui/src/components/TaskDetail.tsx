@@ -323,9 +323,17 @@ function FileRowWithDiff({
 
         <div className="flex-1 min-w-0">
           <div className={`text-[12px] font-mono truncate ${expanded ? "text-sys-blue font-medium" : "text-t-1"}`}>
-            {fileName(change.file_path)}
+            {change.change_type === "renamed" && change.old_file_path
+              ? <>{fileName(change.old_file_path)} <span className="text-t-3">→</span> {fileName(change.file_path)}</>
+              : fileName(change.file_path)
+            }
           </div>
-          <div className="text-[10px] text-t-3 truncate">{dirName(change.file_path)}</div>
+          <div className="text-[10px] text-t-3 truncate">
+            {change.change_type === "renamed" && change.old_file_path
+              ? <>{dirName(change.old_file_path)} <span className="text-t-4">→</span> {dirName(change.file_path)}</>
+              : dirName(change.file_path)
+            }
+          </div>
         </div>
 
         <div className="flex items-center gap-1.5 flex-shrink-0">

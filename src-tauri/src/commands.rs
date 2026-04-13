@@ -44,7 +44,6 @@ pub struct StatusInfo {
     pub running: bool,
     pub paused: bool,
     pub watch_dirs: Vec<String>,
-    pub total_snapshots: usize,
     pub anomaly_count: usize,
     pub has_warning: bool,
 }
@@ -76,7 +75,7 @@ pub async fn list_snapshots(state: State<'_, AppState>) -> Result<Vec<SnapshotIn
 #[tauri::command]
 pub async fn get_status(state: State<'_, AppState>) -> Result<StatusInfo, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let snapshots = db.list_snapshots().map_err(|e| e.to_string())?;
+    let snapshots = db.list_snapshots().unwrap_or_default();
     let anomaly_count = snapshots
         .iter()
         .filter(|s| s.trigger == SnapshotTrigger::Anomaly)
@@ -96,7 +95,6 @@ pub async fn get_status(state: State<'_, AppState>) -> Result<StatusInfo, String
         running: !paused,
         paused,
         watch_dirs,
-        total_snapshots: snapshots.len(),
         anomaly_count,
         has_warning,
     })
@@ -375,10 +373,18 @@ pub async fn complete_setup(
                 }
             }
 
+            let scan_db = match rew_core::db::Database::open(&rew_home_dir().join("snapshots.db")) {
+                Ok(db) => { let _ = db.initialize(); db }
+                Err(e) => {
+                    tracing::warn!("Scan: failed to open DB: {}", e);
+                    return;
+                }
+            };
             let result = rew_core::scanner::full_scan(
                 &[path],
                 &patterns,
                 &rew_home_dir(),
+                &scan_db,
                 Some(callback),
                 None,
                 scan_config.max_file_size_bytes,
@@ -465,6 +471,8 @@ pub struct ChangeInfo {
     /// ISO-8601 timestamp set when this file was individually restored. None = not restored.
     pub restored_at: Option<String>,
     pub attribution: Option<String>,
+    /// Original file path before rename (only for renamed changes).
+    pub old_file_path: Option<String>,
 }
 
 /// Undo preview info for the frontend.
@@ -605,6 +613,7 @@ pub async fn get_task_changes(
         lines_removed: c.lines_removed,
         restored_at: c.restored_at.map(|t| t.to_rfc3339()),
         attribution: c.attribution,
+        old_file_path: c.old_file_path.map(|p| p.to_string_lossy().to_string()),
     }).collect())
 }
 
@@ -1060,10 +1069,18 @@ pub async fn add_watch_dir(
             }
         }
 
+        let scan_db = match rew_core::db::Database::open(&rew_home_dir().join("snapshots.db")) {
+            Ok(db) => { let _ = db.initialize(); db }
+            Err(e) => {
+                tracing::warn!("Scan dir: failed to open DB: {}", e);
+                return;
+            }
+        };
         let result = rew_core::scanner::full_scan(
             &[path],
             &patterns,
             &rew_home_dir(),
+            &scan_db,
             Some(callback),
             None,
             config.max_file_size_bytes,
@@ -1377,10 +1394,18 @@ pub async fn rescan_watch_dir(
             }
         }
 
+        let scan_db = match rew_core::db::Database::open(&rew_home_dir().join("snapshots.db")) {
+            Ok(db) => { let _ = db.initialize(); db }
+            Err(e) => {
+                tracing::warn!("Rescan: failed to open DB: {}", e);
+                return;
+            }
+        };
         rew_core::scanner::full_scan(
             &[path],
             &patterns,
             &rew_home_dir(),
+            &scan_db,
             Some(callback),
             None,
             config.max_file_size_bytes,

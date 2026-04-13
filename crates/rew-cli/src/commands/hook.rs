@@ -16,6 +16,7 @@
 //! - Generic: flat `tool_name`/`file_path` (legacy rew format)
 
 use rew_core::backup::clonefile;
+use rew_core::baseline::resolve_baseline;
 use rew_core::db::Database;
 use rew_core::error::RewResult;
 use rew_core::objects::{sha256_file, ObjectStore};
@@ -332,9 +333,36 @@ fn predict_bash_file_paths(cmd: &str, cwd: Option<&str>) -> Vec<PathBuf> {
 // Hook handlers
 // ================================================================
 
+/// Extract the session key for a given AI tool. Each tool has its own logic,
+/// no fallback chains — new tools add a new match branch.
+fn extract_session_key(raw: &str, tool_source: &str) -> String {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+        match tool_source {
+            "claude-code" => {
+                if let Some(sid) = val.get("session_id").and_then(|v| v.as_str()) {
+                    return sid.to_string();
+                }
+            }
+            "cursor" => {
+                if let Some(cid) = val.get("conversation_id").and_then(|v| v.as_str()) {
+                    return cid.to_string();
+                }
+            }
+            "codebuddy" => {
+                if let Some(sid) = val.get("session_id").and_then(|v| v.as_str()) {
+                    return sid.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    format!("{}_default", tool_source)
+}
+
 /// Handle `rew hook prompt` — called when user submits a prompt.
 ///
 /// Reads prompt from stdin (JSON or plain text), creates a new Task record.
+/// All state is stored in DB (no temp files).
 /// Exit code: always 0 (prompt recording should never block AI).
 pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
     let raw = read_stdin_text();
@@ -348,7 +376,6 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
         });
 
     let input = normalize_prompt(&raw);
-    // Also extract generation_id (Cursor-specific) for precise stop-hook matching.
     let generation_id: Option<String> = serde_json::from_str::<ClaudeCodeInput>(&raw)
         .ok()
         .and_then(|v| v.generation_id);
@@ -359,18 +386,12 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
 
     let db = open_db()?;
 
-    let sessions_dir = rew_dir.join("sessions");
-    let _ = std::fs::create_dir_all(&sessions_dir);
+    let effective_sid = extract_session_key(&raw, &tool_source);
 
-    let effective_sid = input.session_id.clone()
-        .unwrap_or_else(|| format!("{}_default", tool_source));
-
-    // Close any orphan active task left by a previous session that never
-    // got a proper `hook stop` (e.g. user pressed Ctrl-C).
-    if let Some(old_tid) = read_task_id_for_session(&rew_dir, &effective_sid) {
+    // Close any orphan active task left by a previous session
+    if let Ok(Some(old_tid)) = db.get_active_task_for_session(&effective_sid) {
         let _ = db.update_task_status(&old_tid, &TaskStatus::Completed, Some(Utc::now()));
-        // Clean up the per-task marker for the old task
-        let _ = std::fs::remove_file(sessions_dir.join(format!(".task_{}", old_tid)));
+        let _ = db.deactivate_session(&effective_sid);
     }
 
     let task_id = generate_task_id();
@@ -388,7 +409,6 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
 
     db.create_task(&task)?;
 
-    // Create initial task_stats row
     let stats = TaskStats {
         task_id: task_id.clone(),
         model: input.model.clone(),
@@ -404,32 +424,13 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
     };
     let _ = db.create_task_stats(&stats);
 
-    let _ = std::fs::write(sessions_dir.join(&effective_sid), &task_id);
+    // Register session -> task mapping in DB (replaces session files)
+    let _ = db.insert_active_session(&effective_sid, &task_id, &tool_source, Utc::now());
 
-    // Write the generation_id alongside the session file so `hook stop` can
-    // match exactly which AI response this task belongs to, avoiding the race
-    // where the old stop hook closes the newly created task.
+    // Store generation_id for Cursor stop-hook dedup (replaces .genid file)
     if let Some(ref gid) = generation_id {
-        let _ = std::fs::write(sessions_dir.join(format!("{}.genid", effective_sid)), gid);
+        let _ = db.set_stop_guard(&effective_sid, gid);
     }
-
-    // Write a per-task marker so `hook stop` (running in the same process
-    // context) can look up the exact session file to remove, even when
-    // multiple tools are running concurrently and `.current_session` has
-    // been overwritten by another tool's prompt hook.
-    // Layout: ~/.rew/sessions/.task_{task_id} → effective_sid
-    let task_sid_file = sessions_dir.join(format!(".task_{}", task_id));
-    let _ = std::fs::write(&task_sid_file, &effective_sid);
-
-    // Keep legacy .current_task for backward-compat (tools/hooks that read it directly).
-    let marker = rew_dir.join(".current_task");
-    std::fs::write(&marker, &task_id)?;
-
-    // Keep .current_session for existing code that reads it.
-    // Note: this may be overwritten by the next concurrent prompt call, so
-    // stop() now prefers the per-task marker above.
-    let sid_marker = rew_dir.join(".current_session");
-    let _ = std::fs::write(&sid_marker, &effective_sid);
 
     Ok(())
 }
@@ -444,20 +445,18 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
 /// Exit code:
 /// - 0 = allow (continue AI operation)
 /// - 2 = deny (block AI operation, stderr has reason)
-pub fn handle_pre_tool(_source: Option<&str>) -> RewResult<i32> {
+pub fn handle_pre_tool(source: Option<&str>) -> RewResult<i32> {
     let raw = read_stdin_text();
     let input = match normalize_pre_tool(&raw) {
         Some(v) => v,
-        None => return Ok(0), // Can't parse → fail open
+        None => return Ok(0),
     };
 
-    // Load scope engine — use file_path and cwd from input to find .rewscope
     let scope = load_scope_engine_for_path(
         input.file_path.as_deref(),
         input.cwd.as_deref(),
     );
 
-    // Check based on tool type
     match input.tool_name.as_str() {
         "Write" | "Edit" | "write" | "edit" | "MultiEdit" => {
             if let Some(ref path_str) = input.file_path {
@@ -467,7 +466,6 @@ pub fn handle_pre_tool(_source: Option<&str>) -> RewResult<i32> {
                     return Ok(0);
                 }
 
-                // Scope check
                 match scope.check_path(&path) {
                     ScopeResult::Deny(reason) => {
                         eprintln!("rew: {}", reason);
@@ -475,15 +473,18 @@ pub fn handle_pre_tool(_source: Option<&str>) -> RewResult<i32> {
                     }
                     ScopeResult::Alert(reason) => {
                         eprintln!("rew: warning: {}", reason);
-                        // Continue — alert doesn't block
                     }
                     ScopeResult::Allow => {}
                 }
 
-                // Backup the file before AI modifies it
                 if path.exists() {
                     if let Ok(hash) = backup_file_to_objects(&path) {
-                        record_pre_tool_hash(&path, &hash, input.session_id.as_deref());
+                        let tool_source = resolve_tool_source(source, &raw);
+                        let session_key = extract_session_key(&raw, &tool_source);
+                        let path_str = path.to_string_lossy().to_string();
+                        if let Ok(db) = open_db() {
+                            let _ = db.set_pre_tool_hash(&session_key, &path_str, &hash);
+                        }
                     }
                 }
             }
@@ -504,36 +505,36 @@ pub fn handle_pre_tool(_source: Option<&str>) -> RewResult<i32> {
             }
             Ok(0)
         }
-        _ => Ok(0), // Unknown tool types: allow
+        _ => Ok(0),
     }
 }
 
 /// Handle `rew hook post-tool` — called after AI completes a tool operation.
 ///
-/// Records the change in the database (async, doesn't block AI).
-pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
+/// Records the change in the database. All state lookups via DB.
+pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
     let raw = read_stdin_text();
 
-    // Debug: log raw input for diagnosing format issues
     let debug_log = rew_home_dir().join("hook_debug.log");
     let _ = std::fs::OpenOptions::new()
         .create(true).append(true).open(&debug_log)
         .and_then(|mut f| {
             use std::io::Write;
-            writeln!(f, "[post-tool {}] source={:?} raw={}", Utc::now(), _source, &raw)
+            writeln!(f, "[post-tool {}] source={:?} raw={}", Utc::now(), source, &raw)
         });
 
     let input = match normalize_post_tool(&raw) {
         Some(v) => v,
-        None => return Ok(()), // Can't parse → skip silently
+        None => return Ok(()),
     };
 
-    let rew_dir = rew_home_dir();
-    let task_id = resolve_task_id(&rew_dir, input.session_id.as_deref());
+    let tool_source = resolve_tool_source(source, &raw);
+    let session_key = extract_session_key(&raw, &tool_source);
+    let db = open_db()?;
+    let task_id = db.get_active_task_for_session(&session_key)?;
 
-    // Always increment tool_calls counter, even for Bash commands without file_path.
     if let Some(ref tid) = task_id {
-        let _ = open_db().and_then(|db| db.increment_tool_calls(tid));
+        let _ = db.increment_tool_calls(tid);
     }
 
     if let (Some(task_id), Some(path_str)) = (task_id.as_ref(), input.file_path.as_ref()) {
@@ -542,18 +543,13 @@ pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
         if is_temp_file(&path) || should_ignore_path(&path) {
             return Ok(());
         }
-        let db = open_db()?;
 
-        // Determine change type
+        let baseline = resolve_baseline(&db, task_id, &path, Some(&session_key));
+
         let change_type = if path.exists() {
             match input.tool_name.as_str() {
                 "Write" | "write" => {
-                    let prev = db.get_latest_change_for_file(&path)?;
-                    if prev.is_some() {
-                        ChangeType::Modified
-                    } else {
-                        ChangeType::Created
-                    }
+                    if baseline.existed { ChangeType::Modified } else { ChangeType::Created }
                 }
                 "Edit" | "edit" | "MultiEdit" => ChangeType::Modified,
                 _ => ChangeType::Modified,
@@ -562,33 +558,23 @@ pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
             ChangeType::Deleted
         };
 
-        // Compute new hash if file exists
         let new_hash = if path.exists() {
             sha256_file(&path).ok()
         } else {
             None
         };
 
-        // Store new content in objects if it exists
+        let rew_dir = rew_home_dir();
         let obj_store = ObjectStore::new(rew_dir.join("objects"))?;
         if path.exists() {
             obj_store.store(&path).ok();
         }
 
-        // Determine old_hash for diff baseline:
-        // 1. If this task already has a record for this file, reuse its old_hash
-        //    so that line stats always reflect the FULL change (H0 → H_new), not
-        //    just the latest incremental edit (H_prev → H_new).
-        // 2. Otherwise try the pre-tool tmp file (Claude Code beforeFileEdit).
-        // 3. Fall back to the latest recorded hash from any previous task.
-        let old_hash = db.get_task_file_old_hash(task_id, &path)
-            .or_else(|| read_pre_tool_hash(&path, input.session_id.as_deref()))
-            .or_else(|| {
-                db.get_latest_change_for_file(&path)
-                    .ok()
-                    .flatten()
-                    .and_then(|c| c.new_hash.or(c.old_hash))
-            });
+        let old_hash = if change_type == ChangeType::Created {
+            None
+        } else {
+            baseline.hash
+        };
 
         let (lines_added, lines_removed) = {
             let read = |h: Option<&str>| -> Vec<u8> {
@@ -613,15 +599,14 @@ pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
             lines_removed,
             restored_at: None,
             attribution: Some("hook".into()),
+            old_file_path: None,
         };
 
         db.upsert_change(&change)?;
     } else if let (Some(task_id), Some(cmd)) = (task_id.as_ref(), input.command.as_ref()) {
-        // Bash command without explicit file_path: predict affected files.
         if input.tool_name == "Bash" || input.tool_name == "bash" {
             let predicted = predict_bash_file_paths(cmd, input.cwd.as_deref());
             if !predicted.is_empty() {
-                let db = open_db()?;
                 let rew_dir = rew_home_dir();
                 let obj_store = ObjectStore::new(rew_dir.join("objects"))?;
 
@@ -633,13 +618,8 @@ pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
                     if path.exists() {
                         obj_store.store(&path).ok();
                     }
-                    let old_hash = read_pre_tool_hash(&path, input.session_id.as_deref())
-                        .or_else(|| {
-                            db.get_latest_change_for_file(&path)
-                                .ok()
-                                .flatten()
-                                .and_then(|c| c.new_hash.or(c.old_hash))
-                        });
+                    let bash_baseline = resolve_baseline(&db, task_id, &path, Some(&session_key));
+                    let old_hash = bash_baseline.hash;
 
                     let (lines_added, lines_removed) = {
                         let read = |h: Option<&str>| -> Vec<u8> {
@@ -664,6 +644,7 @@ pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
                         lines_removed,
                         restored_at: None,
                         attribution: Some("bash_predicted".into()),
+                        old_file_path: None,
                     };
                     let _ = db.upsert_change(&change);
                 }
@@ -676,153 +657,66 @@ pub fn handle_post_tool(_source: Option<&str>) -> RewResult<()> {
 
 /// Handle `rew hook stop` — called when AI finishes responding.
 ///
-/// Parses stdin to extract `session_id`, then precisely closes the task
-/// associated with that session.  Falls back to the global `.current_session`
-/// when the payload doesn't contain a session_id (e.g. legacy tools).
-pub fn handle_stop(_source: Option<&str>) -> RewResult<()> {
-    let rew_dir = rew_home_dir();
+/// All state is looked up and cleaned via DB. No temp file operations.
+pub fn handle_stop(source: Option<&str>) -> RewResult<()> {
     let raw = read_stdin_text();
 
-    // Parse stop payload: extract session_id and generation_id.
     let stop_input = serde_json::from_str::<ClaudeCodeInput>(&raw).unwrap_or_default();
-    let stop_session_id = stop_input.session_id.clone()
-        .or(stop_input.conversation_id.clone());
     let stop_generation_id = stop_input.generation_id;
 
-    let task_id = resolve_task_id(&rew_dir, stop_session_id.as_deref());
+    let tool_source = resolve_tool_source(source, &raw);
+    let session_key = extract_session_key(&raw, &tool_source);
 
-    if let Some(task_id) = task_id {
-        let db = open_db()?;
+    let db = open_db()?;
+    let task_id = match db.get_active_task_for_session(&session_key)? {
+        Some(tid) => tid,
+        None => return Ok(()),
+    };
 
-        // Precise guard using generation_id: Cursor's stop event carries the same
-        // generation_id as the beforeSubmitPrompt that created this task. If the IDs
-        // don't match, this stop belongs to a PREVIOUS response and must not close
-        // the task that was just created by a new prompt.
-        if let Some(ref stop_gid) = stop_generation_id {
-            if let Some(ref sid) = stop_session_id {
-                let genid_file = rew_dir.join("sessions").join(format!("{}.genid", sid));
-                if let Ok(stored_gid) = std::fs::read_to_string(&genid_file) {
-                    let stored_gid = stored_gid.trim();
-                    if stored_gid != stop_gid.as_str() {
-                        // Mismatched generation_id — this stop is stale, skip.
-                        return Ok(());
-                    }
-                }
-            }
-        } else {
-            // No generation_id available (Claude Code or older format): fall back to
-            // time-based guard. A task created < 3 s ago was likely just spawned by a
-            // concurrent new prompt and should not be closed by a stale stop event.
-            if let Ok(Some(t)) = db.get_task(&task_id) {
-                let age_ms = (Utc::now() - t.started_at).num_milliseconds();
-                if age_ms < 3_000 {
-                    return Ok(());
-                }
+    // generation_id guard (Cursor): compare stop's generation_id with stored one
+    if let Some(ref stop_gid) = stop_generation_id {
+        if let Ok(Some(stored_gid)) = db.get_stop_guard(&session_key) {
+            if stored_gid != *stop_gid {
+                return Ok(());
             }
         }
-
-        // Update task status
-        db.update_task_status(&task_id, &TaskStatus::Completed, Some(Utc::now()))?;
-
-        // Get changes for summary
-        let changes = db.get_changes_for_task(&task_id)?;
-        if !changes.is_empty() {
-            let created = changes.iter().filter(|c| c.change_type == ChangeType::Created).count();
-            let modified = changes.iter().filter(|c| c.change_type == ChangeType::Modified).count();
-            let deleted = changes.iter().filter(|c| c.change_type == ChangeType::Deleted).count();
-
-            let summary = format!(
-                "{} files changed (+{} created, ~{} modified, -{} deleted)",
-                changes.len(), created, modified, deleted
-            );
-            db.update_task_summary(&task_id, &summary)?;
-        }
-
-        // Finalize task_stats: compute duration from DB started_at and count files.
-        if let Ok(Some(task)) = db.get_task(&task_id) {
-            let duration_secs = (Utc::now() - task.started_at).num_milliseconds() as f64 / 1000.0;
-            let _ = db.finalize_task_stats(&task_id, duration_secs, changes.len() as i32);
-        }
-
-        // Write a suppress file so the daemon can ignore delayed FSEvents for
-        // the paths that were just modified by this AI task.  Without this,
-        // FSEvents delivered ≤ 90 s after `hook stop` would be mis-attributed
-        // to a new monitoring window and show as duplicate entries.
-        if !changes.is_empty() {
-            let paths: Vec<String> = changes
-                .iter()
-                .map(|c| c.file_path.to_string_lossy().to_string())
-                .collect();
-            // expires_secs = now + 90 s — daemon ignores the file after this
-            let expires_secs = Utc::now().timestamp() + 90;
-            let json = format!(
-                "{{\"expires_secs\":{},\"paths\":[{}]}}",
-                expires_secs,
-                paths
-                    .iter()
-                    .map(|p| format!("\"{}\"", p.replace('\\', "\\\\").replace('"', "\\\"")))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
-            let _ = std::fs::write(rew_dir.join(".stop_suppress"), json);
-        }
-
-        // Append to the grace-period list so multiple concurrent AI sessions
-        // (Claude Code + Cursor + …) can each register their own grace window
-        // without overwriting each other.
-        // Layout: ~/.rew/.grace_tasks (JSON array of {task_id, expires_secs})
-        // The daemon reads all unexpired entries; daemon-side read_grace_task_id
-        // still exists for backward-compat but the array file takes precedence.
-        // 15 s = 2 s FSEvents latency + 3 s pipeline window + 10 s headroom.
-        let grace_expires = Utc::now().timestamp() + 15;
-        let grace_file = rew_dir.join(".grace_tasks");
-        let mut entries: Vec<serde_json::Value> = {
-            std::fs::read_to_string(&grace_file)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
-        };
-        // Purge already-expired entries before appending.
-        let now_ts = Utc::now().timestamp();
-        entries.retain(|e| e.get("expires_secs").and_then(|v| v.as_i64()).unwrap_or(0) > now_ts);
-        entries.push(serde_json::json!({"task_id": task_id, "expires_secs": grace_expires}));
-        if let Ok(json) = serde_json::to_string(&entries) {
-            let tmp = grace_file.with_extension("tmp");
-            if std::fs::write(&tmp, &json).is_ok() {
-                let _ = std::fs::rename(&tmp, &grace_file);
+    } else {
+        // No generation_id (Claude Code etc.): time-based guard
+        if let Ok(Some(t)) = db.get_task(&task_id) {
+            let age_ms = (Utc::now() - t.started_at).num_milliseconds();
+            if age_ms < 3_000 {
+                return Ok(());
             }
-        }
-
-        // Clean up session file and legacy markers.
-        // Prefer the per-task marker written by `hook prompt` so we remove
-        // only THIS session's file even when concurrent tools have since
-        // overwritten `.current_session`.
-        let sessions_dir = rew_dir.join("sessions");
-        let task_sid_file = sessions_dir.join(format!(".task_{}", task_id));
-        let sid_to_remove = std::fs::read_to_string(&task_sid_file)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            // Fallback: legacy .current_session (may be wrong when concurrent)
-            .or_else(|| read_current_session_id(&rew_dir));
-
-        if let Some(sid) = sid_to_remove {
-            let _ = std::fs::remove_file(sessions_dir.join(&sid));
-            let _ = std::fs::remove_dir_all(rew_dir.join(".pre_tool").join(&sid));
-        }
-        // Always remove the per-task marker regardless.
-        let _ = std::fs::remove_file(&task_sid_file);
-
-        // Only remove legacy markers if no other sessions are still active.
-        let remaining_sessions = std::fs::read_dir(&sessions_dir)
-            .ok()
-            .map(|rd| rd.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).count())
-            .unwrap_or(0);
-        if remaining_sessions == 0 {
-            let _ = std::fs::remove_file(rew_dir.join(".current_task"));
-            let _ = std::fs::remove_file(rew_dir.join(".current_session"));
         }
     }
+
+    db.update_task_status(&task_id, &TaskStatus::Completed, Some(Utc::now()))?;
+
+    let objects_root = rew_home_dir().join("objects");
+    let _ = rew_core::reconcile::reconcile_task(&db, &task_id, &objects_root);
+
+    let changes = db.get_changes_for_task(&task_id)?;
+    if !changes.is_empty() {
+        let created = changes.iter().filter(|c| c.change_type == ChangeType::Created).count();
+        let modified = changes.iter().filter(|c| c.change_type == ChangeType::Modified).count();
+        let deleted = changes.iter().filter(|c| c.change_type == ChangeType::Deleted).count();
+
+        let summary = format!(
+            "{} files changed (+{} created, ~{} modified, -{} deleted)",
+            changes.len(), created, modified, deleted
+        );
+        db.update_task_summary(&task_id, &summary)?;
+    }
+
+    if let Ok(Some(task)) = db.get_task(&task_id) {
+        let duration_secs = (Utc::now() - task.started_at).num_milliseconds() as f64 / 1000.0;
+        let _ = db.finalize_task_stats(&task_id, duration_secs, changes.len() as i32);
+    }
+
+    // Deactivate session + cleanup (replaces 6+ file delete operations)
+    let _ = db.deactivate_sessions_for_task(&task_id);
+    let _ = db.delete_stop_guard(&session_key);
+    let _ = db.delete_pre_tool_hashes_for_session(&session_key);
 
     Ok(())
 }
@@ -983,50 +877,6 @@ fn rand_u32() -> u32 {
     hasher.finish() as u32
 }
 
-fn read_current_task_id(rew_dir: &Path) -> Option<String> {
-    // Prefer session-scoped lookup: find the task_id for the current session.
-    if let Some(sid) = read_current_session_id(rew_dir) {
-        let session_file = rew_dir.join("sessions").join(&sid);
-        if let Ok(tid) = std::fs::read_to_string(&session_file) {
-            let tid = tid.trim().to_string();
-            if !tid.is_empty() {
-                return Some(tid);
-            }
-        }
-    }
-    // Legacy fallback: plain .current_task file.
-    let marker = rew_dir.join(".current_task");
-    std::fs::read_to_string(marker).ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-fn read_current_session_id(rew_dir: &Path) -> Option<String> {
-    let marker = rew_dir.join(".current_session");
-    std::fs::read_to_string(marker).ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// Look up the task_id for a specific session, bypassing .current_session.
-fn read_task_id_for_session(rew_dir: &Path, session_id: &str) -> Option<String> {
-    let session_file = rew_dir.join("sessions").join(session_id);
-    std::fs::read_to_string(session_file).ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// Resolve task_id: prefer explicit session_id from stdin, fall back to
-/// the global .current_session / .current_task chain.
-fn resolve_task_id(rew_dir: &Path, session_id: Option<&str>) -> Option<String> {
-    if let Some(sid) = session_id {
-        if let Some(tid) = read_task_id_for_session(rew_dir, sid) {
-            return Some(tid);
-        }
-    }
-    read_current_task_id(rew_dir)
-}
-
 /// Determine the AI tool source. Priority:
 /// 1. Explicit --source flag (most reliable)
 /// 2. Auto-detect from stdin JSON structure
@@ -1108,49 +958,3 @@ fn backup_file_to_objects(path: &Path) -> RewResult<String> {
     obj_store.store(path)
 }
 
-fn path_key(path: &Path) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    path.hash(&mut h);
-    format!("{:016x}", h.finish())
-}
-
-/// Record pre-tool old_hash for a file path (so post-tool can reference it).
-///
-/// Stored under `.pre_tool/{session_id}/{path_hash}` so that concurrent
-/// sessions (Claude Code + Cursor etc.) don't overwrite each other's state.
-/// Falls back to a flat `.pre_tool/{path_hash}` when no session is active.
-fn record_pre_tool_hash(path: &Path, hash: &str, session_id: Option<&str>) {
-    let rew_dir = rew_home_dir();
-    let pre_dir = match session_id {
-        Some(sid) => rew_dir.join(".pre_tool").join(sid),
-        None => rew_dir.join(".pre_tool"),
-    };
-    let _ = std::fs::create_dir_all(&pre_dir);
-    let _ = std::fs::write(pre_dir.join(path_key(path)), hash);
-}
-
-/// Read pre-tool old_hash for a file path.
-///
-/// Uses the explicit `session_id` to locate the correct session-scoped
-/// directory, then falls back to the flat layout for backward compatibility.
-fn read_pre_tool_hash(path: &Path, session_id: Option<&str>) -> Option<String> {
-    let rew_dir = rew_home_dir();
-    let key = path_key(path);
-
-    // Try explicit session-scoped directory first
-    if let Some(sid) = session_id {
-        let session_pre = rew_dir.join(".pre_tool").join(sid).join(&key);
-        if let Ok(h) = std::fs::read_to_string(&session_pre) {
-            let _ = std::fs::remove_file(session_pre);
-            return Some(h.trim().to_string());
-        }
-    }
-
-    // Flat fallback (legacy)
-    let marker = rew_dir.join(".pre_tool").join(&key);
-    let hash = std::fs::read_to_string(&marker).ok()?;
-    let _ = std::fs::remove_file(marker);
-    Some(hash.trim().to_string())
-}

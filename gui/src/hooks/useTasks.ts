@@ -26,12 +26,10 @@ export function useTasks(dirFilter?: string | null) {
 
     const timer = setInterval(refresh, 5000);
 
-    const unlistenSnap = listen("snapshot-created", () => refresh());
     const unlistenTask = listen("task-updated", () => refresh());
 
     return () => {
       clearInterval(timer);
-      unlistenSnap.then(fn => fn());
       unlistenTask.then(fn => fn());
     };
   }, [refresh]);

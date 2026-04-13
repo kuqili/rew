@@ -1,7 +1,7 @@
 //! SQLite database for snapshot and task metadata storage.
 //!
 //! Stores snapshot records, task records, and file change records
-//! in ~/.rew/rew.db (or ~/.rew/snapshots.db for backward compat).
+//! in ~/.rew/snapshots.db.
 
 use crate::error::{RewError, RewResult};
 use crate::types::{
@@ -149,6 +149,72 @@ impl Database {
                 extra_json       TEXT
             );"
         )?;
+
+        // V7: Session-based state management (replaces all temp files)
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS active_sessions (
+                session_id      TEXT PRIMARY KEY,
+                task_id         TEXT NOT NULL REFERENCES tasks(id),
+                tool_source     TEXT NOT NULL,
+                started_at      TEXT NOT NULL,
+                is_active       INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_active_sessions_task
+                ON active_sessions(task_id);
+            CREATE INDEX IF NOT EXISTS idx_active_sessions_active
+                ON active_sessions(is_active);
+
+            CREATE TABLE IF NOT EXISTS session_stop_guard (
+                session_id      TEXT PRIMARY KEY,
+                generation_id   TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pre_tool_hashes (
+                session_id      TEXT NOT NULL,
+                file_path       TEXT NOT NULL,
+                content_hash    TEXT NOT NULL,
+                created_at      TEXT NOT NULL,
+                PRIMARY KEY (session_id, file_path)
+            );
+
+            CREATE TABLE IF NOT EXISTS file_index (
+                file_path       TEXT PRIMARY KEY,
+                mtime_secs      INTEGER NOT NULL,
+                fast_hash       TEXT NOT NULL,
+                content_hash    TEXT
+            );"
+        )?;
+
+        // V8: Move os_snapshot_ref from snapshots table to tasks table.
+        let _ = self.conn.execute(
+            "ALTER TABLE tasks ADD COLUMN os_snapshot_ref TEXT",
+            [],
+        );
+
+        // V9: Performance index for get_latest_change_for_file + UNIQUE constraint.
+        // Clean up any duplicate (task_id, file_path) rows first (keep highest id).
+        let _ = self.conn.execute(
+            "DELETE FROM changes WHERE id NOT IN (
+                SELECT MAX(id) FROM changes GROUP BY task_id, file_path
+            )",
+            [],
+        );
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_changes_file_path_id
+                ON changes(file_path, id DESC)",
+            [],
+        );
+        let _ = self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_changes_task_file_unique
+                ON changes(task_id, file_path)",
+            [],
+        );
+
+        // V10: old_file_path column for rename tracking
+        let _ = self.conn.execute(
+            "ALTER TABLE changes ADD COLUMN old_file_path TEXT",
+            [],
+        );
 
         Ok(())
     }
@@ -443,6 +509,15 @@ impl Database {
         Ok(())
     }
 
+    /// Set the APFS snapshot reference on a task.
+    pub fn set_task_snapshot_ref(&self, task_id: &str, os_snapshot_ref: &str) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE tasks SET os_snapshot_ref = ?1 WHERE id = ?2",
+            params![os_snapshot_ref, task_id],
+        )?;
+        Ok(())
+    }
+
     fn row_to_task(row: &rusqlite::Row) -> Result<Task, String> {
         let started_at_str: String = row.get(3).map_err(|e| e.to_string())?;
         let completed_at_str: Option<String> = row.get(4).map_err(|e| e.to_string())?;
@@ -484,8 +559,8 @@ impl Database {
     /// Record a file change within a task.
     pub fn insert_change(&self, change: &Change) -> RewResult<i64> {
         self.conn.execute(
-            "INSERT INTO changes (task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO changes (task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 change.task_id,
                 change.file_path.to_string_lossy().to_string(),
@@ -496,6 +571,7 @@ impl Database {
                 change.lines_added,
                 change.lines_removed,
                 change.attribution,
+                change.old_file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -513,6 +589,26 @@ impl Database {
         ).optional().ok().flatten().flatten()
     }
 
+    /// Return (change_type, old_hash) for a file within the current task.
+    /// Used by resolve_baseline to distinguish Created (existed=false) from
+    /// Modified/Renamed (existed=true) when a record already exists.
+    pub fn get_task_file_baseline_info(
+        &self,
+        task_id: &str,
+        file_path: &Path,
+    ) -> RewResult<Option<(String, Option<String>)>> {
+        let path_str = file_path.to_string_lossy().to_string();
+        let result = self.conn.query_row(
+            "SELECT change_type, old_hash FROM changes WHERE task_id = ?1 AND file_path = ?2",
+            params![task_id, path_str],
+            |row| Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            )),
+        ).optional()?;
+        Ok(result)
+    }
+
     /// Insert or update a change record for (task_id, file_path).
     ///
     /// Guarantees one record per file per task:
@@ -524,22 +620,38 @@ impl Database {
         let path_str = change.file_path.to_string_lossy().to_string();
 
         let existing = self.conn.query_row(
-            "SELECT id, old_hash FROM changes WHERE task_id = ?1 AND file_path = ?2",
+            "SELECT id, old_hash, attribution FROM changes WHERE task_id = ?1 AND file_path = ?2",
             params![change.task_id, path_str],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            )),
         ).optional()?;
 
-        if let Some((existing_id, existing_old_hash)) = existing {
-            // Keep the earliest old_hash (what the file looked like before this task)
-            let preserved_old_hash = existing_old_hash.or(change.old_hash.clone());
-            // hook.rs always computes the cumulative diff (original old_hash → latest
-            // new_hash via get_task_file_old_hash), so unconditionally update all fields.
-            // The previous CASE WHEN guard is no longer needed — it caused "add then remove"
-            // scenarios to report incorrect non-zero counts.
+        if let Some((existing_id, existing_old_hash, existing_attribution)) = existing {
+            let incoming_attr = change.attribution.as_deref().unwrap_or("unknown");
+            let existing_attr = existing_attribution.as_deref().unwrap_or("unknown");
+
+            // Priority: hook > fsevent_active > fsevent_grace > monitoring > unknown.
+            // If existing record was written by hook, daemon writes must not
+            // overwrite the diff/stats/attribution (hook data is more precise).
+            if existing_attr == "hook" && incoming_attr != "hook" {
+                return Ok(existing_id);
+            }
+
+            let preserved_old_hash = if incoming_attr == "hook" {
+                // hook always provides the correct old_hash via get_task_file_old_hash
+                change.old_hash.clone().or(existing_old_hash)
+            } else {
+                existing_old_hash.or(change.old_hash.clone())
+            };
+
             self.conn.execute(
                 "UPDATE changes SET change_type=?1, old_hash=?2, new_hash=?3,
                  diff_text=?4, lines_added=?5, lines_removed=?6,
-                 attribution=COALESCE(?7, attribution)
+                 attribution=COALESCE(?7, attribution),
+                 old_file_path=COALESCE(?9, old_file_path)
                  WHERE id=?8",
                 params![
                     change.change_type.to_string(),
@@ -550,6 +662,7 @@ impl Database {
                     change.lines_removed,
                     change.attribution,
                     existing_id,
+                    change.old_file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
                 ],
             )?;
             Ok(existing_id)
@@ -561,7 +674,7 @@ impl Database {
     /// Get all changes for a task.
     pub fn get_changes_for_task(&self, task_id: &str) -> RewResult<Vec<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution, old_file_path
              FROM changes WHERE task_id = ?1 ORDER BY id ASC",
         )?;
 
@@ -660,7 +773,7 @@ impl Database {
     pub fn get_changes_for_task_in_dir(&self, task_id: &str, dir_prefix: &str) -> RewResult<Vec<Change>> {
         let like_pattern = format!("{}/%", dir_prefix);
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution, old_file_path
              FROM changes WHERE task_id = ?1 AND file_path LIKE ?2 ORDER BY id ASC",
         )?;
 
@@ -680,7 +793,7 @@ impl Database {
     /// Get changes for a task matching a specific file path exactly.
     pub fn get_changes_for_task_by_file(&self, task_id: &str, file_path: &str) -> RewResult<Vec<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution, old_file_path
              FROM changes WHERE task_id = ?1 AND file_path = ?2 ORDER BY id ASC",
         )?;
 
@@ -747,12 +860,35 @@ impl Database {
 
     pub fn get_latest_change_for_file(&self, file_path: &Path) -> RewResult<Option<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution, old_file_path
              FROM changes WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
         )?;
 
         let path_str = file_path.to_string_lossy().to_string();
         let result = stmt.query_row(params![path_str], |row| Ok(Self::row_to_change(row)));
+
+        match result {
+            Ok(change) => Ok(Some(change.map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))))?)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(RewError::Database(e)),
+        }
+    }
+
+    /// Like get_latest_change_for_file but excludes records from a specific task.
+    /// Used by resolve_baseline to avoid circular reference (reading own task's
+    /// records as "historical baseline").
+    pub fn get_latest_change_for_file_excluding_task(
+        &self,
+        file_path: &Path,
+        exclude_task_id: &str,
+    ) -> RewResult<Option<Change>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution, old_file_path
+             FROM changes WHERE file_path = ?1 AND task_id != ?2 ORDER BY id DESC LIMIT 1",
+        )?;
+
+        let path_str = file_path.to_string_lossy().to_string();
+        let result = stmt.query_row(params![path_str, exclude_task_id], |row| Ok(Self::row_to_change(row)));
 
         match result {
             Ok(change) => Ok(Some(change.map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))))?)),
@@ -772,6 +908,7 @@ impl Database {
             .map(|dt| dt.with_timezone(&chrono::Utc));
 
         let attribution: Option<String> = row.get(10).unwrap_or(None);
+        let old_file_path: Option<String> = row.get(11).unwrap_or(None);
 
         Ok(Change {
             id: row.get(0).map_err(|e| e.to_string())?,
@@ -785,6 +922,7 @@ impl Database {
             lines_removed: row.get(8).map_err(|e| e.to_string())?,
             restored_at,
             attribution,
+            old_file_path: old_file_path.map(PathBuf::from),
         })
     }
 
@@ -867,6 +1005,60 @@ impl Database {
         Ok(result)
     }
 
+    /// Delete a single change record by its auto-increment ID.
+    /// Used by reconcile to remove net-zero changes.
+    pub fn delete_change_by_id(&self, id: i64) -> RewResult<()> {
+        self.conn.execute(
+            "DELETE FROM changes WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    /// Update a change record after reconcile (change_type, new_hash, line stats).
+    /// Does NOT touch old_hash or attribution — those are set at record time.
+    pub fn update_change_reconciled(
+        &self,
+        id: i64,
+        change_type: &crate::types::ChangeType,
+        new_hash: Option<&str>,
+        lines_added: u32,
+        lines_removed: u32,
+    ) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE changes SET change_type = ?1, new_hash = ?2,
+             lines_added = ?3, lines_removed = ?4
+             WHERE id = ?5",
+            params![
+                change_type.to_string(),
+                new_hash,
+                lines_added,
+                lines_removed,
+                id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Update a change record to reflect a rename pairing (reconcile).
+    /// Sets change_type=Renamed, old_file_path, old_hash, and recalculated line stats.
+    pub fn update_change_rename_paired(
+        &self,
+        id: i64,
+        old_file_path: &str,
+        old_hash: Option<&str>,
+        lines_added: u32,
+        lines_removed: u32,
+    ) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE changes SET change_type = 'renamed', old_file_path = ?1,
+             old_hash = ?2, lines_added = ?3, lines_removed = ?4
+             WHERE id = ?5",
+            params![old_file_path, old_hash, lines_added, lines_removed, id],
+        )?;
+        Ok(())
+    }
+
     /// Mark a single file change as individually restored.
     /// Idempotent: calling again just updates the timestamp.
     pub fn mark_change_restored(
@@ -880,6 +1072,273 @@ impl Database {
             "UPDATE changes SET restored_at = ?1 WHERE task_id = ?2 AND file_path = ?3",
             params![restored_at.to_rfc3339(), task_id, path_str],
         )?;
+        Ok(())
+    }
+
+    // ================================================================
+    // Active Sessions (V7 — replaces session files)
+    // ================================================================
+
+    /// Register a new active session mapping session_id -> task_id.
+    pub fn insert_active_session(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        tool_source: &str,
+        started_at: DateTime<Utc>,
+    ) -> RewResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO active_sessions (session_id, task_id, tool_source, started_at, is_active)
+             VALUES (?1, ?2, ?3, ?4, 1)",
+            params![session_id, task_id, tool_source, started_at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Get the task_id for an active session.
+    pub fn get_active_task_for_session(&self, session_id: &str) -> RewResult<Option<String>> {
+        let result = self.conn.query_row(
+            "SELECT task_id FROM active_sessions WHERE session_id = ?1 AND is_active = 1",
+            params![session_id],
+            |row| row.get::<_, String>(0),
+        ).optional()?;
+        Ok(result)
+    }
+
+    /// Deactivate all sessions for a given task_id.
+    pub fn deactivate_sessions_for_task(&self, task_id: &str) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE active_sessions SET is_active = 0 WHERE task_id = ?1",
+            params![task_id],
+        )?;
+        Ok(())
+    }
+
+    /// Deactivate a specific session by session_id.
+    pub fn deactivate_session(&self, session_id: &str) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE active_sessions SET is_active = 0 WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Deactivate all sessions (used on startup recovery).
+    pub fn deactivate_all_sessions(&self) -> RewResult<()> {
+        self.conn.execute("UPDATE active_sessions SET is_active = 0", [])?;
+        Ok(())
+    }
+
+    /// Get the most recently started active AI task_id (for daemon routing).
+    pub fn get_most_recent_active_task_id(&self) -> RewResult<Option<String>> {
+        let result = self.conn.query_row(
+            "SELECT task_id FROM active_sessions WHERE is_active = 1
+             ORDER BY started_at DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        ).optional()?;
+        Ok(result)
+    }
+
+    /// Get an AI task that completed within `within_secs` seconds ago.
+    /// Used as a grace-period fallback so delayed FSEvents still land in
+    /// the just-completed AI task rather than a new monitoring window.
+    pub fn get_recently_completed_task_id(&self, within_secs: i64) -> RewResult<Option<String>> {
+        let result = self.conn.query_row(
+            "SELECT id FROM tasks
+             WHERE tool IS NOT NULL AND tool != '文件监听'
+               AND completed_at IS NOT NULL
+               AND unixepoch(completed_at) IS NOT NULL
+               AND unixepoch(completed_at) > unixepoch('now', ?1)
+             ORDER BY completed_at DESC LIMIT 1",
+            params![format!("-{} seconds", within_secs)],
+            |row| row.get::<_, String>(0),
+        ).optional()?;
+        Ok(result)
+    }
+
+    /// Check if a file change with matching new_hash already exists in any
+    /// active or recently completed task. Used by daemon to skip files already
+    /// handled by hook or a recently finished task.
+    pub fn is_change_already_recorded(
+        &self,
+        file_path: &str,
+        new_hash: &str,
+    ) -> RewResult<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM changes c
+             JOIN tasks t ON c.task_id = t.id
+             WHERE c.file_path = ?1
+               AND c.new_hash = ?2
+               AND (
+                 t.id IN (SELECT task_id FROM active_sessions WHERE is_active = 1)
+                 OR (t.completed_at IS NOT NULL
+                     AND unixepoch(t.completed_at) IS NOT NULL
+                     AND unixepoch(t.completed_at) > unixepoch('now', '-90 seconds'))
+               )",
+            params![file_path, new_hash],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    // ================================================================
+    // Session Stop Guard (V7 — replaces .genid files)
+    // ================================================================
+
+    /// Store the generation_id for a session (Cursor stop-hook dedup).
+    pub fn set_stop_guard(&self, session_id: &str, generation_id: &str) -> RewResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO session_stop_guard (session_id, generation_id)
+             VALUES (?1, ?2)",
+            params![session_id, generation_id],
+        )?;
+        Ok(())
+    }
+
+    /// Get the stored generation_id for a session.
+    pub fn get_stop_guard(&self, session_id: &str) -> RewResult<Option<String>> {
+        let result = self.conn.query_row(
+            "SELECT generation_id FROM session_stop_guard WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get::<_, String>(0),
+        ).optional()?;
+        Ok(result)
+    }
+
+    /// Remove the stop guard for a session (after stop completes).
+    pub fn delete_stop_guard(&self, session_id: &str) -> RewResult<()> {
+        self.conn.execute(
+            "DELETE FROM session_stop_guard WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Remove all stop guards (used on startup recovery).
+    pub fn delete_all_stop_guards(&self) -> RewResult<()> {
+        self.conn.execute("DELETE FROM session_stop_guard", [])?;
+        Ok(())
+    }
+
+    // ================================================================
+    // Pre-tool Hashes (V7 — replaces .pre_tool/ files)
+    // ================================================================
+
+    /// Store the pre-tool content hash for a file in a session.
+    pub fn set_pre_tool_hash(
+        &self,
+        session_id: &str,
+        file_path: &str,
+        content_hash: &str,
+    ) -> RewResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO pre_tool_hashes (session_id, file_path, content_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, file_path, content_hash, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Get the pre-tool content hash for a file in a session.
+    pub fn get_pre_tool_hash(&self, session_id: &str, file_path: &str) -> RewResult<Option<String>> {
+        let result = self.conn.query_row(
+            "SELECT content_hash FROM pre_tool_hashes WHERE session_id = ?1 AND file_path = ?2",
+            params![session_id, file_path],
+            |row| row.get::<_, String>(0),
+        ).optional()?;
+        Ok(result)
+    }
+
+    /// Consume (read and delete) the pre-tool hash for a file.
+    pub fn consume_pre_tool_hash(&self, session_id: &str, file_path: &str) -> RewResult<Option<String>> {
+        let hash = self.get_pre_tool_hash(session_id, file_path)?;
+        if hash.is_some() {
+            self.conn.execute(
+                "DELETE FROM pre_tool_hashes WHERE session_id = ?1 AND file_path = ?2",
+                params![session_id, file_path],
+            )?;
+        }
+        Ok(hash)
+    }
+
+    /// Delete all pre-tool hashes for a session (cleanup on stop).
+    pub fn delete_pre_tool_hashes_for_session(&self, session_id: &str) -> RewResult<()> {
+        self.conn.execute(
+            "DELETE FROM pre_tool_hashes WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete all pre-tool hashes (used on startup recovery).
+    pub fn delete_all_pre_tool_hashes(&self) -> RewResult<()> {
+        self.conn.execute("DELETE FROM pre_tool_hashes", [])?;
+        Ok(())
+    }
+
+    // ================================================================
+    // File Index (V7 — replaces scan_manifest.json)
+    // ================================================================
+
+    /// Upsert a file_index entry (path -> mtime + fast_hash + optional content_hash).
+    pub fn upsert_file_index(
+        &self,
+        file_path: &str,
+        mtime_secs: u64,
+        fast_hash: &str,
+        content_hash: Option<&str>,
+    ) -> RewResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO file_index (file_path, mtime_secs, fast_hash, content_hash)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![file_path, mtime_secs as i64, fast_hash, content_hash],
+        )?;
+        Ok(())
+    }
+
+    /// Get file_index entry for a path.
+    pub fn get_file_index(&self, file_path: &str) -> RewResult<Option<(u64, String, Option<String>)>> {
+        let result = self.conn.query_row(
+            "SELECT mtime_secs, fast_hash, content_hash FROM file_index WHERE file_path = ?1",
+            params![file_path],
+            |row| Ok((
+                row.get::<_, i64>(0)? as u64,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            )),
+        ).optional()?;
+        Ok(result)
+    }
+
+    /// Get the fast_hash for a file from file_index (used by hook as old_hash fallback).
+    /// Lazily persist a computed SHA-256 content_hash for a file_index entry.
+    /// Called by resolve_baseline when upgrading from fast_hash to content_hash.
+    pub fn update_file_index_content_hash(&self, file_path: &str, content_hash: &str) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE file_index SET content_hash = ?1 WHERE file_path = ?2",
+            params![content_hash, file_path],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_file_index_hash(&self, file_path: &str) -> RewResult<Option<String>> {
+        let result = self.conn.query_row(
+            "SELECT content_hash FROM file_index WHERE file_path = ?1",
+            params![file_path],
+            |row| row.get::<_, Option<String>>(0),
+        ).optional()?;
+        Ok(result.flatten())
+    }
+
+    /// Batch begin/commit for scanner performance (wraps in a transaction).
+    pub fn begin_transaction(&self) -> RewResult<()> {
+        self.conn.execute_batch("BEGIN")?;
+        Ok(())
+    }
+
+    pub fn commit_transaction(&self) -> RewResult<()> {
+        self.conn.execute_batch("COMMIT")?;
         Ok(())
     }
 }
@@ -1020,6 +1479,7 @@ mod tests {
             lines_removed: 0,
             restored_at: None,
             attribution: None,
+            old_file_path: None,
         };
         let id1 = db.insert_change(&change1).unwrap();
         assert!(id1 > 0);
@@ -1036,6 +1496,7 @@ mod tests {
             lines_removed: 1,
             restored_at: None,
             attribution: None,
+            old_file_path: None,
         };
         db.insert_change(&change2).unwrap();
 

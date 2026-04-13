@@ -83,11 +83,13 @@ impl MacOSWatcher {
                                         .ok()
                                         .map(|m| m.len()),
                                 };
-                                debug!("File event: {:?} {:?}", file_event.kind, file_event.path);
+                                info!("FSE ✓ {:?} {}", file_event.kind, file_event.path.display());
                                 if tx.send(file_event).is_err() {
                                     warn!("Event channel closed, stopping event forwarding");
                                     return;
                                 }
+                            } else {
+                                debug!("FSE ✗ filtered {:?} {}", kind, path.display());
                             }
                         }
                     }

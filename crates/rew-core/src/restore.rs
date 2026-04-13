@@ -519,8 +519,10 @@ impl TaskRestoreEngine {
                     }
                 }
                 crate::types::ChangeType::Renamed => {
-                    // TODO: track old_path for proper rename reversal
-                    if change.old_hash.is_some() {
+                    if let Some(ref old_path) = change.old_file_path {
+                        files_to_restore.push(old_path.clone());
+                        files_to_delete.push(change.file_path.clone());
+                    } else if change.old_hash.is_some() {
                         files_to_restore.push(change.file_path.clone());
                     }
                 }
@@ -704,7 +706,15 @@ impl TaskRestoreEngine {
                 }
             }
             ChangeType::Renamed => {
-                if let Some(ref hash) = change.old_hash {
+                if let Some(ref old_path) = change.old_file_path {
+                    if let Some(ref hash) = change.old_hash {
+                        self.restore_from_object(hash, old_path)?;
+                    }
+                    if change.file_path.exists() && change.file_path != *old_path {
+                        let _ = std::fs::remove_file(&change.file_path);
+                    }
+                    Ok(UndoAction::Restored)
+                } else if let Some(ref hash) = change.old_hash {
                     self.restore_from_object(hash, &change.file_path)?;
                     Ok(UndoAction::Restored)
                 } else {
@@ -1201,6 +1211,7 @@ mod tests {
             lines_removed: 0,
             restored_at: None,
             attribution: None,
+            old_file_path: None,
         };
         db.insert_change(&change).unwrap();
 
@@ -1242,6 +1253,7 @@ mod tests {
             lines_removed: 1,
             restored_at: None,
             attribution: None,
+            old_file_path: None,
         };
         db.insert_change(&change).unwrap();
 
@@ -1282,6 +1294,7 @@ mod tests {
             lines_removed: 5,
             restored_at: None,
             attribution: None,
+            old_file_path: None,
         };
         db.insert_change(&change).unwrap();
 
@@ -1324,6 +1337,7 @@ mod tests {
             old_hash: None, new_hash: Some("x".into()),
             diff_text: None, lines_added: 1, lines_removed: 0,
             restored_at: None, attribution: None,
+            old_file_path: None,
         }).unwrap();
         db.insert_change(&Change {
             id: None, task_id: "t004".to_string(),
@@ -1331,6 +1345,7 @@ mod tests {
             old_hash: Some(f2_hash), new_hash: Some("y".into()),
             diff_text: None, lines_added: 1, lines_removed: 1,
             restored_at: None, attribution: None,
+            old_file_path: None,
         }).unwrap();
         db.insert_change(&Change {
             id: None, task_id: "t004".to_string(),
@@ -1338,6 +1353,7 @@ mod tests {
             old_hash: Some(f3_hash), new_hash: None,
             diff_text: None, lines_added: 0, lines_removed: 3,
             restored_at: None, attribution: None,
+            old_file_path: None,
         }).unwrap();
 
         let result = engine.undo_task(&db, "t004").unwrap();
@@ -1372,6 +1388,7 @@ mod tests {
             old_hash: Some(f1_hash), new_hash: Some("x".into()),
             diff_text: None, lines_added: 1, lines_removed: 1,
             restored_at: None, attribution: None,
+            old_file_path: None,
         }).unwrap();
         db.insert_change(&Change {
             id: None, task_id: "t005".to_string(),
@@ -1379,6 +1396,7 @@ mod tests {
             old_hash: Some(f2_hash), new_hash: Some("y".into()),
             diff_text: None, lines_added: 1, lines_removed: 1,
             restored_at: None, attribution: None,
+            old_file_path: None,
         }).unwrap();
 
         // Only undo f1
@@ -1402,6 +1420,7 @@ mod tests {
             old_hash: None, new_hash: Some("x".into()),
             diff_text: None, lines_added: 10, lines_removed: 0,
             restored_at: None, attribution: None,
+            old_file_path: None,
         }).unwrap();
         db.insert_change(&Change {
             id: None, task_id: "t006".to_string(),
@@ -1409,6 +1428,7 @@ mod tests {
             old_hash: Some("oldhash".into()), new_hash: Some("y".into()),
             diff_text: None, lines_added: 5, lines_removed: 3,
             restored_at: None, attribution: None,
+            old_file_path: None,
         }).unwrap();
 
         let preview = engine.preview_undo(&db, "t006").unwrap();

@@ -4,6 +4,7 @@
 //! and error handling used by both rew-tauri and rew-cli.
 
 pub mod backup;
+pub mod baseline;
 pub mod config;
 pub mod diff;
 pub mod db;
@@ -16,6 +17,7 @@ pub mod notifier;
 pub mod objects;
 pub mod pipeline;
 pub mod processor;
+pub mod reconcile;
 pub mod restore;
 pub mod scanner;
 pub mod scope;

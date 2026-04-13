@@ -336,6 +336,8 @@ pub struct Change {
     /// How this change was attributed: "hook", "bash_predicted",
     /// "fsevent_active", "fsevent_grace", "monitoring", or "unknown".
     pub attribution: Option<String>,
+    /// Original file path before rename (only set for Renamed changes).
+    pub old_file_path: Option<PathBuf>,
 }
 
 /// Task with aggregated change statistics (returned by list queries).

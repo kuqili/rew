@@ -151,9 +151,11 @@ pub fn run() {
                                     *guard = None;
                                 }
                             }
-                            // Write the precise seal timestamp to DB
+                            // Write the precise seal timestamp to DB + reconcile
                             if let Ok(db) = state.db.lock() {
                                 let _ = db.update_task_completed_at(&task_id, seal_time);
+                                let objs = rew_core::rew_home_dir().join("objects");
+                                let _ = rew_core::reconcile::reconcile_task(&db, &task_id, &objs);
                             }
                         }
 

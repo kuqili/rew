@@ -132,6 +132,129 @@ impl PauseState {
     }
 }
 
+#[cfg(test)]
+mod merge_logic_tests {
+    use super::*;
+
+    fn kind_seq(seq: &[FileEventKind]) -> Option<FileEventKind> {
+        let mut current = seq.first()?.clone();
+        for next in &seq[1..] {
+            match merge_kind(&current, next) {
+                Some(kind) => current = kind,
+                None => return None,
+            }
+        }
+        Some(current)
+    }
+
+    fn event(path: &str) -> FileEvent {
+        FileEvent {
+            path: PathBuf::from(path),
+            kind: FileEventKind::Modified,
+            timestamp: Utc::now(),
+            size_bytes: None,
+        }
+    }
+
+    #[test]
+    fn merge_kind_table_driven_cases() {
+        let cases = vec![
+            (
+                vec![FileEventKind::Created, FileEventKind::Deleted],
+                None,
+            ),
+            (
+                vec![FileEventKind::Created, FileEventKind::Modified],
+                Some(FileEventKind::Created),
+            ),
+            (
+                vec![FileEventKind::Deleted, FileEventKind::Created],
+                Some(FileEventKind::Modified),
+            ),
+            (
+                vec![FileEventKind::Modified, FileEventKind::Deleted],
+                Some(FileEventKind::Deleted),
+            ),
+            (
+                vec![FileEventKind::Modified, FileEventKind::Modified],
+                Some(FileEventKind::Modified),
+            ),
+            (
+                vec![FileEventKind::Renamed, FileEventKind::Modified],
+                Some(FileEventKind::Modified),
+            ),
+            (
+                vec![FileEventKind::Renamed, FileEventKind::Deleted],
+                Some(FileEventKind::Deleted),
+            ),
+            (
+                vec![
+                    FileEventKind::Created,
+                    FileEventKind::Modified,
+                    FileEventKind::Deleted,
+                ],
+                None,
+            ),
+            (
+                vec![
+                    FileEventKind::Deleted,
+                    FileEventKind::Created,
+                    FileEventKind::Modified,
+                ],
+                Some(FileEventKind::Modified),
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(kind_seq(&input), expected, "merge sequence failed: {:?}", input);
+        }
+    }
+
+    #[test]
+    fn dynamic_pause_package_scope_only() {
+        let processor = EventProcessor::with_defaults();
+        let mut pause = PauseState::new();
+        processor.check_dynamic_triggers(
+            &FileEvent {
+                path: PathBuf::from("/tmp/project/package.json"),
+                kind: FileEventKind::Modified,
+                timestamp: Utc::now(),
+                size_bytes: None,
+            },
+            &mut pause,
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+        );
+
+        assert!(pause.is_package_paused());
+        assert!(!pause.is_globally_paused());
+        assert!(processor.should_drop_during_pause(&event("/tmp/project/node_modules/a.js"), &pause));
+        assert!(processor.should_drop_during_pause(&event("/tmp/project/target/a.o"), &pause));
+        assert!(!processor.should_drop_during_pause(&event("/tmp/project/src/main.rs"), &pause));
+    }
+
+    #[test]
+    fn dynamic_pause_git_head_is_global() {
+        let processor = EventProcessor::with_defaults();
+        let mut pause = PauseState::new();
+        processor.check_dynamic_triggers(
+            &FileEvent {
+                path: PathBuf::from("/tmp/project/.git/HEAD"),
+                kind: FileEventKind::Modified,
+                timestamp: Utc::now(),
+                size_bytes: None,
+            },
+            &mut pause,
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+        );
+
+        assert!(pause.is_globally_paused());
+        assert!(processor.should_drop_during_pause(&event("/tmp/project/src/main.rs"), &pause));
+        assert!(processor.should_drop_during_pause(&event("/tmp/project/node_modules/a.js"), &pause));
+    }
+}
+
 /// Statistics computed for each EventBatch.
 #[derive(Debug, Clone, Default)]
 pub struct BatchStats {

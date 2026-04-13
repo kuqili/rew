@@ -173,6 +173,52 @@ pub fn count_changed_lines(old: &[u8], new: &[u8]) -> (u32, u32) {
     (added, removed)
 }
 
+/// Compute a git-like line similarity score between two text contents.
+///
+/// Returns `Some(0..=100)` for text files and `None` for binary / oversized
+/// inputs where a text-based similarity heuristic would be misleading.
+///
+/// This is intentionally approximate rather than a byte-for-byte reimplementation
+/// of git's internals. It uses the ratio of unchanged lines to the larger side's
+/// total line count, which is good enough for rename+edit pairing.
+pub fn similarity_score(old: &[u8], new: &[u8]) -> Option<u32> {
+    if is_binary(old) || is_binary(new) {
+        return None;
+    }
+    if old.len() > MAX_DIFF_BYTES || new.len() > MAX_DIFF_BYTES {
+        return None;
+    }
+
+    let old_str = std::str::from_utf8(old).ok()?;
+    let new_str = std::str::from_utf8(new).ok()?;
+
+    if old_str == new_str {
+        return Some(100);
+    }
+
+    let diff = TextDiff::configure()
+        .algorithm(Algorithm::Patience)
+        .diff_lines(old_str, new_str);
+
+    let old_total = old_str.lines().count();
+    let new_total = new_str.lines().count();
+    let denom = old_total.max(new_total);
+    if denom == 0 {
+        return Some(100);
+    }
+
+    let mut unchanged = 0usize;
+    for op in diff.ops() {
+        for change in diff.iter_changes(op) {
+            if matches!(change.tag(), ChangeTag::Equal) {
+                unchanged += 1;
+            }
+        }
+    }
+
+    Some(((unchanged * 100) / denom) as u32)
+}
+
 fn is_binary(data: &[u8]) -> bool {
     // Only scan the first 8 KB — sufficient heuristic, avoids reading huge files
     data[..data.len().min(8192)].contains(&0u8)
