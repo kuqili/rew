@@ -3,10 +3,11 @@ import Sidebar from "./Sidebar";
 import TaskTimeline from "./TaskTimeline";
 import TaskDetail from "./TaskDetail";
 import SettingsPanel from "./SettingsPanel";
+import InsightsPanel from "./InsightsPanel";
 import { useTasks } from "../hooks/useTasks";
 import { getToolMeta } from "../lib/tools";
 
-export type ViewMode = "all" | "ai";
+export type ViewMode = "all" | "ai" | "insights";
 
 export default function MainLayout() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -71,32 +72,41 @@ export default function MainLayout() {
           activeTools={activeTools}
         />
 
-        {/* Middle: Timeline (400px) */}
-        <div className="w-[400px] flex-shrink-0 border-r border-border bg-white flex flex-col overflow-hidden">
-          <TaskTimeline
-            selectedId={selectedTaskId}
-            onSelect={setSelectedTaskId}
-            dirFilter={selectedDir}
-            viewMode={viewMode}
-            toolFilter={toolFilter}
-            key={`${refreshKey}-${selectedDir ?? "all"}-${viewMode}`}
-          />
-        </div>
+        {viewMode === "insights" ? (
+          /* Insights full panel (replaces timeline + detail) */
+          <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-white">
+            <InsightsPanel dirFilter={selectedDir} />
+          </div>
+        ) : (
+          <>
+            {/* Middle: Timeline (400px) */}
+            <div className="w-[400px] flex-shrink-0 border-r border-border bg-white flex flex-col overflow-hidden">
+              <TaskTimeline
+                selectedId={selectedTaskId}
+                onSelect={setSelectedTaskId}
+                dirFilter={selectedDir}
+                viewMode={viewMode}
+                toolFilter={toolFilter}
+                key={`${refreshKey}-${selectedDir ?? "all"}-${viewMode}`}
+              />
+            </div>
 
-        {/* Right: Inspector (flex-1) */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-white">
-          {selectedTaskId ? (
-            <TaskDetail
-              key={`${selectedTaskId}-${selectedDir ?? "all"}`}
-              taskId={selectedTaskId}
-              dirFilter={selectedDir}
-              onTaskUpdated={() => setRefreshKey((k) => k + 1)}
-              onBack={() => setSelectedTaskId(null)}
-            />
-          ) : (
-            <EmptyInspector />
-          )}
-        </div>
+            {/* Right: Inspector (flex-1) */}
+            <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-white">
+              {selectedTaskId ? (
+                <TaskDetail
+                  key={`${selectedTaskId}-${selectedDir ?? "all"}`}
+                  taskId={selectedTaskId}
+                  dirFilter={selectedDir}
+                  onTaskUpdated={() => setRefreshKey((k) => k + 1)}
+                  onBack={() => setSelectedTaskId(null)}
+                />
+              ) : (
+                <EmptyInspector />
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

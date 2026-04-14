@@ -1496,16 +1496,7 @@ fn compute_line_stats(
         Some(s) => s,
         None => return (0, 0),
     };
-
-    let read_content = |hash: &str| -> Option<Vec<u8>> {
-        let path = store.retrieve(hash)?;
-        std::fs::read(path).ok()
-    };
-
-    let old_bytes = old_hash.and_then(read_content).unwrap_or_default();
-    let new_bytes = new_hash.and_then(read_content).unwrap_or_default();
-
-    rew_core::diff::count_changed_lines(&old_bytes, &new_bytes)
+    rew_core::diff::count_changed_lines_from_store(store, old_hash, new_hash)
 }
 
 /// On startup: restore the previous monitoring window from DB if still valid,

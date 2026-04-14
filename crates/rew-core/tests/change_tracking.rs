@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-use rew_core::baseline::{resolve_baseline, Baseline};
+use rew_core::baseline::{resolve_baseline_with_objects_root, Baseline};
 use rew_core::db::Database;
 use rew_core::objects::ObjectStore;
 use rew_core::reconcile::{reconcile_task, ReconcileResult};
@@ -115,11 +115,23 @@ impl TestEnv {
     }
 
     fn baseline(&self, task_id: &str, path: &Path) -> Baseline {
-        resolve_baseline(&self.db, task_id, path, None)
+        resolve_baseline_with_objects_root(
+            &self.db,
+            task_id,
+            path,
+            None,
+            self.objects_root.clone(),
+        )
     }
 
     fn baseline_with_session(&self, task_id: &str, path: &Path, session_key: &str) -> Baseline {
-        resolve_baseline(&self.db, task_id, path, Some(session_key))
+        resolve_baseline_with_objects_root(
+            &self.db,
+            task_id,
+            path,
+            Some(session_key),
+            self.objects_root.clone(),
+        )
     }
 
     fn changes(&self, task_id: &str) -> Vec<Change> {
@@ -170,14 +182,15 @@ fn a1_baseline_brand_new_file() {
 fn a2_baseline_file_index_with_content_hash() {
     let env = TestEnv::new();
     env.create_active_task("t1");
-    let path = env.dir.path().join("indexed.txt");
+    let path = env.write_file("indexed.txt", "indexed content\n");
     let path_str = path.to_string_lossy().to_string();
+    let sha = env.store_file(&path);
 
-    env.seed_file_index(&path_str, "fast-111", Some("sha256_aaa"));
+    env.seed_file_index(&path_str, "fast-111", Some(&sha));
 
     let bl = env.baseline("t1", &path);
     assert!(bl.existed);
-    assert_eq!(bl.hash.as_deref(), Some("sha256_aaa"));
+    assert_eq!(bl.hash.as_deref(), Some(sha.as_str()));
 }
 
 #[test]
@@ -196,6 +209,39 @@ fn a3_baseline_file_index_fast_hash_no_backup() {
     let bl = env.baseline("t1", &path);
     assert!(bl.existed, "file_index entry means file was seen at scan time");
     assert!(bl.hash.is_none(), "No content_hash and no backup → hash is None");
+}
+
+#[test]
+fn a3b_monitoring_modified_after_restart_recovers_precise_line_stats_from_fast_backup() {
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+
+    let path = env.write_file("monitoring_restart.txt", "line1\nline2\nline3\n");
+    let path_str = path.to_string_lossy().to_string();
+    let store = ObjectStore::new(env.objects_root.clone()).unwrap();
+    let fast_hash = store.store_fast(&path).unwrap();
+
+    // Simulate the bad on-disk state from production:
+    // file_index holds a content_hash-looking value, but that object is gone.
+    env.seed_file_index(&path_str, &fast_hash, Some("sha_stale_missing_object"));
+
+    // Simulate rew restart / monitoring path: no pre_tool hash, only baseline lookup.
+    std::fs::write(&path, "line1\nline2 changed\nline3\nline4\n").unwrap();
+    let new_hash = env.store_file(&path);
+
+    let baseline = env.baseline("t1", &path);
+    assert!(baseline.existed, "file should still resolve as an existing tracked file");
+
+    let (lines_added, lines_removed) = rew_core::diff::count_changed_lines_from_store(
+        &store,
+        baseline.hash.as_deref(),
+        Some(&new_hash),
+    );
+    assert_eq!(
+        (lines_added, lines_removed),
+        (2, 1),
+        "Monitoring stats should reflect the real edit, not a full-file addition"
+    );
 }
 
 #[test]

@@ -23,13 +23,17 @@ const WINDOW_OPTIONS = [
   { secs: 3600, label: "每 1 小时", tag: null, desc: "磁盘占用极少，但相邻存档之间的变更较多。" },
 ];
 
-// ─── Brand Icon (SVG) ─────────────────────────────────────────────
+// ─── Brand Icon ───────────────────────────────────────────────────
+import rewIcon from "../assets/icons/rew.png";
+
 function BrandIcon() {
   return (
-    <svg viewBox="0 0 100 100" className="w-[17px] h-[17px]" style={{ fill: "white" }}>
-      <path d="M25 25 H75 V55 H50 L35 70 V55 H25 Z" />
-      <path d="M48 40 L40 48 L32 40" stroke="#3a3a3c" strokeWidth="8" fill="none" />
-    </svg>
+    <img
+      src={rewIcon}
+      alt="rew"
+      className="w-[17px] h-[17px] rounded-[3px] flex-shrink-0"
+      draggable={false}
+    />
   );
 }
 

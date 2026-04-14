@@ -89,6 +89,15 @@ impl PathFilter {
         vec![
             // ── rew's own data (MUST be first to avoid recursive storms) ──
             format!("{}/.rew/**", home),
+            // ── AI tool workspace / runtime directories ─────────────────────
+            // These are app-managed working sets and memory stores, not user
+            // content we want to surface in rew's timeline by default.
+            format!("{}/WorkBuddy/**", home),
+            format!("{}/CodeBuddy/**", home),
+            "**/WorkBuddy/**".to_string(),
+            "**/CodeBuddy/**".to_string(),
+            "**/.workbuddy/**".to_string(),
+            "**/.codebuddy/**".to_string(),
             // ── macOS system / app directories (noisy + permission errors) ─
             format!("{}/Library/**", home),
             format!("{}/Applications/**", home),
@@ -299,6 +308,7 @@ impl PathFilter {
                     name_str.as_ref(),
                     "node_modules" | ".git" | "target" | "__pycache__"
                     | ".rew" | "Library" | ".Trash"
+                    | "WorkBuddy" | "CodeBuddy" | ".workbuddy" | ".codebuddy"
                 ) {
                     return true;
                 }
@@ -485,6 +495,39 @@ mod tests {
         // Hidden FILES directly at HOME root → never affected by this rule
         assert!(filter.should_process(&PathBuf::from(format!("{}/.zshrc", h))));
         assert!(filter.should_process(&PathBuf::from(format!("{}/.gitconfig", h))));
+    }
+
+    #[test]
+    fn test_ignore_workbuddy_and_codebuddy_dirs() {
+        let filter = PathFilter::default();
+        let h = home();
+
+        assert!(filter.should_ignore(&PathBuf::from(format!(
+            "{}/WorkBuddy/20260414192033/.workbuddy/memory/2026-04-14.md",
+            h
+        ))));
+        assert!(filter.should_ignore(&PathBuf::from(format!(
+            "{}/WorkBuddy/20260414192033/.workbuddy/expert-history.json",
+            h
+        ))));
+        assert!(filter.should_ignore(&PathBuf::from(format!(
+            "{}/CodeBuddy/session-1/project.log",
+            h
+        ))));
+        assert!(filter.should_ignore(&PathBuf::from(
+            "/tmp/sandbox/.codebuddy/runtime/cache.json"
+        )));
+    }
+
+    #[test]
+    fn test_normal_project_paths_still_kept_after_buddy_ignore() {
+        let filter = PathFilter::default();
+        assert!(filter.should_process(&PathBuf::from(
+            "/Users/foo/project/src/workbuddy_adapter.rs"
+        )));
+        assert!(filter.should_process(&PathBuf::from(
+            "/Users/foo/Documents/CodeBuddy-notes.md"
+        )));
     }
 
     #[test]

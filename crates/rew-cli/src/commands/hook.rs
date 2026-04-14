@@ -596,14 +596,11 @@ pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
         };
 
         let (lines_added, lines_removed) = {
-            let read = |h: Option<&str>| -> Vec<u8> {
-                h.and_then(|hash| obj_store.retrieve(hash))
-                    .and_then(|p| std::fs::read(p).ok())
-                    .unwrap_or_default()
-            };
-            let old_bytes = read(old_hash.as_deref());
-            let new_bytes = read(new_hash.as_deref());
-            rew_core::diff::count_changed_lines(&old_bytes, &new_bytes)
+            rew_core::diff::count_changed_lines_from_store(
+                &obj_store,
+                old_hash.as_deref(),
+                new_hash.as_deref(),
+            )
         };
 
         let change = Change {
@@ -644,14 +641,11 @@ pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
                         infer_path_change_type(&input.tool_name, path.exists(), bash_baseline.existed);
 
                     let (lines_added, lines_removed) = {
-                        let read = |h: Option<&str>| -> Vec<u8> {
-                            h.and_then(|hash| obj_store.retrieve(hash))
-                                .and_then(|p| std::fs::read(p).ok())
-                                .unwrap_or_default()
-                        };
-                        let old_bytes = read(old_hash.as_deref());
-                        let new_bytes = read(new_hash.as_deref());
-                        rew_core::diff::count_changed_lines(&old_bytes, &new_bytes)
+                        rew_core::diff::count_changed_lines_from_store(
+                            &obj_store,
+                            old_hash.as_deref(),
+                            new_hash.as_deref(),
+                        )
                     };
 
                     let change = Change {

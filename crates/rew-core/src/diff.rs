@@ -10,7 +10,9 @@
 //! - **Summaries at record time**: `count_changed_lines` is cheap enough to call
 //!   in the daemon pipeline so `lines_added` / `lines_removed` are always populated.
 
+use crate::objects::ObjectStore;
 use similar::{Algorithm, ChangeTag, TextDiff};
+use tracing::warn;
 
 /// Maximum file size we will attempt to diff (bytes). Files larger than this
 /// return a human-readable notice instead of a diff.
@@ -29,6 +31,9 @@ pub struct DiffResult {
     /// Number of deleted lines.
     pub lines_removed: u32,
 }
+
+const MISSING_OBJECT_DIFF_NOTICE: &str =
+    "[对象缺失，无法精确显示 diff；该变更的历史对象文件当前不可读取]\n";
 
 /// Compute a Patience diff between `old` and `new` byte slices.
 ///
@@ -173,6 +178,87 @@ pub fn count_changed_lines(old: &[u8], new: &[u8]) -> (u32, u32) {
     (added, removed)
 }
 
+fn read_store_bytes_for_diff(
+    store: &ObjectStore,
+    hash: Option<&str>,
+    side: &str,
+) -> Option<Vec<u8>> {
+    let Some(hash) = hash else {
+        return Some(Vec::new());
+    };
+
+    let Some(path) = store.retrieve(hash) else {
+        warn!(
+            hash = %hash,
+            side,
+            "Diff object missing; skipping precise line stats instead of treating it as empty content"
+        );
+        return None;
+    };
+
+    match std::fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            warn!(
+                hash = %hash,
+                side,
+                error = %err,
+                "Diff object unreadable; skipping precise line stats instead of treating it as empty content"
+            );
+            None
+        }
+    }
+}
+
+/// Compute line stats from object-store hashes without silently turning a
+/// missing object into empty content.
+///
+/// `None` still means semantic emptiness for Created/Deleted comparisons.
+/// But when a hash is present and the object is missing/unreadable, we log and
+/// return `(0, 0)` rather than misreporting the change as a full-file add/delete.
+pub fn count_changed_lines_from_store(
+    store: &ObjectStore,
+    old_hash: Option<&str>,
+    new_hash: Option<&str>,
+) -> (u32, u32) {
+    let Some(old_bytes) = read_store_bytes_for_diff(store, old_hash, "old") else {
+        return (0, 0);
+    };
+    let Some(new_bytes) = read_store_bytes_for_diff(store, new_hash, "new") else {
+        return (0, 0);
+    };
+    count_changed_lines(&old_bytes, &new_bytes)
+}
+
+/// Compute a display diff from object-store hashes without pretending that a
+/// missing object equals empty file content.
+///
+/// When a referenced object is missing/unreadable, this returns a human-readable
+/// placeholder diff instead of fabricating an empty-side diff.
+pub fn compute_diff_from_store(
+    store: &ObjectStore,
+    old_hash: Option<&str>,
+    new_hash: Option<&str>,
+    old_name: &str,
+    new_name: &str,
+) -> Option<DiffResult> {
+    let Some(old_bytes) = read_store_bytes_for_diff(store, old_hash, "old") else {
+        return Some(DiffResult {
+            text: MISSING_OBJECT_DIFF_NOTICE.to_string(),
+            lines_added: 0,
+            lines_removed: 0,
+        });
+    };
+    let Some(new_bytes) = read_store_bytes_for_diff(store, new_hash, "new") else {
+        return Some(DiffResult {
+            text: MISSING_OBJECT_DIFF_NOTICE.to_string(),
+            lines_added: 0,
+            lines_removed: 0,
+        });
+    };
+    compute_diff(&old_bytes, &new_bytes, old_name, new_name)
+}
+
 /// Compute a git-like line similarity score between two text contents.
 ///
 /// Returns `Some(0..=100)` for text files and `None` for binary / oversized
@@ -227,6 +313,7 @@ fn is_binary(data: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_basic_diff() {
@@ -260,6 +347,47 @@ mod tests {
         let content = b"no change\n";
         let result = compute_diff(content, content, "a", "b").unwrap();
         assert!(result.text.contains("内容未变化"));
+        assert_eq!(result.lines_added, 0);
+        assert_eq!(result.lines_removed, 0);
+    }
+
+    #[test]
+    fn test_count_changed_lines_from_store_missing_old_hash_does_not_look_like_full_file_add() {
+        let dir = TempDir::new().unwrap();
+        let store = ObjectStore::new(dir.path().join("objects")).unwrap();
+
+        let new_path = dir.path().join("new.txt");
+        std::fs::write(&new_path, "a\nb changed\nc\nd\n").unwrap();
+        let new_hash = store.store(&new_path).unwrap();
+
+        let (added, removed) =
+            count_changed_lines_from_store(&store, Some("sha_missing_old"), Some(&new_hash));
+        assert_eq!(
+            (added, removed),
+            (0, 0),
+            "Missing old object must not be misreported as full-file addition"
+        );
+    }
+
+    #[test]
+    fn test_compute_diff_from_store_missing_old_hash_returns_notice() {
+        let dir = TempDir::new().unwrap();
+        let store = ObjectStore::new(dir.path().join("objects")).unwrap();
+
+        let new_path = dir.path().join("new.txt");
+        std::fs::write(&new_path, "a\nb changed\nc\nd\n").unwrap();
+        let new_hash = store.store(&new_path).unwrap();
+
+        let result = compute_diff_from_store(
+            &store,
+            Some("sha_missing_old"),
+            Some(&new_hash),
+            "a/file.txt",
+            "b/file.txt",
+        )
+        .expect("missing object should produce a placeholder diff");
+
+        assert!(result.text.contains("对象缺失"));
         assert_eq!(result.lines_added, 0);
         assert_eq!(result.lines_removed, 0);
     }

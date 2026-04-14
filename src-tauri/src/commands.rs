@@ -929,24 +929,16 @@ pub async fn get_change_diff(
     let obj_store = rew_core::objects::ObjectStore::new(objects_root)
         .map_err(|e| e.to_string())?;
 
-    let read_content = |hash: Option<&str>| -> Vec<u8> {
-        hash.and_then(|h| obj_store.retrieve(h))
-            .and_then(|p| std::fs::read(p).ok())
-            .unwrap_or_default()
-    };
-
-    let old_bytes = read_content(old_hash.as_deref());
-    let new_bytes = read_content(new_hash.as_deref());
-
     // Short display name: just the filename for the diff header
     let name = std::path::Path::new(&file_path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| file_path.clone());
 
-    let result = rew_core::diff::compute_diff(
-        &old_bytes,
-        &new_bytes,
+    let result = rew_core::diff::compute_diff_from_store(
+        &obj_store,
+        old_hash.as_deref(),
+        new_hash.as_deref(),
         &format!("a/{}", name),
         &format!("b/{}", name),
     );

@@ -1,19 +1,32 @@
 /**
  * AI tool brand icons — shared across Sidebar, Timeline, and Settings.
- * Each icon uses the tool's official brand color inside a rounded square.
+ * Real brand icons extracted from installed applications.
  */
 
-/** Cursor — purple triangle/pointer */
-export function CursorBrandIcon({ size = 20 }: { size?: number }) {
+import cursorIcon from "../assets/icons/cursor.png";
+import codebuddyIcon from "../assets/icons/codebuddy.png";
+import workbuddyIcon from "../assets/icons/workbuddy.png";
+
+/** Renders a PNG brand icon inside a rounded container */
+function PngBrandIcon({
+  src,
+  size = 20,
+  alt,
+}: {
+  src: string;
+  size?: number;
+  alt: string;
+}) {
   return (
-    <span
-      className="inline-flex items-center justify-center rounded-md flex-shrink-0"
-      style={{ width: size, height: size, background: "#7c3aed" }}
-    >
-      <svg width={size * 0.55} height={size * 0.55} viewBox="0 0 12 12" fill="none">
-        <path d="M2.5 1L10 6L2.5 11V1Z" fill="white" />
-      </svg>
-    </span>
+    <img
+      src={src}
+      alt={alt}
+      width={size}
+      height={size}
+      className="rounded-md flex-shrink-0"
+      style={{ width: size, height: size }}
+      draggable={false}
+    />
   );
 }
 
@@ -51,10 +64,14 @@ export function getToolBrandIcon(toolId: string, size = 20): React.ReactNode {
   const normalized = toolId.toLowerCase().replace(/_/g, "-");
   switch (normalized) {
     case "cursor":
-      return <CursorBrandIcon size={size} />;
+      return <PngBrandIcon src={cursorIcon} size={size} alt="Cursor" />;
     case "claude-code":
     case "claude_code":
       return <ClaudeCodeBrandIcon size={size} />;
+    case "codebuddy":
+      return <PngBrandIcon src={codebuddyIcon} size={size} alt="CodeBuddy" />;
+    case "workbuddy":
+      return <PngBrandIcon src={workbuddyIcon} size={size} alt="WorkBuddy" />;
     default:
       return <GenericAiIcon size={size} />;
   }

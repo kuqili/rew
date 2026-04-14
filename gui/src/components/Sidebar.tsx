@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Clock, Sparkles, FolderOpen, Settings } from "lucide-react";
+import { Clock, Sparkles, FolderOpen, Settings, BarChart3 } from "lucide-react";
 import { useStatus } from "../hooks/useTasks";
 import { useScanProgress } from "../hooks/useScanProgress";
 import { listDirContents, type DirContentItem, type DirScanStatus } from "../lib/tauri";
@@ -79,6 +79,13 @@ export default function Sidebar({
             ))}
           </div>
         )}
+
+        <NavItem
+          icon={<BarChart3 className="w-4 h-4" />}
+          label="使用洞察"
+          active={viewMode === "insights"}
+          onClick={() => onViewModeChange("insights")}
+        />
 
         {/* PROTECTED */}
         <SectionLabel>Protected</SectionLabel>
