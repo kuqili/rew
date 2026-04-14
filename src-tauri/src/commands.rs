@@ -679,63 +679,6 @@ enum PathFilterMode {
     Directory,
 }
 
-fn infer_deleted_directory_root(path: &Path) -> Option<PathBuf> {
-    let parts = path
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(os) => Some(os.to_string_lossy().to_string()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    if parts.len() < 3 {
-        return None;
-    }
-
-    if parts.first().map(String::as_str) == Some("Users") && parts.len() >= 3 {
-        return Some(PathBuf::from(format!("/Users/{}/{}", parts[1], parts[2])));
-    }
-
-    if parts.first().map(String::as_str) == Some("Volumes") && parts.len() >= 3 {
-        return Some(PathBuf::from(format!("/Volumes/{}/{}", parts[1], parts[2])));
-    }
-
-    Some(PathBuf::from(format!(
-        "/{}",
-        parts.iter().take(3).cloned().collect::<Vec<_>>().join("/")
-    )))
-}
-
-fn fallback_deleted_dir_summaries(
-    db: &rew_core::db::Database,
-    task_id: &str,
-    changes: &[rew_core::types::Change],
-) -> Vec<DeletedDirSummaryInfo> {
-    let mut candidates = std::collections::BTreeSet::new();
-    for change in changes {
-        if change.change_type != rew_core::types::ChangeType::Deleted {
-            continue;
-        }
-        if let Some(root) = infer_deleted_directory_root(&change.file_path) {
-            candidates.insert(root);
-        }
-    }
-
-    candidates
-        .into_iter()
-        .filter_map(|root| {
-            db.count_changes_in_dir(task_id, &root.to_string_lossy())
-                .ok()
-                .filter(|count| *count > 0)
-                .map(|count| DeletedDirSummaryInfo {
-                    dir_path: root.to_string_lossy().to_string(),
-                    total_files: count,
-                })
-        })
-        .take(5)
-        .collect()
-}
-
 fn infer_path_filter_mode(db: &rew_core::db::Database, path: &str) -> PathFilterMode {
     if db.has_changes_under_dir_prefix(path).unwrap_or(false) {
         PathFilterMode::Directory
@@ -885,24 +828,17 @@ pub async fn get_task_changes(
     Ok(TaskChangesResultInfo {
         truncated: total_count > changes.len(),
         total_count,
-        deleted_dirs: {
-            let persisted = db
-                .list_task_deleted_dirs(&task_id)
-                .map(|rows| {
-                    rows.into_iter()
-                        .map(|row| DeletedDirSummaryInfo {
-                            dir_path: row.dir_path.to_string_lossy().to_string(),
-                            total_files: row.file_count,
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if persisted.is_empty() {
-                fallback_deleted_dir_summaries(&db, &task_id, &changes)
-            } else {
-                persisted
-            }
-        },
+        deleted_dirs: db
+            .list_task_deleted_dirs(&task_id)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|row| DeletedDirSummaryInfo {
+                        dir_path: row.dir_path.to_string_lossy().to_string(),
+                        total_files: row.file_count,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
         changes: changes.into_iter().map(|c| ChangeInfo {
             id: c.id,
             task_id: c.task_id,

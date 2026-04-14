@@ -118,9 +118,9 @@ fn show_main_window(app: &AppHandle) {
 
 fn load_tray_icon(status: TrayStatus) -> Image<'static> {
     let icon_bytes: &[u8] = match status {
-        TrayStatus::Normal => include_bytes!("../icons/tray-normal.png"),
-        TrayStatus::Warning => include_bytes!("../icons/tray-warning.png"),
-        TrayStatus::Paused => include_bytes!("../icons/tray-paused.png"),
+        TrayStatus::Normal | TrayStatus::Warning | TrayStatus::Paused => {
+            include_bytes!("../icons/32x32.png")
+        }
     };
     Image::from_bytes(icon_bytes).expect("Failed to load tray icon")
 }

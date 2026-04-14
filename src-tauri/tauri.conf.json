@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "",
-        "width": 1000,
-        "height": 680,
+        "width": 1300,
+        "height": 840,
         "resizable": true,
         "fullscreen": false,
         "visible": false,
@@ -27,12 +27,6 @@
     ],
     "security": {
       "csp": null
-    },
-    "trayIcon": {
-      "id": "rew-tray",
-      "iconPath": "icons/tray-normal.png",
-      "iconAsTemplate": true,
-      "tooltip": "rew — 文件保护运行中"
     }
   },
   "bundle": {

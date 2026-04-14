@@ -31,6 +31,16 @@ export const TOOL_REGISTRY: Record<string, ToolMeta> = {
     color: "#6366f1",
     badgeClass: "bg-tool-cursor-bg text-tool-cursor",
   },
+  codebuddy: {
+    label: "CodeBuddy",
+    color: "#10b981",
+    badgeClass: "bg-emerald-50 text-emerald-600",
+  },
+  workbuddy: {
+    label: "WorkBuddy",
+    color: "#8b5cf6",
+    badgeClass: "bg-violet-50 text-violet-600",
+  },
 };
 
 export function getToolMeta(tool: string | null): ToolMeta | null {

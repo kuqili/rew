@@ -334,7 +334,15 @@ fn predict_bash_file_paths(cmd: &str, cwd: Option<&str>) -> Vec<PathBuf> {
 }
 
 fn is_shell_tool(tool_name: &str) -> bool {
-    matches!(tool_name, "Bash" | "bash" | "Shell" | "shell")
+    matches!(tool_name, "Bash" | "bash" | "Shell" | "shell" | "execute_command")
+}
+
+fn is_write_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "Write" | "write" | "write_to_file")
+}
+
+fn is_edit_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "Edit" | "edit" | "MultiEdit" | "replace_in_file")
 }
 
 fn infer_path_change_type(
@@ -346,15 +354,12 @@ fn infer_path_change_type(
         return ChangeType::Deleted;
     }
 
-    match tool_name {
-        "Edit" | "edit" | "MultiEdit" => ChangeType::Modified,
-        _ => {
-            if baseline_existed {
-                ChangeType::Modified
-            } else {
-                ChangeType::Created
-            }
-        }
+    if is_edit_tool(tool_name) {
+        ChangeType::Modified
+    } else if baseline_existed {
+        ChangeType::Modified
+    } else {
+        ChangeType::Created
     }
 }
 
@@ -369,17 +374,22 @@ fn extract_session_key(raw: &str, tool_source: &str) -> String {
         match tool_source {
             "claude-code" => {
                 if let Some(sid) = val.get("session_id").and_then(|v| v.as_str()) {
-                    return sid.to_string();
+                    return format!("claude-code:{}", sid);
                 }
             }
             "cursor" => {
                 if let Some(cid) = val.get("conversation_id").and_then(|v| v.as_str()) {
-                    return cid.to_string();
+                    return format!("cursor:{}", cid);
                 }
             }
             "codebuddy" => {
                 if let Some(sid) = val.get("session_id").and_then(|v| v.as_str()) {
-                    return sid.to_string();
+                    return format!("codebuddy:{}", sid);
+                }
+            }
+            "workbuddy" => {
+                if let Some(sid) = val.get("session_id").and_then(|v| v.as_str()) {
+                    return format!("workbuddy:{}", sid);
                 }
             }
             _ => {}
@@ -480,7 +490,7 @@ pub fn handle_pre_tool(source: Option<&str>) -> RewResult<i32> {
     );
 
     match input.tool_name.as_str() {
-        "Write" | "Edit" | "write" | "edit" | "MultiEdit" => {
+        t if is_write_tool(t) || is_edit_tool(t) => {
             if let Some(ref path_str) = input.file_path {
                 let path = canonicalize_path(path_str);
 
@@ -932,8 +942,8 @@ fn prune_hook_debug_log(path: &Path) {
 
 /// Determine the AI tool source. Priority:
 /// 1. Explicit --source flag (most reliable)
-/// 2. Auto-detect from stdin JSON structure
-/// 3. Fallback to "ai-tool"
+/// 2. Conservative auto-detect for tools with distinctive payload shape
+/// 3. Fallback to "ai-tool" instead of guessing from generic `session_id`
 fn resolve_tool_source(explicit: Option<&str>, raw_input: &str) -> String {
     if let Some(s) = explicit {
         return s.to_string();
@@ -941,12 +951,8 @@ fn resolve_tool_source(explicit: Option<&str>, raw_input: &str) -> String {
 
     // Auto-detect from JSON structure
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw_input) {
-        // Claude Code: has session_id and typically tool_input/tool_response
-        if val.get("session_id").is_some() {
-            return "claude-code".to_string();
-        }
-        // Cursor: has hook_event_name or specific cursor-style fields
-        if val.get("hook_event_name").is_some() {
+        // Cursor exposes hook event names and conversation ids.
+        if val.get("hook_event_name").is_some() || val.get("conversation_id").is_some() {
             return "cursor".to_string();
         }
         // Windsurf: has windsurf-specific fields
@@ -1021,8 +1027,28 @@ mod tests {
         assert!(is_shell_tool("bash"));
         assert!(is_shell_tool("Shell"));
         assert!(is_shell_tool("shell"));
+        assert!(is_shell_tool("execute_command"));
         assert!(!is_shell_tool("Write"));
         assert!(!is_shell_tool("Edit"));
+    }
+
+    #[test]
+    fn write_aliases_are_recognized() {
+        assert!(is_write_tool("Write"));
+        assert!(is_write_tool("write"));
+        assert!(is_write_tool("write_to_file"));
+        assert!(!is_write_tool("Edit"));
+        assert!(!is_write_tool("Bash"));
+    }
+
+    #[test]
+    fn edit_aliases_are_recognized() {
+        assert!(is_edit_tool("Edit"));
+        assert!(is_edit_tool("edit"));
+        assert!(is_edit_tool("MultiEdit"));
+        assert!(is_edit_tool("replace_in_file"));
+        assert!(!is_edit_tool("Write"));
+        assert!(!is_edit_tool("Bash"));
     }
 
     #[test]
@@ -1059,12 +1085,111 @@ mod tests {
             infer_path_change_type("MultiEdit", true, false),
             ChangeType::Modified
         );
+        assert_eq!(
+            infer_path_change_type("replace_in_file", true, false),
+            ChangeType::Modified
+        );
+    }
+
+    #[test]
+    fn ide_style_tool_names_work() {
+        // write_to_file — new file
+        assert_eq!(
+            infer_path_change_type("write_to_file", true, false),
+            ChangeType::Created
+        );
+        // write_to_file — existing file
+        assert_eq!(
+            infer_path_change_type("write_to_file", true, true),
+            ChangeType::Modified
+        );
+        // execute_command — new file
+        assert_eq!(
+            infer_path_change_type("execute_command", true, false),
+            ChangeType::Created
+        );
+        // execute_command — existing file
+        assert_eq!(
+            infer_path_change_type("execute_command", true, true),
+            ChangeType::Modified
+        );
     }
 
     #[test]
     fn predicted_shell_paths_resolve_from_cwd() {
         let paths = predict_bash_file_paths("touch notes.txt", Some("/tmp/project"));
         assert_eq!(paths, vec![PathBuf::from("/tmp/project/notes.txt")]);
+    }
+
+    #[test]
+    fn session_keys_have_tool_source_prefix() {
+        let claude = r#"{"session_id":"abc-123","cwd":"/tmp"}"#;
+        assert_eq!(
+            extract_session_key(claude, "claude-code"),
+            "claude-code:abc-123"
+        );
+
+        let cursor = r#"{"conversation_id":"conv-456"}"#;
+        assert_eq!(
+            extract_session_key(cursor, "cursor"),
+            "cursor:conv-456"
+        );
+
+        let codebuddy = r#"{"session_id":"cb-789","cwd":"/project"}"#;
+        assert_eq!(
+            extract_session_key(codebuddy, "codebuddy"),
+            "codebuddy:cb-789"
+        );
+
+        let workbuddy = r#"{"session_id":"wb-012","cwd":"/project"}"#;
+        assert_eq!(
+            extract_session_key(workbuddy, "workbuddy"),
+            "workbuddy:wb-012"
+        );
+    }
+
+    #[test]
+    fn explicit_source_wins_over_session_shaped_payload() {
+        let workbuddy_like = r#"{"session_id":"wb-100","tool_name":"write_to_file"}"#;
+        let codebuddy_like = r#"{"session_id":"cb-200","tool_name":"execute_command"}"#;
+
+        assert_eq!(
+            resolve_tool_source(Some("workbuddy"), workbuddy_like),
+            "workbuddy"
+        );
+        assert_eq!(
+            resolve_tool_source(Some("codebuddy"), codebuddy_like),
+            "codebuddy"
+        );
+    }
+
+    #[test]
+    fn generic_session_payload_without_explicit_source_does_not_guess_claude() {
+        let generic = r#"{"session_id":"shared-123","tool_name":"write_to_file"}"#;
+        assert_eq!(resolve_tool_source(None, generic), "ai-tool");
+    }
+
+    #[test]
+    fn cursor_payload_is_still_auto_detected_without_explicit_source() {
+        let cursor = r#"{"conversation_id":"conv-456","hook_event_name":"afterFileEdit"}"#;
+        assert_eq!(resolve_tool_source(None, cursor), "cursor");
+    }
+
+    #[test]
+    fn ide_style_post_tool_payload_is_normalized() {
+        let raw = r#"{
+            "session_id":"wb-300",
+            "cwd":"/tmp/project",
+            "tool_name":"write_to_file",
+            "tool_input":{"file_path":"notes.md"},
+            "tool_response":{"success":true}
+        }"#;
+
+        let normalized = normalize_post_tool(raw).expect("should parse ide-style post tool");
+        assert_eq!(normalized.tool_name, "write_to_file");
+        assert_eq!(normalized.file_path.as_deref(), Some("notes.md"));
+        assert_eq!(normalized.cwd.as_deref(), Some("/tmp/project"));
+        assert_eq!(normalized.success, Some(true));
     }
 }
 
