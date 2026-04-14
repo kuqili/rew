@@ -12,6 +12,7 @@
 
 use crate::db::Database;
 use crate::error::RewResult;
+use crate::file_index::{sync_file_index_after_reconcile, sync_file_index_after_rename};
 use crate::objects::{sha256_file, ObjectStore};
 use crate::types::ChangeType;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -73,6 +74,12 @@ pub fn reconcile_task(
                     change.file_path.display()
                 );
                 db.delete_change_by_id(change_id)?;
+                let _ = sync_file_index_after_reconcile(
+                    db,
+                    &change.file_path,
+                    current_hash.as_deref(),
+                    change.old_hash.as_deref().or(change.new_hash.as_deref()),
+                );
                 removed += 1;
             }
             // Temporary: created then deleted within the task → delete record
@@ -82,6 +89,12 @@ pub fn reconcile_task(
                     change.file_path.display()
                 );
                 db.delete_change_by_id(change_id)?;
+                let _ = sync_file_index_after_reconcile(
+                    db,
+                    &change.file_path,
+                    None,
+                    change.old_hash.as_deref().or(change.new_hash.as_deref()),
+                );
                 removed += 1;
             }
             // File was created (no baseline, now exists)
@@ -101,6 +114,12 @@ pub fn reconcile_task(
                     )?;
                     updated += 1;
                 }
+                let _ = sync_file_index_after_reconcile(
+                    db,
+                    &change.file_path,
+                    current_hash.as_deref(),
+                    change.old_hash.as_deref().or(change.new_hash.as_deref()),
+                );
             }
             // File was deleted (had baseline, now gone)
             (Some(_old), None) => {
@@ -119,6 +138,12 @@ pub fn reconcile_task(
                     )?;
                     updated += 1;
                 }
+                let _ = sync_file_index_after_reconcile(
+                    db,
+                    &change.file_path,
+                    None,
+                    change.old_hash.as_deref().or(change.new_hash.as_deref()),
+                );
             }
             // File was modified (baseline differs from current)
             (Some(_old), Some(_cur)) => {
@@ -141,6 +166,12 @@ pub fn reconcile_task(
                     )?;
                     updated += 1;
                 }
+                let _ = sync_file_index_after_reconcile(
+                    db,
+                    &change.file_path,
+                    current_hash.as_deref(),
+                    change.old_hash.as_deref().or(change.new_hash.as_deref()),
+                );
             }
         }
     }
@@ -160,7 +191,9 @@ struct RenameCandidate {
     deleted_id: i64,
     created_id: i64,
     old_path: String,
+    new_path: String,
     old_hash: String,
+    new_hash: String,
     score: u32,
     weight: i64,
     lines_added: u32,
@@ -242,6 +275,14 @@ fn pair_renames(
             0,
         )?;
         db.delete_change_by_id(d_id)?;
+        let _ = sync_file_index_after_rename(
+            db,
+            &d.file_path,
+            &created_change.file_path,
+            created_change.new_hash.as_deref(),
+            "reconcile",
+            &chrono::Utc::now().to_rfc3339(),
+        );
 
         used_created.insert(created_id);
         used_deleted.insert(d_id);
@@ -318,7 +359,9 @@ fn pair_renames(
                 deleted_id: d_id,
                 created_id: c_id,
                 old_path: d.file_path.to_string_lossy().to_string(),
+                new_path: c.file_path.to_string_lossy().to_string(),
                 old_hash: d_hash.clone(),
+                new_hash: c_hash.clone(),
                 score,
                 weight,
                 lines_added,
@@ -340,6 +383,14 @@ fn pair_renames(
             candidate.lines_removed,
         )?;
         db.delete_change_by_id(candidate.deleted_id)?;
+        let _ = sync_file_index_after_rename(
+            db,
+            Path::new(&candidate.old_path),
+            Path::new(&candidate.new_path),
+            Some(candidate.new_hash.as_str()),
+            "reconcile",
+            &chrono::Utc::now().to_rfc3339(),
+        );
         paired += 1;
 
         debug!(

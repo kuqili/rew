@@ -5,7 +5,8 @@
 
 use crate::error::{RewError, RewResult};
 use crate::types::{
-    Change, Snapshot, SnapshotTrigger, Task, TaskStats, TaskStatus, TaskWithStats,
+    Change, RestoreOperation, RestoreOperationStatus, RestoreScopeType, RestoreTriggeredBy,
+    Snapshot, SnapshotTrigger, Task, TaskStats, TaskStatus, TaskWithStats,
 };
 use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -34,8 +35,65 @@ fn parse_datetime_flexible(s: &str) -> Result<DateTime<Utc>, String> {
     Err(format!("Cannot parse datetime: '{}'", s))
 }
 
+fn subpath_like_pattern(path_prefix: &str) -> String {
+    if path_prefix == "/" {
+        "/%".to_string()
+    } else {
+        format!("{}/%", path_prefix.trim_end_matches('/'))
+    }
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = match conn.prepare(&pragma) {
+        Ok(stmt) => stmt,
+        Err(_) => return false,
+    };
+    let rows = match stmt.query_map([], |row| row.get::<_, String>(1)) {
+        Ok(rows) => rows,
+        Err(_) => return false,
+    };
+    let has_column = rows.flatten().any(|name| name == column);
+    has_column
+}
+
 pub struct Database {
     conn: Connection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileIndexEntry {
+    pub file_path: PathBuf,
+    pub mtime_secs: u64,
+    pub fast_hash: String,
+    pub content_hash: Option<String>,
+    pub exists_now: bool,
+    pub last_seen_at: Option<String>,
+    pub last_event_kind: Option<String>,
+    pub last_confirmed_by: Option<String>,
+    pub deleted_at: Option<String>,
+    pub last_scan_epoch: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskDeletedDirSummary {
+    pub dir_path: PathBuf,
+    pub file_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RestoreFailureSample {
+    pub file_path: PathBuf,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreFileIndexSyncEntry {
+    pub file_path: PathBuf,
+    pub mtime_secs: u64,
+    pub fast_hash: String,
+    pub content_hash: Option<String>,
+    pub deleted: bool,
 }
 
 impl Database {
@@ -104,7 +162,9 @@ impl Database {
                 new_hash        TEXT,
                 diff_text       TEXT,
                 lines_added     INTEGER NOT NULL DEFAULT 0,
-                lines_removed   INTEGER NOT NULL DEFAULT 0
+                lines_removed   INTEGER NOT NULL DEFAULT 0,
+                attribution     TEXT DEFAULT 'unknown',
+                old_file_path   TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_changes_task_id
@@ -113,13 +173,6 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_changes_file_path
                 ON changes(file_path);",
         )?;
-
-        // V3 migration: add restored_at column if this is an existing DB.
-        // ALTER TABLE ADD COLUMN is a no-op error when the column already exists — safe to ignore.
-        let _ = self.conn.execute(
-            "ALTER TABLE changes ADD COLUMN restored_at TEXT",
-            [],
-        );
 
         // V4 migration: add cwd column to tasks for project directory tracking.
         let _ = self.conn.execute(
@@ -181,8 +234,18 @@ impl Database {
                 file_path       TEXT PRIMARY KEY,
                 mtime_secs      INTEGER NOT NULL,
                 fast_hash       TEXT NOT NULL,
-                content_hash    TEXT
-            );"
+                content_hash    TEXT,
+                exists_now      INTEGER NOT NULL DEFAULT 1,
+                last_seen_at    TEXT,
+                last_event_kind TEXT,
+                last_confirmed_by TEXT,
+                deleted_at      TEXT,
+                last_scan_epoch INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_file_index_exists_now_path
+                ON file_index(exists_now, file_path);
+            CREATE INDEX IF NOT EXISTS idx_file_index_scan_epoch_path
+                ON file_index(last_scan_epoch, file_path);"
         )?;
 
         // V8: Move os_snapshot_ref from snapshots table to tasks table.
@@ -205,6 +268,16 @@ impl Database {
             [],
         );
         let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_changes_task_file_path
+                ON changes(task_id, file_path)",
+            [],
+        );
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_changes_task_old_file_path
+                ON changes(task_id, old_file_path)",
+            [],
+        );
+        let _ = self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_changes_task_file_unique
                 ON changes(task_id, file_path)",
             [],
@@ -215,7 +288,128 @@ impl Database {
             "ALTER TABLE changes ADD COLUMN old_file_path TEXT",
             [],
         );
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS task_deleted_dirs (
+                task_id      TEXT NOT NULL REFERENCES tasks(id),
+                dir_path     TEXT NOT NULL,
+                file_count   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (task_id, dir_path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_deleted_dirs_task
+                ON task_deleted_dirs(task_id);
 
+            CREATE TABLE IF NOT EXISTS restore_operations (
+                id                  TEXT PRIMARY KEY,
+                source_task_id      TEXT NOT NULL REFERENCES tasks(id),
+                scope_type          TEXT NOT NULL,
+                scope_path          TEXT,
+                triggered_by        TEXT NOT NULL,
+                started_at          TEXT NOT NULL,
+                completed_at        TEXT,
+                status              TEXT NOT NULL,
+                requested_count     INTEGER NOT NULL DEFAULT 0,
+                restored_count      INTEGER NOT NULL DEFAULT 0,
+                deleted_count       INTEGER NOT NULL DEFAULT 0,
+                failed_count        INTEGER NOT NULL DEFAULT 0,
+                failure_sample_json TEXT,
+                metadata_json       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_restore_operations_task_started
+                ON restore_operations(source_task_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_restore_operations_status_started
+                ON restore_operations(status, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_restore_operations_scope
+                ON restore_operations(scope_type, scope_path);",
+        )?;
+
+        if table_has_column(&self.conn, "changes", "restored_at") {
+            self.rebuild_changes_table_without_restored_at()?;
+        }
+
+        let _ = self.conn.execute(
+            "ALTER TABLE file_index ADD COLUMN exists_now INTEGER NOT NULL DEFAULT 1",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE file_index ADD COLUMN last_seen_at TEXT",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE file_index ADD COLUMN last_event_kind TEXT",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE file_index ADD COLUMN last_confirmed_by TEXT",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE file_index ADD COLUMN deleted_at TEXT",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE file_index ADD COLUMN last_scan_epoch INTEGER",
+            [],
+        );
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_exists_now_path
+                ON file_index(exists_now, file_path)",
+            [],
+        );
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_scan_epoch_path
+                ON file_index(last_scan_epoch, file_path)",
+            [],
+        );
+
+        Ok(())
+    }
+
+    fn rebuild_changes_table_without_restored_at(&self) -> RewResult<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch(
+            "DROP INDEX IF EXISTS idx_changes_task_id;
+             DROP INDEX IF EXISTS idx_changes_file_path;
+             DROP INDEX IF EXISTS idx_changes_file_path_id;
+             DROP INDEX IF EXISTS idx_changes_task_file_path;
+             DROP INDEX IF EXISTS idx_changes_task_old_file_path;
+             DROP INDEX IF EXISTS idx_changes_task_file_unique;
+             ALTER TABLE changes RENAME TO changes_old;
+             CREATE TABLE changes (
+                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                 task_id         TEXT NOT NULL REFERENCES tasks(id),
+                 file_path       TEXT NOT NULL,
+                 change_type     TEXT NOT NULL,
+                 old_hash        TEXT,
+                 new_hash        TEXT,
+                 diff_text       TEXT,
+                 lines_added     INTEGER NOT NULL DEFAULT 0,
+                 lines_removed   INTEGER NOT NULL DEFAULT 0,
+                 attribution     TEXT DEFAULT 'unknown',
+                 old_file_path   TEXT
+             );
+             INSERT INTO changes (
+                 id, task_id, file_path, change_type, old_hash, new_hash,
+                 diff_text, lines_added, lines_removed, attribution, old_file_path
+             )
+             SELECT
+                 id, task_id, file_path, change_type, old_hash, new_hash,
+                 diff_text, lines_added, lines_removed, attribution, old_file_path
+             FROM changes_old;
+             DROP TABLE changes_old;
+             CREATE INDEX idx_changes_task_id
+                 ON changes(task_id);
+             CREATE INDEX idx_changes_file_path
+                 ON changes(file_path);
+             CREATE INDEX idx_changes_file_path_id
+                 ON changes(file_path, id DESC);
+             CREATE INDEX idx_changes_task_file_path
+                 ON changes(task_id, file_path);
+             CREATE INDEX idx_changes_task_old_file_path
+                 ON changes(task_id, old_file_path);
+             CREATE UNIQUE INDEX idx_changes_task_file_unique
+                 ON changes(task_id, file_path);",
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -674,7 +868,7 @@ impl Database {
     /// Get all changes for a task.
     pub fn get_changes_for_task(&self, task_id: &str) -> RewResult<Vec<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution, old_file_path
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
              FROM changes WHERE task_id = ?1 ORDER BY id ASC",
         )?;
 
@@ -689,9 +883,36 @@ impl Database {
         Ok(changes)
     }
 
+    /// Get at most `limit` changes for a task.
+    pub fn get_changes_for_task_limited(&self, task_id: &str, limit: usize) -> RewResult<Vec<Change>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
+             FROM changes WHERE task_id = ?1 ORDER BY id ASC LIMIT ?2",
+        )?;
+
+        let mut changes = Vec::new();
+        let mut rows = stmt.query(params![task_id, limit as i64])?;
+        while let Some(row) = rows.next()? {
+            let change = Self::row_to_change(row)
+                .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))))?;
+            changes.push(change);
+        }
+
+        Ok(changes)
+    }
+
+    pub fn count_changes_for_task(&self, task_id: &str) -> RewResult<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM changes WHERE task_id = ?1",
+            params![task_id],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
     /// List tasks that have at least one change under `dir_prefix`.
     pub fn list_tasks_by_dir(&self, dir_prefix: &str) -> RewResult<Vec<TaskWithStats>> {
-        let like_pattern = format!("{}/%", dir_prefix);
+        let like_pattern = subpath_like_pattern(dir_prefix);
         let mut stmt = self.conn.prepare(
             "SELECT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
                     t.status, t.risk_level, t.summary, t.cwd,
@@ -750,9 +971,21 @@ impl Database {
 
     /// Count changes for a task that fall under `dir_prefix`.
     pub fn count_changes_in_dir(&self, task_id: &str, dir_prefix: &str) -> RewResult<usize> {
-        let like_pattern = format!("{}/%", dir_prefix);
+        let like_pattern = subpath_like_pattern(dir_prefix);
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM changes WHERE task_id = ?1 AND file_path LIKE ?2",
+            params![task_id, like_pattern],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    pub fn count_changes_matching_dir_scope(&self, task_id: &str, dir_prefix: &str) -> RewResult<usize> {
+        let like_pattern = subpath_like_pattern(dir_prefix);
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM changes
+             WHERE task_id = ?1
+               AND (file_path LIKE ?2 OR old_file_path LIKE ?2)",
             params![task_id, like_pattern],
             |row| row.get(0),
         )?;
@@ -771,9 +1004,9 @@ impl Database {
 
     /// Get changes for a task filtered to a specific directory prefix.
     pub fn get_changes_for_task_in_dir(&self, task_id: &str, dir_prefix: &str) -> RewResult<Vec<Change>> {
-        let like_pattern = format!("{}/%", dir_prefix);
+        let like_pattern = subpath_like_pattern(dir_prefix);
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution, old_file_path
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
              FROM changes WHERE task_id = ?1 AND file_path LIKE ?2 ORDER BY id ASC",
         )?;
 
@@ -790,15 +1023,129 @@ impl Database {
         Ok(changes)
     }
 
+    pub fn get_changes_for_task_in_dir_for_restore(
+        &self,
+        task_id: &str,
+        dir_prefix: &str,
+    ) -> RewResult<Vec<Change>> {
+        let like_pattern = subpath_like_pattern(dir_prefix);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
+             FROM changes
+             WHERE task_id = ?1
+               AND (file_path LIKE ?2 OR old_file_path LIKE ?2)
+             ORDER BY id ASC",
+        )?;
+
+        let mut changes = Vec::new();
+        let mut rows = stmt.query(params![task_id, like_pattern])?;
+        while let Some(row) = rows.next()? {
+            let change = Self::row_to_change(row)
+                .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)),
+                )))?;
+            changes.push(change);
+        }
+
+        Ok(changes)
+    }
+
+    pub fn get_changes_for_task_in_dir_limited(
+        &self,
+        task_id: &str,
+        dir_prefix: &str,
+        limit: usize,
+    ) -> RewResult<Vec<Change>> {
+        let like_pattern = subpath_like_pattern(dir_prefix);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
+             FROM changes WHERE task_id = ?1 AND file_path LIKE ?2 ORDER BY id ASC LIMIT ?3",
+        )?;
+
+        let mut changes = Vec::new();
+        let mut rows = stmt.query(params![task_id, like_pattern, limit as i64])?;
+        while let Some(row) = rows.next()? {
+            let change = Self::row_to_change(row)
+                .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)),
+                )))?;
+            changes.push(change);
+        }
+
+        Ok(changes)
+    }
+
+    /// Returns true if any change exists for the exact `file_path`.
+    pub fn has_exact_change_path(&self, file_path: &str) -> RewResult<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM changes WHERE file_path = ?1",
+            params![file_path],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Returns true if any change exists below the `dir_prefix`.
+    pub fn has_changes_under_dir_prefix(&self, dir_prefix: &str) -> RewResult<bool> {
+        let like_pattern = subpath_like_pattern(dir_prefix);
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM changes WHERE file_path LIKE ?1",
+            params![like_pattern],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// List files currently believed to exist under a directory prefix.
+    pub fn list_live_files_under_dir(&self, dir_prefix: &Path) -> RewResult<Vec<PathBuf>> {
+        let like_pattern = subpath_like_pattern(&dir_prefix.to_string_lossy());
+        let mut stmt = self.conn.prepare(
+            "SELECT file_path
+             FROM file_index
+             WHERE exists_now = 1 AND file_path LIKE ?1
+             ORDER BY file_path ASC",
+        )?;
+
+        let paths = stmt
+            .query_map(params![like_pattern], |row| row.get::<_, String>(0))?
+            .filter_map(|row| row.ok().map(PathBuf::from))
+            .collect();
+        Ok(paths)
+    }
+
     /// Get changes for a task matching a specific file path exactly.
     pub fn get_changes_for_task_by_file(&self, task_id: &str, file_path: &str) -> RewResult<Vec<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution, old_file_path
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
              FROM changes WHERE task_id = ?1 AND file_path = ?2 ORDER BY id ASC",
         )?;
 
         let mut changes = Vec::new();
         let mut rows = stmt.query(params![task_id, file_path])?;
+        while let Some(row) = rows.next()? {
+            let change = Self::row_to_change(row)
+                .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)),
+                )))?;
+            changes.push(change);
+        }
+
+        Ok(changes)
+    }
+
+    pub fn get_changes_for_task_by_file_limited(
+        &self,
+        task_id: &str,
+        file_path: &str,
+        limit: usize,
+    ) -> RewResult<Vec<Change>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
+             FROM changes WHERE task_id = ?1 AND file_path = ?2 ORDER BY id ASC LIMIT ?3",
+        )?;
+
+        let mut changes = Vec::new();
+        let mut rows = stmt.query(params![task_id, file_path, limit as i64])?;
         while let Some(row) = rows.next()? {
             let change = Self::row_to_change(row)
                 .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(
@@ -860,7 +1207,7 @@ impl Database {
 
     pub fn get_latest_change_for_file(&self, file_path: &Path) -> RewResult<Option<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution, old_file_path
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
              FROM changes WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
         )?;
 
@@ -883,7 +1230,7 @@ impl Database {
         exclude_task_id: &str,
     ) -> RewResult<Option<Change>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, restored_at, attribution, old_file_path
+            "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
              FROM changes WHERE file_path = ?1 AND task_id != ?2 ORDER BY id DESC LIMIT 1",
         )?;
 
@@ -900,15 +1247,8 @@ impl Database {
     fn row_to_change(row: &rusqlite::Row) -> Result<Change, String> {
         let change_type_str: String = row.get(3).map_err(|e| e.to_string())?;
         let file_path_str: String = row.get(2).map_err(|e| e.to_string())?;
-
-        let restored_at: Option<String> = row.get(9).map_err(|e| e.to_string())?;
-        let restored_at = restored_at
-            .as_deref()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&chrono::Utc));
-
-        let attribution: Option<String> = row.get(10).unwrap_or(None);
-        let old_file_path: Option<String> = row.get(11).unwrap_or(None);
+        let attribution: Option<String> = row.get(9).unwrap_or(None);
+        let old_file_path: Option<String> = row.get(10).unwrap_or(None);
 
         Ok(Change {
             id: row.get(0).map_err(|e| e.to_string())?,
@@ -920,7 +1260,6 @@ impl Database {
             diff_text: row.get(6).map_err(|e| e.to_string())?,
             lines_added: row.get(7).map_err(|e| e.to_string())?,
             lines_removed: row.get(8).map_err(|e| e.to_string())?,
-            restored_at,
             attribution,
             old_file_path: old_file_path.map(PathBuf::from),
         })
@@ -1059,20 +1398,242 @@ impl Database {
         Ok(())
     }
 
-    /// Mark a single file change as individually restored.
-    /// Idempotent: calling again just updates the timestamp.
-    pub fn mark_change_restored(
+    pub fn insert_restore_operation_started(
         &self,
-        task_id: &str,
-        file_path: &std::path::Path,
-        restored_at: chrono::DateTime<chrono::Utc>,
+        id: &str,
+        source_task_id: &str,
+        scope_type: &RestoreScopeType,
+        scope_path: Option<&Path>,
+        triggered_by: &RestoreTriggeredBy,
+        started_at: DateTime<Utc>,
+        requested_count: usize,
+        metadata_json: Option<&str>,
     ) -> RewResult<()> {
-        let path_str = file_path.to_string_lossy().to_string();
         self.conn.execute(
-            "UPDATE changes SET restored_at = ?1 WHERE task_id = ?2 AND file_path = ?3",
-            params![restored_at.to_rfc3339(), task_id, path_str],
+            "INSERT INTO restore_operations (
+                 id, source_task_id, scope_type, scope_path, triggered_by,
+                 started_at, completed_at, status, requested_count,
+                 restored_count, deleted_count, failed_count,
+                 failure_sample_json, metadata_json
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 'running', ?7, 0, 0, 0, NULL, ?8)",
+            params![
+                id,
+                source_task_id,
+                scope_type.to_string(),
+                scope_path.map(|path| path.to_string_lossy().to_string()),
+                triggered_by.to_string(),
+                started_at.to_rfc3339(),
+                requested_count as i64,
+                metadata_json,
+            ],
         )?;
         Ok(())
+    }
+
+    pub fn complete_restore_operation(
+        &self,
+        id: &str,
+        status: &RestoreOperationStatus,
+        completed_at: DateTime<Utc>,
+        restored_count: usize,
+        deleted_count: usize,
+        failed_count: usize,
+        failure_samples: &[RestoreFailureSample],
+    ) -> RewResult<()> {
+        let failure_sample_json = if failure_samples.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(failure_samples)
+                    .map_err(|e| RewError::Config(format!("Failed to encode restore failures: {e}")))?,
+            )
+        };
+        self.conn.execute(
+            "UPDATE restore_operations
+             SET completed_at = ?2,
+                 status = ?3,
+                 restored_count = ?4,
+                 deleted_count = ?5,
+                 failed_count = ?6,
+                 failure_sample_json = ?7
+             WHERE id = ?1",
+            params![
+                id,
+                completed_at.to_rfc3339(),
+                status.to_string(),
+                restored_count as i64,
+                deleted_count as i64,
+                failed_count as i64,
+                failure_sample_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_restore_operations_for_task(
+        &self,
+        task_id: &str,
+        limit: usize,
+    ) -> RewResult<Vec<RestoreOperation>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source_task_id, scope_type, scope_path, triggered_by,
+                    started_at, completed_at, status, requested_count,
+                    restored_count, deleted_count, failed_count,
+                    failure_sample_json, metadata_json
+             FROM restore_operations
+             WHERE source_task_id = ?1
+             ORDER BY started_at DESC
+             LIMIT ?2",
+        )?;
+        let mut rows = stmt.query(params![task_id, limit as i64])?;
+        let mut operations = Vec::new();
+        while let Some(row) = rows.next()? {
+            let started_at = parse_datetime_flexible(&row.get::<_, String>(5)?)
+                .map_err(|e| RewError::Config(format!("Invalid restore started_at: {e}")))?;
+            let completed_at = row
+                .get::<_, Option<String>>(6)?
+                .map(|value| parse_datetime_flexible(&value))
+                .transpose()
+                .map_err(RewError::Config)?;
+            let scope_path = row.get::<_, Option<String>>(3)?.map(PathBuf::from);
+            operations.push(RestoreOperation {
+                id: row.get(0)?,
+                source_task_id: row.get(1)?,
+                scope_type: row
+                    .get::<_, String>(2)?
+                    .parse()
+                    .map_err(RewError::Config)?,
+                scope_path,
+                triggered_by: row
+                    .get::<_, String>(4)?
+                    .parse()
+                    .map_err(RewError::Config)?,
+                started_at,
+                completed_at,
+                status: row
+                    .get::<_, String>(7)?
+                    .parse()
+                    .map_err(RewError::Config)?,
+                requested_count: row.get::<_, i64>(8)? as u32,
+                restored_count: row.get::<_, i64>(9)? as u32,
+                deleted_count: row.get::<_, i64>(10)? as u32,
+                failed_count: row.get::<_, i64>(11)? as u32,
+                failure_sample_json: row.get(12)?,
+                metadata_json: row.get(13)?,
+            });
+        }
+        Ok(operations)
+    }
+
+    pub fn sync_file_index_after_restore_batch(
+        &mut self,
+        entries: &[RestoreFileIndexSyncEntry],
+        seen_at: &str,
+    ) -> RewResult<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut upsert_stmt = tx.prepare(
+                "INSERT INTO file_index (
+                     file_path, mtime_secs, fast_hash, content_hash,
+                     exists_now, last_seen_at, last_event_kind, last_confirmed_by,
+                     deleted_at, last_scan_epoch
+                 )
+                 VALUES (?1, ?2, ?3, ?4, 1, ?5, 'restored_live', 'restore', NULL, NULL)
+                 ON CONFLICT(file_path) DO UPDATE SET
+                     mtime_secs = excluded.mtime_secs,
+                     fast_hash = excluded.fast_hash,
+                     content_hash = COALESCE(excluded.content_hash, file_index.content_hash),
+                     exists_now = 1,
+                     last_seen_at = excluded.last_seen_at,
+                     last_event_kind = excluded.last_event_kind,
+                     last_confirmed_by = excluded.last_confirmed_by,
+                     deleted_at = NULL",
+            )?;
+            let mut delete_update_stmt = tx.prepare(
+                "UPDATE file_index
+                 SET exists_now = 0,
+                     deleted_at = ?2,
+                     last_seen_at = ?2,
+                     last_event_kind = 'restored_delete',
+                     last_confirmed_by = 'restore',
+                     content_hash = COALESCE(content_hash, ?3)
+                 WHERE file_path = ?1",
+            )?;
+            let mut delete_insert_stmt = tx.prepare(
+                "INSERT INTO file_index (
+                     file_path, mtime_secs, fast_hash, content_hash,
+                     exists_now, last_seen_at, last_event_kind, last_confirmed_by,
+                     deleted_at, last_scan_epoch
+                 )
+                 VALUES (?1, 0, ?2, ?3, 0, ?4, 'restored_delete', 'restore', ?4, NULL)",
+            )?;
+
+            for entry in entries {
+                let path_str = entry.file_path.to_string_lossy().to_string();
+                if entry.deleted {
+                    let restore_hash = entry.content_hash.as_deref().or(Some(entry.fast_hash.as_str()));
+                    let updated = delete_update_stmt.execute(params![
+                        path_str,
+                        seen_at,
+                        restore_hash,
+                    ])?;
+                    if updated == 0 {
+                        if let Some(hash) = restore_hash {
+                            delete_insert_stmt.execute(params![path_str, hash, hash, seen_at])?;
+                        }
+                    }
+                } else {
+                    upsert_stmt.execute(params![
+                        path_str,
+                        entry.mtime_secs as i64,
+                        entry.fast_hash,
+                        entry.content_hash,
+                        seen_at,
+                    ])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn upsert_task_deleted_dir(
+        &self,
+        task_id: &str,
+        dir_path: &Path,
+        file_count: usize,
+    ) -> RewResult<()> {
+        self.conn.execute(
+            "INSERT INTO task_deleted_dirs (task_id, dir_path, file_count)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(task_id, dir_path)
+             DO UPDATE SET file_count = MAX(task_deleted_dirs.file_count, excluded.file_count)",
+            params![task_id, dir_path.to_string_lossy().to_string(), file_count as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_task_deleted_dirs(&self, task_id: &str) -> RewResult<Vec<TaskDeletedDirSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT dir_path, file_count
+             FROM task_deleted_dirs
+             WHERE task_id = ?1
+             ORDER BY file_count DESC, dir_path ASC",
+        )?;
+
+        let rows = stmt.query_map(params![task_id], |row| {
+            Ok(TaskDeletedDirSummary {
+                dir_path: PathBuf::from(row.get::<_, String>(0)?),
+                file_count: row.get::<_, i64>(1)? as usize,
+            })
+        })?;
+
+        let mut summaries = Vec::new();
+        for row in rows {
+            summaries.push(row?);
+        }
+        Ok(summaries)
     }
 
     // ================================================================
@@ -1281,32 +1842,171 @@ impl Database {
     // File Index (V7 — replaces scan_manifest.json)
     // ================================================================
 
-    /// Upsert a file_index entry (path -> mtime + fast_hash + optional content_hash).
-    pub fn upsert_file_index(
+    /// Upsert a live file_index entry and mark it as currently existing.
+    pub fn upsert_live_file_index_entry(
         &self,
         file_path: &str,
         mtime_secs: u64,
         fast_hash: &str,
         content_hash: Option<&str>,
+        source: &str,
+        event_kind: &str,
+        seen_at: &str,
+        scan_epoch: Option<i64>,
     ) -> RewResult<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO file_index (file_path, mtime_secs, fast_hash, content_hash)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![file_path, mtime_secs as i64, fast_hash, content_hash],
+            "INSERT INTO file_index (
+                 file_path, mtime_secs, fast_hash, content_hash,
+                 exists_now, last_seen_at, last_event_kind, last_confirmed_by,
+                 deleted_at, last_scan_epoch
+             )
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, NULL, ?8)
+             ON CONFLICT(file_path) DO UPDATE SET
+                 mtime_secs = excluded.mtime_secs,
+                 fast_hash = excluded.fast_hash,
+                 content_hash = COALESCE(excluded.content_hash, file_index.content_hash),
+                 exists_now = 1,
+                 last_seen_at = excluded.last_seen_at,
+                 last_event_kind = excluded.last_event_kind,
+                 last_confirmed_by = excluded.last_confirmed_by,
+                 deleted_at = NULL,
+                 last_scan_epoch = COALESCE(excluded.last_scan_epoch, file_index.last_scan_epoch)",
+            params![
+                file_path,
+                mtime_secs as i64,
+                fast_hash,
+                content_hash,
+                seen_at,
+                event_kind,
+                source,
+                scan_epoch,
+            ],
         )?;
         Ok(())
     }
 
-    /// Get file_index entry for a path.
+    /// Tombstone a path in file_index while preserving the last recoverable hash.
+    pub fn mark_file_index_deleted(
+        &self,
+        file_path: &str,
+        restore_hash: Option<&str>,
+        source: &str,
+        event_kind: &str,
+        deleted_at: &str,
+    ) -> RewResult<()> {
+        let updated = self.conn.execute(
+            "UPDATE file_index
+             SET exists_now = 0,
+                 deleted_at = ?2,
+                 last_seen_at = ?2,
+                 last_event_kind = ?3,
+                 last_confirmed_by = ?4,
+                 content_hash = COALESCE(content_hash, ?5)
+             WHERE file_path = ?1",
+            params![file_path, deleted_at, event_kind, source, restore_hash],
+        )?;
+
+        if updated == 0 {
+            if let Some(hash) = restore_hash {
+                self.conn.execute(
+                    "INSERT INTO file_index (
+                         file_path, mtime_secs, fast_hash, content_hash,
+                         exists_now, last_seen_at, last_event_kind, last_confirmed_by,
+                         deleted_at, last_scan_epoch
+                     )
+                     VALUES (?1, 0, ?2, ?3, 0, ?4, ?5, ?6, ?4, NULL)",
+                    params![file_path, hash, Some(hash), deleted_at, event_kind, source],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn mark_file_index_renamed(
+        &self,
+        old_path: &str,
+        new_path: &str,
+        mtime_secs: u64,
+        fast_hash: &str,
+        content_hash: Option<&str>,
+        source: &str,
+        seen_at: &str,
+    ) -> RewResult<()> {
+        self.mark_file_index_deleted(old_path, content_hash.or(Some(fast_hash)), source, "rename_old", seen_at)?;
+        self.upsert_live_file_index_entry(
+            new_path,
+            mtime_secs,
+            fast_hash,
+            content_hash,
+            source,
+            "rename_new",
+            seen_at,
+            None,
+        )?;
+        Ok(())
+    }
+
+    /// Tombstone paths under a directory that were not seen in the current scan epoch.
+    pub fn tombstone_missing_paths_under_dir(
+        &self,
+        dir_prefix: &Path,
+        scan_epoch: i64,
+        tombstoned_at: &str,
+    ) -> RewResult<usize> {
+        let like_pattern = subpath_like_pattern(&dir_prefix.to_string_lossy());
+        let updated = self.conn.execute(
+            "UPDATE file_index
+             SET exists_now = 0,
+                 deleted_at = ?2,
+                 last_seen_at = ?2,
+                 last_event_kind = 'scan_missing',
+                 last_confirmed_by = 'scanner'
+             WHERE file_path LIKE ?1
+               AND exists_now = 1
+               AND COALESCE(last_scan_epoch, -1) != ?3",
+            params![like_pattern, tombstoned_at, scan_epoch],
+        )?;
+        Ok(updated)
+    }
+
+    /// Get file_index entry for an active path.
     pub fn get_file_index(&self, file_path: &str) -> RewResult<Option<(u64, String, Option<String>)>> {
         let result = self.conn.query_row(
-            "SELECT mtime_secs, fast_hash, content_hash FROM file_index WHERE file_path = ?1",
+            "SELECT mtime_secs, fast_hash, content_hash
+             FROM file_index
+             WHERE file_path = ?1 AND exists_now = 1",
             params![file_path],
             |row| Ok((
                 row.get::<_, i64>(0)? as u64,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
             )),
+        ).optional()?;
+        Ok(result)
+    }
+
+    pub fn get_file_index_entry(&self, file_path: &str) -> RewResult<Option<FileIndexEntry>> {
+        let result = self.conn.query_row(
+            "SELECT file_path, mtime_secs, fast_hash, content_hash, exists_now,
+                    last_seen_at, last_event_kind, last_confirmed_by, deleted_at, last_scan_epoch
+             FROM file_index
+             WHERE file_path = ?1",
+            params![file_path],
+            |row| {
+                Ok(FileIndexEntry {
+                    file_path: PathBuf::from(row.get::<_, String>(0)?),
+                    mtime_secs: row.get::<_, i64>(1)? as u64,
+                    fast_hash: row.get(2)?,
+                    content_hash: row.get(3)?,
+                    exists_now: row.get::<_, i64>(4)? != 0,
+                    last_seen_at: row.get(5)?,
+                    last_event_kind: row.get(6)?,
+                    last_confirmed_by: row.get(7)?,
+                    deleted_at: row.get(8)?,
+                    last_scan_epoch: row.get(9)?,
+                })
+            },
         ).optional()?;
         Ok(result)
     }
@@ -1324,11 +2024,28 @@ impl Database {
 
     pub fn get_file_index_hash(&self, file_path: &str) -> RewResult<Option<String>> {
         let result = self.conn.query_row(
-            "SELECT content_hash FROM file_index WHERE file_path = ?1",
+            "SELECT content_hash
+             FROM file_index
+             WHERE file_path = ?1 AND exists_now = 1",
             params![file_path],
             |row| row.get::<_, Option<String>>(0),
         ).optional()?;
         Ok(result.flatten())
+    }
+
+    pub fn get_file_index_restore_hash(&self, file_path: &str) -> RewResult<Option<String>> {
+        let result = self.conn.query_row(
+            "SELECT content_hash, fast_hash
+             FROM file_index
+             WHERE file_path = ?1",
+            params![file_path],
+            |row| Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, String>(1)?,
+            )),
+        ).optional()?;
+
+        Ok(result.and_then(|(content_hash, fast_hash)| content_hash.or(Some(fast_hash))))
     }
 
     /// Batch begin/commit for scanner performance (wraps in a transaction).
@@ -1346,7 +2063,10 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{SnapshotTrigger, TaskStatus, ChangeType};
+    use crate::types::{
+        ChangeType, RestoreOperationStatus, RestoreScopeType, RestoreTriggeredBy, SnapshotTrigger,
+        TaskStatus,
+    };
     use tempfile::tempdir;
 
     fn test_db() -> Database {
@@ -1477,7 +2197,6 @@ mod tests {
             diff_text: Some("+pub fn authenticate() {}".to_string()),
             lines_added: 1,
             lines_removed: 0,
-            restored_at: None,
             attribution: None,
             old_file_path: None,
         };
@@ -1494,7 +2213,6 @@ mod tests {
             diff_text: Some("-use old;\n+use auth;".to_string()),
             lines_added: 1,
             lines_removed: 1,
-            restored_at: None,
             attribution: None,
             old_file_path: None,
         };
@@ -1538,5 +2256,338 @@ mod tests {
         assert!(tables.contains(&"snapshots".to_string()));
         assert!(tables.contains(&"tasks".to_string()));
         assert!(tables.contains(&"changes".to_string()));
+    }
+
+    #[test]
+    fn test_has_changes_under_dir_prefix_and_exact_path() {
+        let db = test_db();
+        let task = Task {
+            id: "task_dir_filter".to_string(),
+            prompt: None,
+            tool: None,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        };
+        db.create_task(&task).unwrap();
+
+        db.insert_change(&Change {
+            id: None,
+            task_id: task.id.clone(),
+            file_path: PathBuf::from("/tmp/project/go/main.rs"),
+            change_type: ChangeType::Deleted,
+            old_hash: Some("old".into()),
+            new_hash: None,
+            diff_text: None,
+            lines_added: 0,
+            lines_removed: 1,
+            attribution: None,
+            old_file_path: None,
+        }).unwrap();
+
+        assert!(db.has_changes_under_dir_prefix("/tmp/project/go").unwrap());
+        assert!(!db.has_changes_under_dir_prefix("/tmp/project/missing").unwrap());
+        assert!(db.has_exact_change_path("/tmp/project/go/main.rs").unwrap());
+        assert!(!db.has_exact_change_path("/tmp/project/go").unwrap());
+    }
+
+    #[test]
+    fn test_list_live_files_under_dir_only_returns_active_entries() {
+        let db = test_db();
+        let task = Task {
+            id: "task_known_dir".to_string(),
+            prompt: None,
+            tool: None,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        };
+        db.create_task(&task).unwrap();
+
+        let now = Utc::now().to_rfc3339();
+        db.upsert_live_file_index_entry(
+            "/tmp/project/go/a.rs",
+            1,
+            "fast-a",
+            Some("sha-a"),
+            "scanner",
+            "scan_seen",
+            &now,
+            Some(7),
+        ).unwrap();
+        db.upsert_live_file_index_entry(
+            "/tmp/project/go/sub/b.rs",
+            1,
+            "fast-b",
+            Some("sha-b"),
+            "scanner",
+            "scan_seen",
+            &now,
+            Some(7),
+        ).unwrap();
+
+        db.upsert_live_file_index_entry(
+            "/tmp/project/go/runtime/c.rs",
+            2,
+            "sha-c",
+            Some("sha-c"),
+            "hook",
+            "modified",
+            &now,
+            None,
+        ).unwrap();
+        db.mark_file_index_deleted(
+            "/tmp/project/go/deleted/d.rs",
+            Some("sha-d-old"),
+            "daemon",
+            "deleted",
+            &now,
+        ).unwrap();
+
+        let files = db.list_live_files_under_dir(Path::new("/tmp/project/go")).unwrap();
+        let rendered: Vec<String> = files
+            .into_iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "/tmp/project/go/a.rs".to_string(),
+                "/tmp/project/go/runtime/c.rs".to_string(),
+                "/tmp/project/go/sub/b.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mark_file_index_deleted_preserves_restore_hash() {
+        let db = test_db();
+        let now = Utc::now().to_rfc3339();
+
+        db.mark_file_index_deleted(
+            "/tmp/project/go/deleted.rs",
+            Some("sha-deleted"),
+            "daemon",
+            "deleted",
+            &now,
+        ).unwrap();
+
+        let entry = db.get_file_index_entry("/tmp/project/go/deleted.rs").unwrap().unwrap();
+        assert!(!entry.exists_now);
+        assert_eq!(entry.deleted_at.as_deref(), Some(now.as_str()));
+        assert_eq!(entry.content_hash.as_deref(), Some("sha-deleted"));
+        assert_eq!(
+            db.get_file_index_restore_hash("/tmp/project/go/deleted.rs").unwrap().as_deref(),
+            Some("sha-deleted")
+        );
+    }
+
+    #[test]
+    fn test_tombstone_missing_paths_under_dir_marks_unseen_rows_deleted() {
+        let db = test_db();
+        let now = Utc::now().to_rfc3339();
+
+        db.upsert_live_file_index_entry(
+            "/tmp/project/go/a.rs",
+            1,
+            "fast-a",
+            Some("sha-a"),
+            "scanner",
+            "scan_seen",
+            &now,
+            Some(10),
+        ).unwrap();
+        db.upsert_live_file_index_entry(
+            "/tmp/project/go/b.rs",
+            1,
+            "fast-b",
+            Some("sha-b"),
+            "scanner",
+            "scan_seen",
+            &now,
+            Some(9),
+        ).unwrap();
+
+        let updated = db
+            .tombstone_missing_paths_under_dir(Path::new("/tmp/project/go"), 10, &now)
+            .unwrap();
+        assert_eq!(updated, 1);
+
+        let a = db.get_file_index_entry("/tmp/project/go/a.rs").unwrap().unwrap();
+        let b = db.get_file_index_entry("/tmp/project/go/b.rs").unwrap().unwrap();
+        assert!(a.exists_now);
+        assert!(!b.exists_now);
+        assert_eq!(b.last_event_kind.as_deref(), Some("scan_missing"));
+    }
+
+    #[test]
+    fn test_restore_operations_keep_multiple_history_entries() {
+        let db = test_db();
+        let task = Task {
+            id: "task_restore_history".to_string(),
+            prompt: None,
+            tool: None,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        };
+        db.create_task(&task).unwrap();
+
+        let started_at = Utc::now();
+        db.insert_restore_operation_started(
+            "restore-op-1",
+            &task.id,
+            &RestoreScopeType::File,
+            Some(Path::new("/tmp/project/a.rs")),
+            &RestoreTriggeredBy::Ui,
+            started_at,
+            1,
+            None,
+        )
+        .unwrap();
+        db.complete_restore_operation(
+            "restore-op-1",
+            &RestoreOperationStatus::Completed,
+            started_at,
+            1,
+            0,
+            0,
+            &[],
+        )
+        .unwrap();
+
+        let later = started_at + chrono::Duration::seconds(5);
+        db.insert_restore_operation_started(
+            "restore-op-2",
+            &task.id,
+            &RestoreScopeType::Task,
+            None,
+            &RestoreTriggeredBy::Cli,
+            later,
+            3,
+            None,
+        )
+        .unwrap();
+        db.complete_restore_operation(
+            "restore-op-2",
+            &RestoreOperationStatus::Partial,
+            later,
+            2,
+            0,
+            1,
+            &[RestoreFailureSample {
+                file_path: PathBuf::from("/tmp/project/b.rs"),
+                error: "permission denied".to_string(),
+            }],
+        )
+        .unwrap();
+
+        let operations = db.list_restore_operations_for_task(&task.id, 10).unwrap();
+        assert_eq!(operations.len(), 2);
+        assert_eq!(operations[0].id, "restore-op-2");
+        assert_eq!(operations[0].triggered_by, RestoreTriggeredBy::Cli);
+        assert_eq!(operations[1].id, "restore-op-1");
+        assert_eq!(operations[1].triggered_by, RestoreTriggeredBy::Ui);
+    }
+
+    #[test]
+    fn test_directory_restore_operation_is_single_audit_row() {
+        let db = test_db();
+        let task = Task {
+            id: "task_directory_restore".to_string(),
+            prompt: None,
+            tool: None,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        };
+        db.create_task(&task).unwrap();
+
+        db.insert_restore_operation_started(
+            "restore-dir-1",
+            &task.id,
+            &RestoreScopeType::Directory,
+            Some(Path::new("/tmp/project/go")),
+            &RestoreTriggeredBy::Ui,
+            Utc::now(),
+            1200,
+            None,
+        )
+        .unwrap();
+        db.complete_restore_operation(
+            "restore-dir-1",
+            &RestoreOperationStatus::Completed,
+            Utc::now(),
+            1190,
+            10,
+            0,
+            &[],
+        )
+        .unwrap();
+
+        let operations = db.list_restore_operations_for_task(&task.id, 10).unwrap();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].scope_type, RestoreScopeType::Directory);
+        assert_eq!(
+            operations[0].scope_path.as_deref(),
+            Some(Path::new("/tmp/project/go"))
+        );
+        assert_eq!(operations[0].requested_count, 1200);
+    }
+
+    #[test]
+    fn test_mark_file_index_renamed_tombstones_old_and_upsserts_new() {
+        let db = test_db();
+        let seen_at = Utc::now().to_rfc3339();
+
+        db.upsert_live_file_index_entry(
+            "/tmp/project/old.txt",
+            1,
+            "sha-old",
+            Some("sha-old"),
+            "test",
+            "seed",
+            &seen_at,
+            None,
+        )
+        .unwrap();
+
+        db.mark_file_index_renamed(
+            "/tmp/project/old.txt",
+            "/tmp/project/new.txt",
+            2,
+            "sha-new",
+            Some("sha-new"),
+            "test",
+            &seen_at,
+        )
+        .unwrap();
+
+        let old_entry = db
+            .get_file_index_entry("/tmp/project/old.txt")
+            .unwrap()
+            .unwrap();
+        let new_entry = db
+            .get_file_index_entry("/tmp/project/new.txt")
+            .unwrap()
+            .unwrap();
+        assert!(!old_entry.exists_now);
+        assert_eq!(old_entry.last_event_kind.as_deref(), Some("rename_old"));
+        assert!(new_entry.exists_now);
+        assert_eq!(new_entry.last_event_kind.as_deref(), Some("rename_new"));
+        assert_eq!(new_entry.content_hash.as_deref(), Some("sha-new"));
     }
 }

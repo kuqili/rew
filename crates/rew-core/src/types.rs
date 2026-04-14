@@ -330,14 +330,116 @@ pub struct Change {
     pub lines_added: u32,
     /// Lines removed
     pub lines_removed: u32,
-    /// Set when the user individually restores this file (single-file rollback).
-    /// NULL = not yet restored; non-NULL = timestamp of restoration.
-    pub restored_at: Option<chrono::DateTime<chrono::Utc>>,
     /// How this change was attributed: "hook", "bash_predicted",
     /// "fsevent_active", "fsevent_grace", "monitoring", or "unknown".
     pub attribution: Option<String>,
     /// Original file path before rename (only set for Renamed changes).
     pub old_file_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RestoreScopeType {
+    Task,
+    Directory,
+    File,
+}
+
+impl std::fmt::Display for RestoreScopeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RestoreScopeType::Task => write!(f, "task"),
+            RestoreScopeType::Directory => write!(f, "directory"),
+            RestoreScopeType::File => write!(f, "file"),
+        }
+    }
+}
+
+impl std::str::FromStr for RestoreScopeType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "task" => Ok(RestoreScopeType::Task),
+            "directory" => Ok(RestoreScopeType::Directory),
+            "file" => Ok(RestoreScopeType::File),
+            _ => Err(format!("Unknown restore scope type: {}", s)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RestoreTriggeredBy {
+    Ui,
+    Cli,
+}
+
+impl std::fmt::Display for RestoreTriggeredBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RestoreTriggeredBy::Ui => write!(f, "ui"),
+            RestoreTriggeredBy::Cli => write!(f, "cli"),
+        }
+    }
+}
+
+impl std::str::FromStr for RestoreTriggeredBy {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ui" => Ok(RestoreTriggeredBy::Ui),
+            "cli" => Ok(RestoreTriggeredBy::Cli),
+            _ => Err(format!("Unknown restore triggered_by: {}", s)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RestoreOperationStatus {
+    Running,
+    Completed,
+    Partial,
+    Failed,
+}
+
+impl std::fmt::Display for RestoreOperationStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RestoreOperationStatus::Running => write!(f, "running"),
+            RestoreOperationStatus::Completed => write!(f, "completed"),
+            RestoreOperationStatus::Partial => write!(f, "partial"),
+            RestoreOperationStatus::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+impl std::str::FromStr for RestoreOperationStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "running" => Ok(RestoreOperationStatus::Running),
+            "completed" => Ok(RestoreOperationStatus::Completed),
+            "partial" => Ok(RestoreOperationStatus::Partial),
+            "failed" => Ok(RestoreOperationStatus::Failed),
+            _ => Err(format!("Unknown restore operation status: {}", s)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreOperation {
+    pub id: String,
+    pub source_task_id: String,
+    pub scope_type: RestoreScopeType,
+    pub scope_path: Option<PathBuf>,
+    pub triggered_by: RestoreTriggeredBy,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub status: RestoreOperationStatus,
+    pub requested_count: u32,
+    pub restored_count: u32,
+    pub deleted_count: u32,
+    pub failed_count: u32,
+    pub failure_sample_json: Option<String>,
+    pub metadata_json: Option<String>,
 }
 
 /// Task with aggregated change statistics (returned by list queries).

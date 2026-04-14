@@ -89,7 +89,16 @@ impl TestEnv {
 
     fn seed_file_index(&self, path: &str, fast_hash: &str, content_hash: Option<&str>) {
         self.db
-            .upsert_file_index(path, 1000, fast_hash, content_hash)
+            .upsert_live_file_index_entry(
+                path,
+                1000,
+                fast_hash,
+                content_hash,
+                "test",
+                "seed",
+                &chrono::Utc::now().to_rfc3339(),
+                Some(1),
+            )
             .unwrap();
     }
 
@@ -136,7 +145,6 @@ impl TestEnv {
             diff_text: None,
             lines_added: 0,
             lines_removed: 0,
-            restored_at: None,
             attribution: Some(attribution.to_string()),
             old_file_path: None,
         }
@@ -242,6 +250,31 @@ fn a6_baseline_previous_task_deleted() {
 }
 
 #[test]
+fn a6b_baseline_previous_task_deleted_but_live_file_index_wins() {
+    let env = TestEnv::new();
+    env.create_completed_task("t_prev");
+    env.create_active_task("t_cur");
+
+    let path = env.write_file("restored_again.txt", "restored content\n");
+    let sha_live = env.store_file(&path);
+    let path_str = path.to_string_lossy().to_string();
+
+    let deleted = env.make_change(
+        "t_prev", &path, ChangeType::Deleted,
+        Some("sha_before_delete"), None, "monitoring",
+    );
+    env.insert_change(&deleted);
+    env.seed_file_index(&path_str, &sha_live, Some(&sha_live));
+
+    let bl = env.baseline("t_cur", &path);
+    assert!(
+        bl.existed,
+        "A live file_index row should override a stale historical Deleted record"
+    );
+    assert_eq!(bl.hash.as_deref(), Some(sha_live.as_str()));
+}
+
+#[test]
 fn a7_baseline_previous_task_modified() {
     let env = TestEnv::new();
     env.create_completed_task("t_prev");
@@ -273,6 +306,29 @@ fn a8_baseline_pre_tool_hash() {
     let bl = env.baseline_with_session("t1", &path, "session-abc");
     assert!(bl.existed);
     assert_eq!(bl.hash.as_deref(), Some("sha_pre_tool"));
+}
+
+#[test]
+fn a9_baseline_tombstoned_file_index_does_not_mark_path_existing() {
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+    let path = env.dir.path().join("deleted_from_index.txt");
+    let path_str = path.to_string_lossy().to_string();
+
+    env.seed_file_index(&path_str, "fast-deleted", Some("sha_deleted"));
+    env.db
+        .mark_file_index_deleted(
+            &path_str,
+            Some("sha_deleted"),
+            "test",
+            "deleted",
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap();
+
+    let bl = env.baseline("t1", &path);
+    assert!(!bl.existed);
+    assert!(bl.hash.is_none());
 }
 
 // ============================================================
@@ -328,6 +384,48 @@ fn b2_modify_existing_file() {
 }
 
 #[test]
+fn b2b_restored_file_modify_stays_modified() {
+    let env = TestEnv::new();
+    env.create_completed_task("t_prev");
+    env.create_active_task("t_cur");
+
+    let path = env.write_file("restored_then_modified.txt", "line1\nline2\n");
+    let sha_old = env.store_file(&path);
+    let path_str = path.to_string_lossy().to_string();
+
+    env.insert_change(&env.make_change(
+        "t_prev", &path, ChangeType::Deleted,
+        Some(&sha_old), None, "monitoring",
+    ));
+    env.seed_file_index(&path_str, &sha_old, Some(&sha_old));
+
+    std::fs::write(&path, "line1\nchanged\nline2\n").unwrap();
+    let sha_new = env.store_file(&path);
+
+    let baseline = env.baseline("t_cur", &path);
+    let change_type = if baseline.existed {
+        ChangeType::Modified
+    } else {
+        ChangeType::Created
+    };
+    env.upsert_change(&env.make_change(
+        "t_cur",
+        &path,
+        change_type,
+        baseline.hash.as_deref(),
+        Some(&sha_new),
+        "fsevent_active",
+    ));
+
+    env.reconcile("t_cur");
+    let changes = env.changes("t_cur");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].change_type, ChangeType::Modified);
+    assert_eq!(changes[0].old_hash.as_deref(), Some(sha_old.as_str()));
+    assert_eq!(changes[0].new_hash.as_deref(), Some(sha_new.as_str()));
+}
+
+#[test]
 fn b3_delete_existing_file() {
     let env = TestEnv::new();
     env.create_active_task("t1");
@@ -351,6 +449,47 @@ fn b3_delete_existing_file() {
 }
 
 #[test]
+fn b3b_restored_file_delete_stays_deleted() {
+    let env = TestEnv::new();
+    env.create_completed_task("t_prev");
+    env.create_active_task("t_cur");
+
+    let path = env.write_file("restored_then_deleted.txt", "keep me\n");
+    let sha_old = env.store_file(&path);
+    let path_str = path.to_string_lossy().to_string();
+
+    env.insert_change(&env.make_change(
+        "t_prev", &path, ChangeType::Deleted,
+        Some(&sha_old), None, "monitoring",
+    ));
+    env.seed_file_index(&path_str, &sha_old, Some(&sha_old));
+
+    env.delete_file(&path);
+    let baseline = env.baseline("t_cur", &path);
+    env.upsert_change(&env.make_change(
+        "t_cur",
+        &path,
+        ChangeType::Deleted,
+        baseline.hash.as_deref(),
+        None,
+        "fsevent_active",
+    ));
+
+    env.reconcile("t_cur");
+    let changes = env.changes("t_cur");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].change_type, ChangeType::Deleted);
+    assert_eq!(changes[0].old_hash.as_deref(), Some(sha_old.as_str()));
+    assert!(changes[0].new_hash.is_none());
+    let file_index = env
+        .db
+        .get_file_index_entry(&path_str)
+        .unwrap()
+        .unwrap();
+    assert!(!file_index.exists_now, "Deleted reconcile result must tombstone file_index");
+}
+
+#[test]
 fn b4_create_then_delete_net_zero() {
     let env = TestEnv::new();
     env.create_active_task("t1");
@@ -365,6 +504,33 @@ fn b4_create_then_delete_net_zero() {
     assert_eq!(result.removed, 1, "Ephemeral (None, None) should be removed");
     let changes = env.changes("t1");
     assert_eq!(changes.len(), 0);
+}
+
+#[test]
+fn b4b_ephemeral_delete_tombstones_live_file_index() {
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+
+    let path = env.write_file("ephemeral_indexed.txt", "temp content\n");
+    let sha = env.store_file(&path);
+    let path_str = path.to_string_lossy().to_string();
+    env.seed_file_index(&path_str, &sha, Some(&sha));
+
+    env.delete_file(&path);
+    let change = env.make_change("t1", &path, ChangeType::Created, None, None, "fsevent_active");
+    env.upsert_change(&change);
+
+    let result = env.reconcile("t1");
+    assert_eq!(result.removed, 1);
+    let file_index = env
+        .db
+        .get_file_index_entry(&path_str)
+        .unwrap()
+        .unwrap();
+    assert!(
+        !file_index.exists_now,
+        "Even ephemeral create-then-delete must leave file_index tombstoned"
+    );
 }
 
 #[test]
@@ -496,6 +662,20 @@ fn c1_rename_identical_content() {
         "old_file_path should be the deleted file"
     );
     assert_eq!(changes[0].file_path, path_b);
+    let old_entry = env
+        .db
+        .get_file_index_entry(&path_a.to_string_lossy())
+        .unwrap()
+        .unwrap();
+    let new_entry = env
+        .db
+        .get_file_index_entry(&path_b.to_string_lossy())
+        .unwrap()
+        .unwrap();
+    assert!(!old_entry.exists_now);
+    assert_eq!(old_entry.last_event_kind.as_deref(), Some("rename_old"));
+    assert!(new_entry.exists_now);
+    assert_eq!(new_entry.last_event_kind.as_deref(), Some("rename_new"));
 }
 
 #[test]

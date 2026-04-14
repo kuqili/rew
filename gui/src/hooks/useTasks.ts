@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { listTasks, getTaskChanges, getStatus, type TaskInfo, type ChangeInfo, type StatusInfo } from "../lib/tauri";
+import { listTasks, getTaskChanges, getStatus, type TaskInfo, type ChangeInfo, type DeletedDirSummaryInfo, type StatusInfo } from "../lib/tauri";
 
 export function useTasks(dirFilter?: string | null) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
@@ -39,25 +39,38 @@ export function useTasks(dirFilter?: string | null) {
 
 export function useTaskChanges(taskId: string | null, dirFilter?: string | null) {
   const [changes, setChanges] = useState<ChangeInfo[]>([]);
+  const [deletedDirs, setDeletedDirs] = useState<DeletedDirSummaryInfo[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [truncated, setTruncated] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    if (!taskId) { setChanges([]); return; }
+    if (!taskId) { setChanges([]); setDeletedDirs([]); setTotalCount(0); setTruncated(false); return; }
     getTaskChanges(taskId, dirFilter ?? undefined)
-      .then(setChanges)
+      .then((res) => {
+        setChanges(res.changes);
+        setDeletedDirs(res.deleted_dirs);
+        setTotalCount(res.total_count);
+        setTruncated(res.truncated);
+      })
       .catch(() => {});
   }, [taskId, dirFilter]);
 
   useEffect(() => {
     setInitialLoading(true);
-    if (!taskId) { setChanges([]); setInitialLoading(false); return; }
+    if (!taskId) { setChanges([]); setDeletedDirs([]); setTotalCount(0); setTruncated(false); setInitialLoading(false); return; }
     getTaskChanges(taskId, dirFilter ?? undefined)
-      .then(setChanges)
-      .catch(() => setChanges([]))
+      .then((res) => {
+        setChanges(res.changes);
+        setDeletedDirs(res.deleted_dirs);
+        setTotalCount(res.total_count);
+        setTruncated(res.truncated);
+      })
+      .catch(() => { setChanges([]); setDeletedDirs([]); setTotalCount(0); setTruncated(false); })
       .finally(() => setInitialLoading(false));
   }, [taskId, dirFilter]);
 
-  return { changes, loading: initialLoading, refresh };
+  return { changes, deletedDirs, totalCount, truncated, loading: initialLoading, refresh };
 }
 
 export function useStatus() {

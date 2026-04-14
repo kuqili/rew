@@ -28,11 +28,50 @@ export interface ChangeInfo {
   diff_text: string | null;
   lines_added: number;
   lines_removed: number;
-  /** ISO-8601 timestamp when this file was individually restored, or null. */
-  restored_at: string | null;
   attribution: string | null;
   /** Original file path before rename (only for renamed changes). */
   old_file_path: string | null;
+}
+
+export interface TaskChangesResultInfo {
+  changes: ChangeInfo[];
+  total_count: number;
+  truncated: boolean;
+  deleted_dirs: DeletedDirSummaryInfo[];
+}
+
+export interface DeletedDirSummaryInfo {
+  dir_path: string;
+  total_files: number;
+}
+
+export interface RestoreProgressInfo {
+  is_running: boolean;
+  phase: "idle" | "restoring-files" | "syncing-database" | "finalizing" | "done";
+  task_id: string | null;
+  dir_path: string | null;
+  total_files: number;
+  processed_files: number;
+  restored_files: number;
+  deleted_files: number;
+  failed_files: number;
+  current_path: string | null;
+}
+
+export interface RestoreOperationInfo {
+  id: string;
+  source_task_id: string;
+  scope_type: "task" | "directory" | "file";
+  scope_path: string | null;
+  triggered_by: "ui" | "cli";
+  started_at: string;
+  completed_at: string | null;
+  status: "running" | "completed" | "partial" | "failed";
+  requested_count: number;
+  restored_count: number;
+  deleted_count: number;
+  failed_count: number;
+  failure_sample_json: string | null;
 }
 
 export interface TaskStatsInfo {
@@ -107,8 +146,8 @@ export async function getTask(taskId: string): Promise<TaskInfo> {
   return invoke<TaskInfo>("get_task", { taskId });
 }
 
-export async function getTaskChanges(taskId: string, dirFilter?: string): Promise<ChangeInfo[]> {
-  return invoke<ChangeInfo[]>("get_task_changes", { taskId, dirFilter: dirFilter ?? null });
+export async function getTaskChanges(taskId: string, dirFilter?: string): Promise<TaskChangesResultInfo> {
+  return invoke<TaskChangesResultInfo>("get_task_changes", { taskId, dirFilter: dirFilter ?? null });
 }
 
 export async function getChangeDiff(taskId: string, filePath: string): Promise<ChangeDiffResult> {
@@ -126,6 +165,24 @@ export async function rollbackTask(taskId: string): Promise<UndoResultInfo> {
 
 export async function restoreFile(taskId: string, filePath: string): Promise<UndoResultInfo> {
   return invoke<UndoResultInfo>("restore_file_cmd", { taskId, filePath });
+}
+
+export async function restoreDirectory(taskId: string, dirPath: string): Promise<UndoResultInfo> {
+  return invoke<UndoResultInfo>("restore_directory_cmd", { taskId, dirPath });
+}
+
+export async function getRestoreProgress(): Promise<RestoreProgressInfo> {
+  return invoke<RestoreProgressInfo>("get_restore_progress");
+}
+
+export async function listRestoreOperations(
+  taskId: string,
+  limit?: number,
+): Promise<RestoreOperationInfo[]> {
+  return invoke<RestoreOperationInfo[]>("list_restore_operations", {
+    taskId,
+    limit: limit ?? null,
+  });
 }
 
 // Legacy aliases (kept so any callers don't break)

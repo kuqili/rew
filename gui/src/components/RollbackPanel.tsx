@@ -63,7 +63,7 @@ export default function RollbackPanel({
   };
 
   const actionDesc = isMonitoringWindow
-    ? `将 ${windowLabel ?? "此时间段"} 内所有文件回到该存档点之前的版本`
+    ? `将 ${windowLabel ?? "此时间段"} 内所有文件与目录回到该存档点之前的版本`
     : "将此次 AI 任务涉及的所有文件回到操作执行之前的版本";
 
   return (

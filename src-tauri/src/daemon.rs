@@ -4,11 +4,12 @@
 //! and emits events to the Tauri frontend for live timeline updates.
 #![allow(dead_code)]
 
-use crate::state::{self, AppState, DirScanStatus, DirStatus, PipelineCmd};
+use crate::state::{self, AppState, DirScanStatus, DirStatus, PipelineCmd, SuppressedRestorePath};
 use crate::tray::{self, TrayStatus};
 use rew_core::backup::{BackupEngine, BackupJob};
 use rew_core::config::RewConfig;
 use rew_core::detector::RuleEngine;
+use rew_core::file_index::sync_file_index_after_change;
 use rew_core::objects::ObjectStore;
 use rew_core::pipeline;
 use rew_core::scanner::ProgressCallback;
@@ -21,6 +22,34 @@ use rew_core::rew_home_dir;
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{error, info, warn};
 
+const SUPPRESSED_PATH_TTL_SECS: u64 = 90;
+const SUPPRESSED_RESTORE_TTL_SECS: u64 = 600;
+
+fn should_suppress_restore_event(
+    event: &rew_core::types::FileEvent,
+    entry: &SuppressedRestorePath,
+) -> bool {
+    if entry.deleted {
+        return !event.path.exists();
+    }
+
+    match event.kind {
+        FileEventKind::Created => true,
+        FileEventKind::Modified | FileEventKind::Renamed => {
+            let Some(expected_hash) = entry.expected_content_hash.as_deref() else {
+                return false;
+            };
+            if !event.path.exists() {
+                return false;
+            }
+            rew_core::objects::sha256_file(&event.path)
+                .map(|hash| hash == expected_hash)
+                .unwrap_or(false)
+        }
+        FileEventKind::Deleted => false,
+    }
+}
+
 fn resolve_fsevent_task_route(
     db: &rew_core::db::Database,
     grace_seconds: i64,
@@ -32,6 +61,57 @@ fn resolve_fsevent_task_route(
     } else {
         (None, "monitoring")
     }
+}
+
+fn expand_deleted_directory_events(
+    db: &rew_core::db::Database,
+    events: &[rew_core::types::FileEvent],
+) -> (
+    Vec<rew_core::types::FileEvent>,
+    Vec<(std::path::PathBuf, usize)>,
+) {
+    let existing_paths: std::collections::HashSet<_> =
+        events.iter().map(|event| event.path.clone()).collect();
+    let mut expanded = Vec::with_capacity(events.len());
+    let mut deleted_dirs = Vec::new();
+
+    for event in events {
+        if event.kind != FileEventKind::Deleted || event.path.exists() {
+            expanded.push(event.clone());
+            continue;
+        }
+
+        let descendants = db
+            .list_live_files_under_dir(&event.path)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|path| !existing_paths.contains(path))
+            .collect::<Vec<_>>();
+
+        if descendants.is_empty() {
+            expanded.push(event.clone());
+            continue;
+        }
+
+        deleted_dirs.push((event.path.clone(), descendants.len()));
+
+        info!(
+            "Expanded deleted directory {} into {} file-level deletions",
+            event.path.display(),
+            descendants.len()
+        );
+
+        for path in descendants {
+            expanded.push(rew_core::types::FileEvent {
+                path,
+                kind: FileEventKind::Deleted,
+                timestamp: event.timestamp,
+                size_bytes: None,
+            });
+        }
+    }
+
+    (expanded, deleted_dirs)
 }
 
 /// Start the background protection daemon.
@@ -227,10 +307,16 @@ pub fn start_daemon(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_fsevent_task_route;
+    use super::{
+        expand_deleted_directory_events, resolve_fsevent_task_route, should_suppress_restore_event,
+        sync_file_index_after_change,
+    };
+    use crate::state::SuppressedRestorePath;
     use chrono::{Duration, Utc};
     use rew_core::db::Database;
-    use rew_core::types::{Task, TaskStatus};
+    use rew_core::types::{Change, ChangeType, FileEvent, FileEventKind, Task, TaskStatus};
+    use std::path::PathBuf;
+    use std::time::Instant;
 
     fn temp_db() -> (tempfile::TempDir, Database) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -312,6 +398,196 @@ mod tests {
         let (task_id, attribution) = resolve_fsevent_task_route(&db, 15);
         assert!(task_id.is_none());
         assert_eq!(attribution, "monitoring");
+    }
+
+    #[test]
+    fn deleted_directory_expands_into_known_child_files() {
+        let (dir, db) = temp_db();
+        let root = dir.path().join("go");
+        let child_a = root.join("main.rs");
+        let child_b = root.join("pkg/lib.rs");
+
+        let now = Utc::now().to_rfc3339();
+        db.upsert_live_file_index_entry(&child_a.to_string_lossy(), 1, "fast-a", Some("sha-a"), "scanner", "scan_seen", &now, Some(1))
+            .unwrap();
+        db.upsert_live_file_index_entry(&child_b.to_string_lossy(), 1, "fast-b", Some("sha-b"), "scanner", "scan_seen", &now, Some(1))
+            .unwrap();
+
+        let (expanded, deleted_dirs) = expand_deleted_directory_events(
+            &db,
+            &[FileEvent {
+                path: root.clone(),
+                kind: FileEventKind::Deleted,
+                timestamp: Utc::now(),
+                size_bytes: None,
+            }],
+        );
+
+        let paths: Vec<PathBuf> = expanded.into_iter().map(|event| event.path).collect();
+        assert_eq!(paths, vec![child_a, child_b]);
+        assert_eq!(deleted_dirs, vec![(root, 2)]);
+    }
+
+    #[test]
+    fn deleted_directory_does_not_duplicate_existing_child_events() {
+        let (dir, db) = temp_db();
+        let root = dir.path().join("go");
+        let child_a = root.join("main.rs");
+        let child_b = root.join("pkg/lib.rs");
+
+        let now = Utc::now().to_rfc3339();
+        db.upsert_live_file_index_entry(&child_a.to_string_lossy(), 1, "fast-a", Some("sha-a"), "scanner", "scan_seen", &now, Some(1))
+            .unwrap();
+        db.upsert_live_file_index_entry(&child_b.to_string_lossy(), 1, "fast-b", Some("sha-b"), "scanner", "scan_seen", &now, Some(1))
+            .unwrap();
+
+        let (expanded, deleted_dirs) = expand_deleted_directory_events(
+            &db,
+            &[
+                FileEvent {
+                    path: root,
+                    kind: FileEventKind::Deleted,
+                    timestamp: Utc::now(),
+                    size_bytes: None,
+                },
+                FileEvent {
+                    path: child_a.clone(),
+                    kind: FileEventKind::Deleted,
+                    timestamp: Utc::now(),
+                    size_bytes: None,
+                },
+            ],
+        );
+
+        let paths: Vec<PathBuf> = expanded.into_iter().map(|event| event.path).collect();
+        assert_eq!(paths, vec![child_b, child_a]);
+        assert_eq!(deleted_dirs, vec![(dir.path().join("go"), 1)]);
+    }
+
+    #[test]
+    fn stale_deleted_event_does_not_tombstone_existing_live_file() {
+        let (dir, db) = temp_db();
+        let file_path = dir.path().join("live.txt");
+        std::fs::write(&file_path, "still here").unwrap();
+
+        let change = Change {
+            id: None,
+            task_id: "t1".to_string(),
+            file_path: file_path.clone(),
+            change_type: ChangeType::Deleted,
+            old_hash: Some("old-hash".into()),
+            new_hash: None,
+            diff_text: None,
+            lines_added: 0,
+            lines_removed: 1,
+            attribution: Some("fsevent_active".into()),
+            old_file_path: None,
+        };
+
+        let _ = sync_file_index_after_change(&db, &change, "daemon", &Utc::now().to_rfc3339());
+
+        let entry = db
+            .get_file_index_entry(&file_path.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert!(entry.exists_now);
+        assert_eq!(entry.last_event_kind.as_deref(), Some("delete_ignored_live"));
+        assert!(entry.deleted_at.is_none());
+    }
+
+    #[test]
+    fn renamed_change_tombstones_old_path_and_rehydrates_new_path() {
+        let (dir, db) = temp_db();
+        let old_path = dir.path().join("old.txt");
+        let new_path = dir.path().join("new.txt");
+        std::fs::write(&new_path, "renamed content").unwrap();
+        let hash = rew_core::objects::sha256_file(&new_path).unwrap();
+
+        db.upsert_live_file_index_entry(
+            &old_path.to_string_lossy(),
+            1,
+            &hash,
+            Some(&hash),
+            "test",
+            "seed",
+            &Utc::now().to_rfc3339(),
+            None,
+        )
+        .unwrap();
+
+        let change = Change {
+            id: None,
+            task_id: "t1".to_string(),
+            file_path: new_path.clone(),
+            change_type: ChangeType::Renamed,
+            old_hash: Some(hash.clone()),
+            new_hash: Some(hash.clone()),
+            diff_text: None,
+            lines_added: 0,
+            lines_removed: 0,
+            attribution: Some("fsevent_active".into()),
+            old_file_path: Some(old_path.clone()),
+        };
+
+        let _ = sync_file_index_after_change(&db, &change, "daemon", &Utc::now().to_rfc3339());
+
+        let old_entry = db
+            .get_file_index_entry(&old_path.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        let new_entry = db
+            .get_file_index_entry(&new_path.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert!(!old_entry.exists_now);
+        assert_eq!(old_entry.last_event_kind.as_deref(), Some("rename_old"));
+        assert!(new_entry.exists_now);
+        assert_eq!(new_entry.last_event_kind.as_deref(), Some("rename_new"));
+    }
+
+    #[test]
+    fn restore_suppression_keeps_filtering_matching_restore_content() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("main.rs");
+        std::fs::write(&file_path, "fn main() {}\n").unwrap();
+        let expected_hash = rew_core::objects::sha256_file(&file_path).unwrap();
+
+        let event = FileEvent {
+            path: file_path,
+            kind: FileEventKind::Modified,
+            timestamp: Utc::now(),
+            size_bytes: None,
+        };
+        let entry = SuppressedRestorePath {
+            created_at: Instant::now(),
+            expected_content_hash: Some(expected_hash),
+            deleted: false,
+        };
+
+        assert!(should_suppress_restore_event(&event, &entry));
+    }
+
+    #[test]
+    fn restore_suppression_allows_real_user_edit_after_content_diverges() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("main.rs");
+        std::fs::write(&file_path, "fn main() {}\n").unwrap();
+        let restored_hash = rew_core::objects::sha256_file(&file_path).unwrap();
+        std::fs::write(&file_path, "fn main() { println!(\"changed\"); }\n").unwrap();
+
+        let event = FileEvent {
+            path: file_path,
+            kind: FileEventKind::Modified,
+            timestamp: Utc::now(),
+            size_bytes: None,
+        };
+        let entry = SuppressedRestorePath {
+            created_at: Instant::now(),
+            expected_content_hash: Some(restored_hash),
+            deleted: false,
+        };
+
+        assert!(!should_suppress_restore_event(&event, &entry));
     }
 }
 
@@ -528,6 +804,7 @@ async fn run_pipeline(
 
                         let real_events: Vec<_> = event_batch.events.iter()
                             .filter(|e| !path_filter.should_ignore(&e.path))
+                            .cloned()
                             .collect();
 
                         if !real_events.is_empty() {
@@ -537,9 +814,12 @@ async fn run_pipeline(
                                     .map(|g| *g)
                                     .unwrap_or(false);
 
-                                // Path-level suppression: filter out events for
-                                // paths recently written by GUI rollback operations.
-                                // TTL = 90 s; also cleans up expired entries.
+                                // Suppression: filter out events recently written by GUI
+                                // rollback operations.
+                                // Exact path suppression still handles single-file/task undo.
+                                // Directory restore now records exact restored/deleted paths
+                                // with expected post-restore hashes, so we suppress only the
+                                // restore tail itself, not future real edits under the same dir.
                                 //
                                 // NOTE: `.stop_suppress` (paths from a recently-ended AI task)
                                 // is intentionally NOT consumed here — it must only filter
@@ -549,13 +829,42 @@ async fn run_pipeline(
                                 let real_events: Vec<_> = {
                                     let now = std::time::Instant::now();
                                     if let Ok(mut sp) = state.suppressed_paths.lock() {
-                                        sp.retain(|_, t| now.duration_since(*t).as_secs() < 90);
-                                        real_events.into_iter()
-                                            .filter(|e| !sp.contains_key(&e.path))
-                                            .collect()
-                                    } else {
-                                        real_events
+                                        sp.retain(|_, t| now.duration_since(*t).as_secs() < SUPPRESSED_PATH_TTL_SECS);
                                     }
+                                    if let Ok(mut suppressed_restore_paths) = state.suppressed_restore_paths.lock() {
+                                        suppressed_restore_paths.retain(|_, entry| {
+                                            now.duration_since(entry.created_at).as_secs() < SUPPRESSED_RESTORE_TTL_SECS
+                                        });
+                                    }
+
+                                    let exact_paths = state
+                                        .suppressed_paths
+                                        .lock()
+                                        .ok()
+                                        .map(|sp| sp.keys().cloned().collect::<Vec<_>>())
+                                        .unwrap_or_default();
+                                    let restore_paths = state
+                                        .suppressed_restore_paths
+                                        .lock()
+                                        .ok()
+                                        .map(|sp| sp.clone())
+                                        .unwrap_or_default();
+
+                                    real_events.into_iter()
+                                        .filter(|e| {
+                                            if exact_paths.iter().any(|path| path == &e.path) {
+                                                return false;
+                                            }
+
+                                            if let Some(entry) = restore_paths.get(&e.path) {
+                                                if should_suppress_restore_event(e, entry) {
+                                                    return false;
+                                                }
+                                            }
+
+                                            true
+                                        })
+                                        .collect()
                                 };
 
                                 // Per-directory ignore filtering: skip events for files
@@ -717,15 +1026,21 @@ async fn run_pipeline(
                                                 }
                                             }
                                         }
-                                    } else if let Ok(db) = state.db.lock() {
+                                    } else {
+                                        let (effective_events, deleted_dir_summaries) = if let Ok(db) = state.db.lock() {
+                                            expand_deleted_directory_events(&db, &real_events)
+                                        } else {
+                                            (real_events.clone(), Vec::new())
+                                        };
+
                                         // If this is a monitoring window batch, ensure the Task row
                                         // exists. For AI task batches the row was created by the hook.
                                         if active_ai_task_id.is_none() {
-                                            let real_added = real_events.iter()
+                                            let real_added = effective_events.iter()
                                                 .filter(|e| e.kind == FileEventKind::Created).count();
-                                            let real_modified = real_events.iter()
+                                            let real_modified = effective_events.iter()
                                                 .filter(|e| e.kind == FileEventKind::Modified).count();
-                                            let real_deleted = real_events.iter()
+                                            let real_deleted = effective_events.iter()
                                                 .filter(|e| matches!(e.kind, FileEventKind::Deleted | FileEventKind::Renamed)).count();
 
                                             let mut parts = Vec::new();
@@ -750,7 +1065,17 @@ async fn run_pipeline(
                                                 cwd: None,
                                             };
                                             // Silently ignore duplicate-key — means we're in an existing window.
-                                            let _ = db.create_task(&task);
+                                            if let Ok(db) = state.db.lock() {
+                                                let _ = db.create_task(&task);
+                                            }
+                                        }
+
+                                        if !deleted_dir_summaries.is_empty() {
+                                            if let Ok(db) = state.db.lock() {
+                                                for (dir_path, file_count) in &deleted_dir_summaries {
+                                                    let _ = db.upsert_task_deleted_dir(&task_id, dir_path, *file_count);
+                                                }
+                                            }
                                         }
 
                                         let obj_store = ObjectStore::new(rew_home_dir().join("objects")).ok();
@@ -766,7 +1091,7 @@ async fn run_pipeline(
                                         const LARGE_FILE_BYTES: u64 = 50 * 1024 * 1024;
                                         const LARGE_FILE_KEEP_VERSIONS: usize = 2;
 
-                                        for event in real_events.iter() {
+                                        for event in effective_events.iter() {
                                             if event.path.exists() {
                                                 if let Some(ref store) = obj_store {
                                                     if let Ok(hash) = store.store(&event.path) {
@@ -777,16 +1102,21 @@ async fn run_pipeline(
                                                         if file_size >= LARGE_FILE_BYTES
                                                             && is_av_file(&event.path)
                                                         {
-                                                            let old_hashes = db
-                                                                .get_old_version_hashes(
+                                                            let old_hashes = if let Ok(db) = state.db.lock() {
+                                                                db.get_old_version_hashes(
                                                                     &event.path,
                                                                     LARGE_FILE_KEEP_VERSIONS,
                                                                 )
-                                                                .unwrap_or_default();
+                                                                .unwrap_or_default()
+                                                            } else {
+                                                                Vec::new()
+                                                            };
                                                             for old_hash in old_hashes {
-                                                                let still_ref = db
-                                                                    .is_hash_referenced(&old_hash)
-                                                                    .unwrap_or(true);
+                                                                let still_ref = if let Ok(db) = state.db.lock() {
+                                                                    db.is_hash_referenced(&old_hash).unwrap_or(true)
+                                                                } else {
+                                                                    true
+                                                                };
                                                                 if !still_ref {
                                                                     let _ = store.delete(&old_hash);
                                                                 }
@@ -799,13 +1129,15 @@ async fn run_pipeline(
                                         }
 
                                         // Phase 2: Look up shadow/DB hashes for deleted files
-                                        for event in real_events.iter() {
+                                        for event in effective_events.iter() {
                                             if !event.path.exists() && !file_hashes.contains_key(&event.path) {
                                                 if let Some(h) = rew_core::pipeline::take_shadow_hash(&event.path) {
                                                     file_hashes.insert(event.path.clone(), h);
-                                                } else if let Ok(Some(prev)) = db.get_latest_change_for_file(&event.path) {
-                                                    if let Some(h) = prev.new_hash.or(prev.old_hash) {
-                                                        file_hashes.insert(event.path.clone(), h);
+                                                } else if let Ok(db) = state.db.lock() {
+                                                    if let Ok(Some(prev)) = db.get_latest_change_for_file(&event.path) {
+                                                        if let Some(h) = prev.new_hash.or(prev.old_hash) {
+                                                            file_hashes.insert(event.path.clone(), h);
+                                                        }
                                                     }
                                                 }
                                             }
@@ -817,10 +1149,17 @@ async fn run_pipeline(
                                         // old_hash (captured right before the write) wins when
                                         // both the hook and daemon write for the same file.
                                         let mut changes_written: usize = 0;
-                                        for event in &real_events {
-                                            let baseline = rew_core::baseline::resolve_baseline(
-                                                &db, &task_id, &event.path, None,
-                                            );
+                                        for event in &effective_events {
+                                            let baseline = if let Ok(db) = state.db.lock() {
+                                                rew_core::baseline::resolve_baseline(
+                                                    &db, &task_id, &event.path, None,
+                                                )
+                                            } else {
+                                                rew_core::baseline::Baseline {
+                                                    existed: false,
+                                                    hash: None,
+                                                }
+                                            };
 
                                             let change_type = match event.kind {
                                                 FileEventKind::Created => {
@@ -890,7 +1229,12 @@ async fn run_pipeline(
                                             // recently completed task (within 90s).
                                             if let Some(ref nh) = new_hash {
                                                 let p = event.path.to_string_lossy().to_string();
-                                                if db.is_change_already_recorded(&p, nh).unwrap_or(false) {
+                                                let already_recorded = if let Ok(db) = state.db.lock() {
+                                                    db.is_change_already_recorded(&p, nh).unwrap_or(false)
+                                                } else {
+                                                    false
+                                                };
+                                                if already_recorded {
                                                     continue;
                                                 }
                                             }
@@ -914,7 +1258,6 @@ async fn run_pipeline(
                                                 diff_text: None,
                                                 lines_added,
                                                 lines_removed,
-                                                restored_at: None,
                                                 attribution: Some(fsevent_attribution.to_string()),
                                                 old_file_path: None,
                                             };
@@ -922,13 +1265,22 @@ async fn run_pipeline(
                                             // Before upserting, record which new_hash currently
                                             // occupies this (task_id, file_path) slot so we can
                                             // delete it from the ObjectStore if it becomes orphaned.
-                                            let prev_new_hash = db.get_change_new_hash(
-                                                &change.task_id,
-                                                &change.file_path,
-                                            ).ok().flatten();
+                                            let prev_new_hash = if let Ok(db) = state.db.lock() {
+                                                db.get_change_new_hash(
+                                                    &change.task_id,
+                                                    &change.file_path,
+                                                ).ok().flatten()
+                                            } else {
+                                                None
+                                            };
 
-                                            let _ = db.upsert_change(&change);
-                                            changes_written += 1;
+                                            if let Ok(db) = state.db.lock() {
+                                                if db.upsert_change(&change).is_ok() {
+                                                    let seen_at = chrono::Utc::now().to_rfc3339();
+                                                    let _ = sync_file_index_after_change(&db, &change, fsevent_attribution, &seen_at);
+                                                    changes_written += 1;
+                                                }
+                                            }
 
                                             // Clean up orphaned object: the previous new_hash is
                                             // only deleted when the hash actually changed AND
@@ -939,9 +1291,11 @@ async fn run_pipeline(
                                                     .map(|h| h != prev_hash.as_str())
                                                     .unwrap_or(true);
                                                 if new_hash_differs {
-                                                    let still_referenced = db
-                                                        .is_hash_referenced(prev_hash)
-                                                        .unwrap_or(true);
+                                                    let still_referenced = if let Ok(db) = state.db.lock() {
+                                                        db.is_hash_referenced(prev_hash).unwrap_or(true)
+                                                    } else {
+                                                        true
+                                                    };
                                                     if !still_referenced {
                                                         if let Some(ref store) = obj_store {
                                                             let _ = store.delete(prev_hash);
@@ -956,7 +1310,9 @@ async fn run_pipeline(
                                         // already has changes from earlier batches; a no-op batch
                                         // (metadata touch / Spotlight) must not kill it.
                                         if active_ai_task_id.is_none() && is_new_window && changes_written == 0 {
-                                            let _ = db.delete_task(&task_id);
+                                            if let Ok(db) = state.db.lock() {
+                                                let _ = db.delete_task(&task_id);
+                                            }
                                             if let Ok(mut wg) = state.fs_window_task.lock() {
                                                 if wg.as_ref().map(|w| w.task_id == task_id).unwrap_or(false) {
                                                     *wg = None;

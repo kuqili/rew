@@ -1,12 +1,150 @@
 //! Tauri IPC commands exposing rew-core functionality to the frontend.
 
-use crate::state::AppState;
-use rew_core::restore::TaskRestoreEngine;
-use rew_core::types::{Snapshot, SnapshotTrigger};
+use crate::state::{AppState, RestorePhase, SuppressedRestorePath};
+use rew_core::db::{RestoreFailureSample, RestoreFileIndexSyncEntry};
+use rew_core::restore::{PreparedSuppressionEntry, TaskRestoreEngine, UndoResult};
+use rew_core::types::{
+    RestoreOperationStatus, RestoreScopeType, RestoreTriggeredBy, Snapshot, SnapshotTrigger,
+};
 use rew_core::rew_home_dir;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, State};
+use uuid::Uuid;
+
+fn emit_restore_progress(app: &AppHandle, state: &AppState) {
+    if let Ok(progress) = state.restore_progress.lock() {
+        let _ = app.emit("restore-progress", progress.clone());
+    }
+}
+
+const RESTORE_PROGRESS_EMIT_EVERY_FILES: usize = 250;
+const RESTORE_PROGRESS_EMIT_INTERVAL_MS: u128 = 150;
+const RESTORE_FAILURE_SAMPLE_LIMIT: usize = 20;
+
+fn record_restore_suppressions(state: &AppState, entries: &[PreparedSuppressionEntry]) {
+    if let Ok(mut suppressed) = state.suppressed_restore_paths.lock() {
+        let now = std::time::Instant::now();
+        for entry in entries {
+            suppressed.insert(
+                entry.path.clone(),
+                SuppressedRestorePath {
+                    created_at: now,
+                    expected_content_hash: entry.expected_content_hash.clone(),
+                    deleted: entry.deleted,
+                },
+            );
+        }
+    }
+}
+
+fn restore_cleanup_boundaries(state: &AppState, extra: &[PathBuf]) -> Vec<PathBuf> {
+    let mut boundaries = state
+        .config
+        .lock()
+        .ok()
+        .map(|cfg| cfg.watch_dirs.clone())
+        .unwrap_or_default();
+    boundaries.extend(extra.iter().cloned());
+    boundaries.sort();
+    boundaries.dedup();
+    boundaries
+}
+
+fn summarize_restore_status(result: &UndoResult) -> RestoreOperationStatus {
+    if result.failures.is_empty() {
+        RestoreOperationStatus::Completed
+    } else if result.files_restored > 0 || result.files_deleted > 0 {
+        RestoreOperationStatus::Partial
+    } else {
+        RestoreOperationStatus::Failed
+    }
+}
+
+fn sample_restore_failures(failures: &[(PathBuf, String)]) -> Vec<RestoreFailureSample> {
+    failures
+        .iter()
+        .take(RESTORE_FAILURE_SAMPLE_LIMIT)
+        .map(|(path, error)| RestoreFailureSample {
+            file_path: path.clone(),
+            error: error.clone(),
+        })
+        .collect()
+}
+
+fn build_restore_file_index_sync_entries(
+    db: &rew_core::db::Database,
+    entries: &[PreparedSuppressionEntry],
+) -> Vec<RestoreFileIndexSyncEntry> {
+    let mut updates = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let path_key = entry.path.to_string_lossy().to_string();
+
+        if entry.deleted {
+            let restore_hash = db
+                .get_file_index_entry(&path_key)
+                .ok()
+                .flatten()
+                .and_then(|existing| existing.content_hash.or(Some(existing.fast_hash)));
+            if let Some(hash) = restore_hash {
+                updates.push(RestoreFileIndexSyncEntry {
+                    file_path: entry.path.clone(),
+                    mtime_secs: 0,
+                    fast_hash: hash.clone(),
+                    content_hash: Some(hash),
+                    deleted: true,
+                });
+            }
+            continue;
+        }
+
+        if !entry.path.exists() {
+            continue;
+        }
+
+        let mtime_secs = std::fs::metadata(&entry.path)
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+
+        let existing = db.get_file_index_entry(&path_key).ok().flatten();
+        let mut content_hash = entry
+            .expected_content_hash
+            .clone()
+            .or_else(|| existing.as_ref().and_then(|row| row.content_hash.clone()));
+        let mut fast_hash = existing.as_ref().map(|row| row.fast_hash.clone());
+
+        if fast_hash.is_none() && content_hash.is_none() {
+            content_hash = rew_core::objects::sha256_file(&entry.path).ok();
+        }
+
+        if fast_hash.is_none() {
+            fast_hash = content_hash.clone();
+        }
+
+        if let Some(fast_hash) = fast_hash {
+            updates.push(RestoreFileIndexSyncEntry {
+                file_path: entry.path.clone(),
+                mtime_secs,
+                fast_hash,
+                content_hash,
+                deleted: false,
+            });
+        }
+    }
+    updates
+}
+
+fn sync_file_index_after_directory_restore(
+    db: &mut rew_core::db::Database,
+    entries: &[PreparedSuppressionEntry],
+) {
+    let seen_at = chrono::Utc::now().to_rfc3339();
+    let updates = build_restore_file_index_sync_entries(db, entries);
+    let _ = db.sync_file_index_after_restore_batch(&updates, &seen_at);
+}
 
 /// Snapshot data sent to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -468,11 +606,54 @@ pub struct ChangeInfo {
     pub diff_text: Option<String>,
     pub lines_added: u32,
     pub lines_removed: u32,
-    /// ISO-8601 timestamp set when this file was individually restored. None = not restored.
-    pub restored_at: Option<String>,
     pub attribution: Option<String>,
     /// Original file path before rename (only for renamed changes).
     pub old_file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskChangesResultInfo {
+    pub changes: Vec<ChangeInfo>,
+    pub total_count: usize,
+    pub truncated: bool,
+    pub deleted_dirs: Vec<DeletedDirSummaryInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedDirSummaryInfo {
+    pub dir_path: String,
+    pub total_files: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreProgressInfo {
+    pub is_running: bool,
+    pub phase: crate::state::RestorePhase,
+    pub task_id: Option<String>,
+    pub dir_path: Option<String>,
+    pub total_files: usize,
+    pub processed_files: usize,
+    pub restored_files: usize,
+    pub deleted_files: usize,
+    pub failed_files: usize,
+    pub current_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreOperationInfo {
+    pub id: String,
+    pub source_task_id: String,
+    pub scope_type: String,
+    pub scope_path: Option<String>,
+    pub triggered_by: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub status: String,
+    pub requested_count: u32,
+    pub restored_count: u32,
+    pub deleted_count: u32,
+    pub failed_count: u32,
+    pub failure_sample_json: Option<String>,
 }
 
 /// Undo preview info for the frontend.
@@ -492,6 +673,81 @@ pub struct UndoResultInfo {
     pub failures: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathFilterMode {
+    File,
+    Directory,
+}
+
+fn infer_deleted_directory_root(path: &Path) -> Option<PathBuf> {
+    let parts = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(os) => Some(os.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    if parts.len() < 3 {
+        return None;
+    }
+
+    if parts.first().map(String::as_str) == Some("Users") && parts.len() >= 3 {
+        return Some(PathBuf::from(format!("/Users/{}/{}", parts[1], parts[2])));
+    }
+
+    if parts.first().map(String::as_str) == Some("Volumes") && parts.len() >= 3 {
+        return Some(PathBuf::from(format!("/Volumes/{}/{}", parts[1], parts[2])));
+    }
+
+    Some(PathBuf::from(format!(
+        "/{}",
+        parts.iter().take(3).cloned().collect::<Vec<_>>().join("/")
+    )))
+}
+
+fn fallback_deleted_dir_summaries(
+    db: &rew_core::db::Database,
+    task_id: &str,
+    changes: &[rew_core::types::Change],
+) -> Vec<DeletedDirSummaryInfo> {
+    let mut candidates = std::collections::BTreeSet::new();
+    for change in changes {
+        if change.change_type != rew_core::types::ChangeType::Deleted {
+            continue;
+        }
+        if let Some(root) = infer_deleted_directory_root(&change.file_path) {
+            candidates.insert(root);
+        }
+    }
+
+    candidates
+        .into_iter()
+        .filter_map(|root| {
+            db.count_changes_in_dir(task_id, &root.to_string_lossy())
+                .ok()
+                .filter(|count| *count > 0)
+                .map(|count| DeletedDirSummaryInfo {
+                    dir_path: root.to_string_lossy().to_string(),
+                    total_files: count,
+                })
+        })
+        .take(5)
+        .collect()
+}
+
+fn infer_path_filter_mode(db: &rew_core::db::Database, path: &str) -> PathFilterMode {
+    if db.has_changes_under_dir_prefix(path).unwrap_or(false) {
+        PathFilterMode::Directory
+    } else if db.has_exact_change_path(path).unwrap_or(false) {
+        PathFilterMode::File
+    } else if Path::new(path).is_dir() {
+        PathFilterMode::Directory
+    } else {
+        PathFilterMode::File
+    }
+}
+
 #[tauri::command]
 pub async fn list_tasks(
     state: State<'_, AppState>,
@@ -509,13 +765,8 @@ pub async fn list_tasks(
 
     let db = state.db.lock().map_err(|e| format!("DB lock error: {}", e))?;
 
-    // Determine if dir_filter is a file or directory path
-    let is_file_filter = dir_filter.as_ref()
-        .map(|p| !Path::new(p).is_dir())
-        .unwrap_or(false);
-
     let mut tasks = if let Some(ref path) = dir_filter {
-        if is_file_filter {
+        if infer_path_filter_mode(&db, path) == PathFilterMode::File {
             db.list_tasks_by_file(path).map_err(|e| format!("list_tasks_by_file error: {}", e))?
         } else {
             db.list_tasks_by_dir(path).map_err(|e| format!("list_tasks_by_dir error: {}", e))?
@@ -586,35 +837,86 @@ pub async fn get_task_changes(
     state: State<'_, AppState>,
     task_id: String,
     dir_filter: Option<String>,
-) -> Result<Vec<ChangeInfo>, String> {
+) -> Result<TaskChangesResultInfo, String> {
+    const DEFAULT_RETURNED_CHANGES: usize = 1000;
+    const LARGE_TASK_RETURNED_CHANGES: usize = 100;
+    const LARGE_TASK_THRESHOLD: usize = 5000;
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let is_file_filter = dir_filter.as_ref()
-        .map(|p| !Path::new(p).is_dir())
-        .unwrap_or(false);
-    let changes = if let Some(ref path) = dir_filter {
-        if is_file_filter {
-            db.get_changes_for_task_by_file(&task_id, path).map_err(|e| e.to_string())?
+    let (changes, total_count) = if let Some(ref path) = dir_filter {
+        if infer_path_filter_mode(&db, path) == PathFilterMode::File {
+            let total_count = db.count_changes_for_file(&task_id, path).map_err(|e| e.to_string())?;
+            let limit = if total_count > LARGE_TASK_THRESHOLD {
+                LARGE_TASK_RETURNED_CHANGES
+            } else {
+                DEFAULT_RETURNED_CHANGES
+            };
+            (
+                db.get_changes_for_task_by_file_limited(&task_id, path, limit)
+                    .map_err(|e| e.to_string())?,
+                total_count,
+            )
         } else {
-            db.get_changes_for_task_in_dir(&task_id, path).map_err(|e| e.to_string())?
+            let total_count = db.count_changes_in_dir(&task_id, path).map_err(|e| e.to_string())?;
+            let limit = if total_count > LARGE_TASK_THRESHOLD {
+                LARGE_TASK_RETURNED_CHANGES
+            } else {
+                DEFAULT_RETURNED_CHANGES
+            };
+            (
+                db.get_changes_for_task_in_dir_limited(&task_id, path, limit)
+                    .map_err(|e| e.to_string())?,
+                total_count,
+            )
         }
     } else {
-        db.get_changes_for_task(&task_id).map_err(|e| e.to_string())?
+        let total_count = db.count_changes_for_task(&task_id).map_err(|e| e.to_string())?;
+        let limit = if total_count > LARGE_TASK_THRESHOLD {
+            LARGE_TASK_RETURNED_CHANGES
+        } else {
+            DEFAULT_RETURNED_CHANGES
+        };
+        (
+            db.get_changes_for_task_limited(&task_id, limit)
+                .map_err(|e| e.to_string())?,
+            total_count,
+        )
     };
 
-    Ok(changes.into_iter().map(|c| ChangeInfo {
-        id: c.id,
-        task_id: c.task_id,
-        file_path: c.file_path.to_string_lossy().to_string(),
-        change_type: c.change_type.to_string(),
-        old_hash: c.old_hash,
-        new_hash: c.new_hash,
-        diff_text: c.diff_text,
-        lines_added: c.lines_added,
-        lines_removed: c.lines_removed,
-        restored_at: c.restored_at.map(|t| t.to_rfc3339()),
-        attribution: c.attribution,
-        old_file_path: c.old_file_path.map(|p| p.to_string_lossy().to_string()),
-    }).collect())
+    Ok(TaskChangesResultInfo {
+        truncated: total_count > changes.len(),
+        total_count,
+        deleted_dirs: {
+            let persisted = db
+                .list_task_deleted_dirs(&task_id)
+                .map(|rows| {
+                    rows.into_iter()
+                        .map(|row| DeletedDirSummaryInfo {
+                            dir_path: row.dir_path.to_string_lossy().to_string(),
+                            total_files: row.file_count,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if persisted.is_empty() {
+                fallback_deleted_dir_summaries(&db, &task_id, &changes)
+            } else {
+                persisted
+            }
+        },
+        changes: changes.into_iter().map(|c| ChangeInfo {
+            id: c.id,
+            task_id: c.task_id,
+            file_path: c.file_path.to_string_lossy().to_string(),
+            change_type: c.change_type.to_string(),
+            old_hash: c.old_hash,
+            new_hash: c.new_hash,
+            diff_text: c.diff_text,
+            lines_added: c.lines_added,
+            lines_removed: c.lines_removed,
+            attribution: c.attribution,
+            old_file_path: c.old_file_path.map(|p| p.to_string_lossy().to_string()),
+        }).collect(),
+    })
 }
 
 // ----------------------------------------------------------------
@@ -735,7 +1037,8 @@ pub async fn get_change_diff(
 pub async fn preview_rollback(state: State<'_, AppState>, task_id: String) -> Result<UndoPreviewInfo, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let objects_root = rew_home_dir().join("objects");
-    let engine = TaskRestoreEngine::new(objects_root);
+    let engine = TaskRestoreEngine::new(objects_root)
+        .with_cleanup_boundaries(restore_cleanup_boundaries(&state, &[]));
 
     let preview = engine.preview_undo(&db, &task_id).map_err(|e| e.to_string())?;
 
@@ -757,10 +1060,30 @@ pub async fn rollback_task_cmd(
         *guard = true;
     }
 
+    let restore_op_id = Uuid::new_v4().to_string();
+    let started_at = chrono::Utc::now();
+    let requested_count = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let count = db.count_changes_for_task(&task_id).map_err(|e| e.to_string())?;
+        db.insert_restore_operation_started(
+            &restore_op_id,
+            &task_id,
+            &RestoreScopeType::Task,
+            None,
+            &RestoreTriggeredBy::Ui,
+            started_at,
+            count,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        count
+    };
+
     let result = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let objects_root = rew_home_dir().join("objects");
-        let engine = TaskRestoreEngine::new(objects_root);
+        let engine = TaskRestoreEngine::new(objects_root)
+            .with_cleanup_boundaries(restore_cleanup_boundaries(&state, &[]));
         engine.undo_task(&db, &task_id).map_err(|e| e.to_string())
     };
 
@@ -774,6 +1097,38 @@ pub async fn rollback_task_cmd(
                         sp.insert(c.file_path, now_instant);
                     }
                 }
+            }
+        }
+    }
+
+    let completed_at = chrono::Utc::now();
+    if let Ok(db) = state.db.lock() {
+        match &result {
+            Ok(outcome) => {
+                let _ = db.complete_restore_operation(
+                    &restore_op_id,
+                    &summarize_restore_status(outcome),
+                    completed_at,
+                    outcome.files_restored,
+                    outcome.files_deleted,
+                    outcome.failures.len(),
+                    &sample_restore_failures(&outcome.failures),
+                );
+            }
+            Err(err) => {
+                let failure = vec![RestoreFailureSample {
+                    file_path: PathBuf::from(format!("<task:{task_id}>")),
+                    error: err.clone(),
+                }];
+                let _ = db.complete_restore_operation(
+                    &restore_op_id,
+                    &RestoreOperationStatus::Failed,
+                    completed_at,
+                    0,
+                    0,
+                    requested_count.max(1),
+                    &failure,
+                );
             }
         }
     }
@@ -808,24 +1163,70 @@ pub async fn restore_file_cmd(
         *guard = true;
     }
 
+    let restore_op_id = Uuid::new_v4().to_string();
+    let started_at = chrono::Utc::now();
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.insert_restore_operation_started(
+            &restore_op_id,
+            &task_id,
+            &RestoreScopeType::File,
+            Some(Path::new(&file_path)),
+            &RestoreTriggeredBy::Ui,
+            started_at,
+            1,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     let result = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let objects_root = rew_home_dir().join("objects");
-        let engine = TaskRestoreEngine::new(objects_root);
+        let engine = TaskRestoreEngine::new(objects_root)
+            .with_cleanup_boundaries(restore_cleanup_boundaries(&state, &[]));
         engine.undo_file(&db, &task_id, &PathBuf::from(&file_path))
             .map_err(|e| e.to_string())
     };
 
-    // On success: persist restored_at to DB + add path to suppressed_paths
+    // On success: add path to suppressed_paths
     if result.is_ok() {
-        let now = chrono::Utc::now();
-        if let Ok(db) = state.db.lock() {
-            let _ = db.mark_change_restored(&task_id, &PathBuf::from(&file_path), now);
-        }
         // Suppress FSEvents for this specific path for 60 s so async FSEvent
         // delivery after the write doesn't create spurious timeline entries.
         if let Ok(mut sp) = state.suppressed_paths.lock() {
             sp.insert(PathBuf::from(&file_path), std::time::Instant::now());
+        }
+    }
+
+    let completed_at = chrono::Utc::now();
+    if let Ok(db) = state.db.lock() {
+        match &result {
+            Ok(outcome) => {
+                let _ = db.complete_restore_operation(
+                    &restore_op_id,
+                    &summarize_restore_status(outcome),
+                    completed_at,
+                    outcome.files_restored,
+                    outcome.files_deleted,
+                    outcome.failures.len(),
+                    &sample_restore_failures(&outcome.failures),
+                );
+            }
+            Err(err) => {
+                let failure = vec![RestoreFailureSample {
+                    file_path: PathBuf::from(&file_path),
+                    error: err.clone(),
+                }];
+                let _ = db.complete_restore_operation(
+                    &restore_op_id,
+                    &RestoreOperationStatus::Failed,
+                    completed_at,
+                    0,
+                    0,
+                    1,
+                    &failure,
+                );
+            }
         }
     }
 
@@ -846,6 +1247,282 @@ pub async fn restore_file_cmd(
         files_deleted: res.files_deleted,
         failures: res.failures.iter().map(|(p, e)| (p.to_string_lossy().to_string(), e.clone())).collect(),
     })
+}
+
+#[tauri::command]
+pub async fn restore_directory_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+    dir_path: String,
+) -> Result<UndoResultInfo, String> {
+    if let Ok(mut guard) = state.rolling_back.lock() {
+        *guard = true;
+    }
+
+    let dir_path_buf = PathBuf::from(&dir_path);
+    let objects_root = rew_home_dir().join("objects");
+    let engine = TaskRestoreEngine::new(objects_root).with_cleanup_boundaries(
+        restore_cleanup_boundaries(&state, std::slice::from_ref(&dir_path_buf)),
+    );
+
+    let restore_op_id = Uuid::new_v4().to_string();
+    let started_at = chrono::Utc::now();
+    let requested_count = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let count = db
+            .count_changes_matching_dir_scope(&task_id, &dir_path)
+            .map_err(|e| e.to_string())?;
+        db.insert_restore_operation_started(
+            &restore_op_id,
+            &task_id,
+            &RestoreScopeType::Directory,
+            Some(dir_path_buf.as_path()),
+            &RestoreTriggeredBy::Ui,
+            started_at,
+            count,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        count
+    };
+
+    let plan = match {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        engine
+            .prepare_directory_undo(&db, &task_id, &dir_path_buf)
+            .map_err(|e| e.to_string())
+    } {
+        Ok(plan) => plan,
+        Err(err) => {
+            if let Ok(db) = state.db.lock() {
+                let failure = vec![RestoreFailureSample {
+                    file_path: dir_path_buf.clone(),
+                    error: err.clone(),
+                }];
+                let _ = db.complete_restore_operation(
+                    &restore_op_id,
+                    &RestoreOperationStatus::Failed,
+                    chrono::Utc::now(),
+                    0,
+                    0,
+                    requested_count.max(1),
+                    &failure,
+                );
+            }
+            return Err(err);
+        }
+    };
+
+    if let Ok(mut progress) = state.restore_progress.lock() {
+        *progress = crate::state::RestoreProgress {
+            is_running: true,
+            phase: RestorePhase::RestoringFiles,
+            task_id: Some(task_id.clone()),
+            dir_path: Some(dir_path.clone()),
+            total_files: plan.scoped_change_paths.len(),
+            processed_files: 0,
+            restored_files: 0,
+            deleted_files: 0,
+            failed_files: 0,
+            current_path: None,
+        };
+    }
+    emit_restore_progress(&app, &state);
+
+    let app_handle_for_progress = app.clone();
+    let mut last_emitted_processed = 0usize;
+    let mut last_emitted_at = std::time::Instant::now();
+    let outcome = engine.execute_prepared_directory_undo_with_progress(&plan, |progress| {
+        let should_emit = progress.processed_files == 0
+            || progress.processed_files == progress.total_files
+            || progress.processed_files.saturating_sub(last_emitted_processed)
+                >= RESTORE_PROGRESS_EMIT_EVERY_FILES
+            || last_emitted_at.elapsed().as_millis() >= RESTORE_PROGRESS_EMIT_INTERVAL_MS;
+
+        if !should_emit {
+            return;
+        }
+
+        last_emitted_processed = progress.processed_files;
+        last_emitted_at = std::time::Instant::now();
+        if let Ok(mut shared) = state.restore_progress.lock() {
+            shared.is_running = true;
+            shared.phase = RestorePhase::RestoringFiles;
+            shared.task_id = Some(task_id.clone());
+            shared.dir_path = Some(dir_path.clone());
+            shared.total_files = progress.total_files;
+            shared.processed_files = progress.processed_files;
+            shared.restored_files = progress.restored_files;
+            shared.deleted_files = progress.deleted_files;
+            shared.failed_files = progress.failed_files;
+            shared.current_path = progress
+                .current_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string());
+        }
+        emit_restore_progress(&app_handle_for_progress, &state);
+    });
+
+    if let Ok(mut progress) = state.restore_progress.lock() {
+        progress.is_running = true;
+        progress.phase = RestorePhase::SyncingDatabase;
+        progress.task_id = Some(task_id.clone());
+        progress.dir_path = Some(dir_path.clone());
+        progress.total_files = plan.scoped_change_paths.len();
+        progress.processed_files = plan.scoped_change_paths.len();
+        progress.restored_files = outcome.result.files_restored;
+        progress.deleted_files = outcome.result.files_deleted;
+        progress.failed_files = outcome.result.failures.len();
+        progress.current_path = None;
+    }
+    emit_restore_progress(&app, &state);
+
+    let finalize_result: Result<(), String> = (|| {
+        let mut db = state.db.lock().map_err(|e| e.to_string())?;
+        if !outcome.suppression_entries.is_empty() {
+            sync_file_index_after_directory_restore(&mut db, &outcome.suppression_entries);
+        }
+
+        if let Ok(mut progress) = state.restore_progress.lock() {
+            progress.phase = RestorePhase::Finalizing;
+        }
+        emit_restore_progress(&app, &state);
+
+        if outcome.result.failures.is_empty() {
+            let new_status = if plan.scoped_change_paths.len() == plan.total_task_changes {
+                rew_core::types::TaskStatus::RolledBack
+            } else {
+                rew_core::types::TaskStatus::PartialRolledBack
+            };
+            db.update_task_status(&task_id, &new_status, None)
+                .map_err(|e| e.to_string())?;
+        } else if outcome.result.files_restored > 0 || outcome.result.files_deleted > 0 {
+            db.update_task_status(
+                &task_id,
+                &rew_core::types::TaskStatus::PartialRolledBack,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })();
+
+    if !outcome.suppression_entries.is_empty() {
+        record_restore_suppressions(&state, &outcome.suppression_entries);
+    }
+
+    let completed_at = chrono::Utc::now();
+    if let Ok(db) = state.db.lock() {
+        let status = if finalize_result.is_ok() {
+            summarize_restore_status(&outcome.result)
+        } else if outcome.result.files_restored > 0 || outcome.result.files_deleted > 0 {
+            RestoreOperationStatus::Partial
+        } else {
+            RestoreOperationStatus::Failed
+        };
+        let mut failures = sample_restore_failures(&outcome.result.failures);
+        if let Err(err) = &finalize_result {
+            failures.push(RestoreFailureSample {
+                file_path: dir_path_buf.clone(),
+                error: err.clone(),
+            });
+        }
+        let _ = db.complete_restore_operation(
+            &restore_op_id,
+            &status,
+            completed_at,
+            outcome.result.files_restored,
+            outcome.result.files_deleted,
+            outcome.result.failures.len() + usize::from(finalize_result.is_err()),
+            &failures,
+        );
+    }
+
+    if let Err(err) = finalize_result {
+        return Err(err);
+    }
+
+    if let Ok(mut progress) = state.restore_progress.lock() {
+        progress.is_running = false;
+        progress.phase = RestorePhase::Done;
+        progress.task_id = Some(task_id.clone());
+        progress.dir_path = Some(dir_path.clone());
+        progress.total_files = plan.scoped_change_paths.len();
+        progress.processed_files = plan.scoped_change_paths.len();
+        progress.restored_files = outcome.result.files_restored;
+        progress.deleted_files = outcome.result.files_deleted;
+        progress.failed_files = outcome.result.failures.len();
+        progress.current_path = None;
+    }
+    emit_restore_progress(&app, &state);
+
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        if let Some(s) = app_handle.try_state::<AppState>() {
+            if let Ok(mut g) = s.rolling_back.lock() {
+                *g = false;
+            }
+        }
+    });
+
+    Ok(UndoResultInfo {
+        files_restored: outcome.result.files_restored,
+        files_deleted: outcome.result.files_deleted,
+        failures: outcome.result
+            .failures
+            .iter()
+            .map(|(p, e)| (p.to_string_lossy().to_string(), e.clone()))
+            .collect(),
+    })
+}
+
+#[tauri::command]
+pub async fn get_restore_progress(state: State<'_, AppState>) -> Result<RestoreProgressInfo, String> {
+    let progress = state.restore_progress.lock().map_err(|e| e.to_string())?;
+    Ok(RestoreProgressInfo {
+        is_running: progress.is_running,
+        phase: progress.phase,
+        task_id: progress.task_id.clone(),
+        dir_path: progress.dir_path.clone(),
+        total_files: progress.total_files,
+        processed_files: progress.processed_files,
+        restored_files: progress.restored_files,
+        deleted_files: progress.deleted_files,
+        failed_files: progress.failed_files,
+        current_path: progress.current_path.clone(),
+    })
+}
+
+#[tauri::command]
+pub async fn list_restore_operations(
+    state: State<'_, AppState>,
+    task_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<RestoreOperationInfo>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let operations = db
+        .list_restore_operations_for_task(&task_id, limit.unwrap_or(20))
+        .map_err(|e| e.to_string())?;
+    Ok(operations
+        .into_iter()
+        .map(|op| RestoreOperationInfo {
+            id: op.id,
+            source_task_id: op.source_task_id,
+            scope_type: op.scope_type.to_string(),
+            scope_path: op.scope_path.map(|path| path.to_string_lossy().to_string()),
+            triggered_by: op.triggered_by.to_string(),
+            started_at: op.started_at.to_rfc3339(),
+            completed_at: op.completed_at.map(|value| value.to_rfc3339()),
+            status: op.status.to_string(),
+            requested_count: op.requested_count,
+            restored_count: op.restored_count,
+            deleted_count: op.deleted_count,
+            failed_count: op.failed_count,
+            failure_sample_json: op.failure_sample_json,
+        })
+        .collect())
 }
 
 // ----------------------------------------------------------------
@@ -1652,4 +2329,144 @@ pub async fn uninstall_tool_hook(tool_id: String) -> Result<(), String> {
         .to_string_lossy()
         .to_string();
     rew_core::hooks::uninstall_hook(&tool_id, &rew_bin)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        infer_path_filter_mode, sync_file_index_after_directory_restore, PathFilterMode,
+    };
+    use chrono::Utc;
+    use rew_core::restore::PreparedSuppressionEntry;
+    use rew_core::db::Database;
+    use rew_core::objects::sha256_file;
+    use rew_core::types::{Change, ChangeType, Task, TaskStatus};
+    use std::path::PathBuf;
+
+    fn temp_db() -> (tempfile::TempDir, Database) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Database::open(&dir.path().join("test.db")).unwrap();
+        db.initialize().unwrap();
+        (dir, db)
+    }
+
+    fn seed_task(db: &Database, id: &str) {
+        db.create_task(&Task {
+            id: id.to_string(),
+            prompt: None,
+            tool: Some("文件监听".into()),
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn infer_path_filter_mode_prefers_directory_when_descendants_exist() {
+        let (_dir, db) = temp_db();
+        seed_task(&db, "t_dir");
+
+        db.insert_change(&Change {
+            id: None,
+            task_id: "t_dir".to_string(),
+            file_path: PathBuf::from("/tmp/project/go/main.rs"),
+            change_type: ChangeType::Deleted,
+            old_hash: Some("sha-old".into()),
+            new_hash: None,
+            diff_text: None,
+            lines_added: 0,
+            lines_removed: 1,
+            attribution: None,
+            old_file_path: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            infer_path_filter_mode(&db, "/tmp/project/go"),
+            PathFilterMode::Directory
+        );
+    }
+
+    #[test]
+    fn infer_path_filter_mode_uses_exact_file_match_without_live_fs_hint() {
+        let (_dir, db) = temp_db();
+        seed_task(&db, "t_file");
+
+        db.insert_change(&Change {
+            id: None,
+            task_id: "t_file".to_string(),
+            file_path: PathBuf::from("/tmp/project/file.txt"),
+            change_type: ChangeType::Modified,
+            old_hash: Some("sha-old".into()),
+            new_hash: Some("sha-new".into()),
+            diff_text: None,
+            lines_added: 1,
+            lines_removed: 1,
+            attribution: None,
+            old_file_path: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            infer_path_filter_mode(&db, "/tmp/project/file.txt"),
+            PathFilterMode::File
+        );
+    }
+
+    #[test]
+    fn directory_restore_rehydrates_live_file_index_entries() {
+        let (dir, mut db) = temp_db();
+        let file_path = dir.path().join("go/pkg/mod/example.txt");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, "original").unwrap();
+        let original_hash = sha256_file(&file_path).unwrap();
+
+        db.upsert_live_file_index_entry(
+            &file_path.to_string_lossy(),
+            1,
+            "fast-original",
+            Some(&original_hash),
+            "test",
+            "scan_seen",
+            &Utc::now().to_rfc3339(),
+            Some(1),
+        )
+        .unwrap();
+        db.mark_file_index_deleted(
+            &file_path.to_string_lossy(),
+            Some(&original_hash),
+            "test",
+            "deleted",
+            &Utc::now().to_rfc3339(),
+        )
+        .unwrap();
+
+        std::fs::write(&file_path, "original").unwrap();
+
+        sync_file_index_after_directory_restore(
+            &mut db,
+            &[PreparedSuppressionEntry {
+                path: file_path.clone(),
+                expected_content_hash: Some(original_hash.clone()),
+                deleted: false,
+            }],
+        );
+
+        let entry = db
+            .get_file_index_entry(&file_path.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert!(entry.exists_now);
+        assert_eq!(entry.content_hash.as_deref(), Some(original_hash.as_str()));
+        assert_eq!(
+            db.list_live_files_under_dir(&dir.path().join("go"))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 }

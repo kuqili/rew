@@ -18,6 +18,40 @@ pub struct Baseline {
     pub hash: Option<String>,
 }
 
+fn resolve_live_file_index_baseline(db: &Database, path_str: &str) -> Option<Baseline> {
+    // file_index APIs only expose live rows here (`exists_now = 1`), which is
+    // exactly what we need when a historical `changes` row says Deleted but a
+    // later restore has already re-hydrated the path back to live state.
+    if let Ok(Some(content_hash)) = db.get_file_index_hash(path_str) {
+        return Some(Baseline {
+            existed: true,
+            hash: Some(content_hash),
+        });
+    }
+
+    if let Ok(Some((_, fast_hash, _))) = db.get_file_index(path_str) {
+        let rew_dir = crate::rew_home_dir();
+        if let Ok(store) = ObjectStore::new(rew_dir.join("objects")) {
+            if let Some(backup_path) = store.retrieve(&fast_hash) {
+                if let Ok(sha) = sha256_file(&backup_path) {
+                    let _ = db.update_file_index_content_hash(path_str, &sha);
+                    return Some(Baseline {
+                        existed: true,
+                        hash: Some(sha),
+                    });
+                }
+            }
+        }
+
+        return Some(Baseline {
+            existed: true,
+            hash: None,
+        });
+    }
+
+    None
+}
+
 /// Resolve the baseline state for a file in the context of a task.
 ///
 /// Uses a 5-level fallback chain (all DB-backed, no file I/O):
@@ -64,13 +98,20 @@ pub fn resolve_baseline(
     }
 
     // 3. Latest change from a PREVIOUS task (excludes current task_id to avoid
-    //    circular reference — reading our own Created record as "baseline")
+    //    circular reference — reading our own Created record as "baseline").
+    //
+    //    Important edge case: a previous task may have deleted the file, but a
+    //    later restore could already have brought it back. In that case the
+    //    live file_index is the fresher truth and must override the historical
+    //    tombstone-like Deleted record.
     if let Ok(Some(prev)) = db.get_latest_change_for_file_excluding_task(file_path, task_id) {
         return match prev.change_type {
-            ChangeType::Deleted => Baseline {
-                existed: false,
-                hash: None,
-            },
+            ChangeType::Deleted => resolve_live_file_index_baseline(db, &path_str).unwrap_or(
+                Baseline {
+                    existed: false,
+                    hash: None,
+                },
+            ),
             _ => Baseline {
                 existed: true,
                 hash: prev.new_hash.or(prev.old_hash),
@@ -81,31 +122,8 @@ pub fn resolve_baseline(
     // 4. file_index (startup scan) → file was known at last scan.
     //    content_hash may be None (scanner only stores fast_hash for speed).
     //    In that case, compute SHA-256 from the object store backup and persist it.
-    if let Ok(Some(content_hash)) = db.get_file_index_hash(&path_str) {
-        return Baseline {
-            existed: true,
-            hash: Some(content_hash),
-        };
-    }
-    // content_hash is None — try to upgrade from fast_hash via object store
-    if let Ok(Some((_, fast_hash, _))) = db.get_file_index(&path_str) {
-        let rew_dir = crate::rew_home_dir();
-        if let Ok(store) = ObjectStore::new(rew_dir.join("objects")) {
-            if let Some(backup_path) = store.retrieve(&fast_hash) {
-                if let Ok(sha) = sha256_file(&backup_path) {
-                    let _ = db.update_file_index_content_hash(&path_str, &sha);
-                    return Baseline {
-                        existed: true,
-                        hash: Some(sha),
-                    };
-                }
-            }
-        }
-        // Object store backup missing — file existed but we can't get content hash
-        return Baseline {
-            existed: true,
-            hash: None,
-        };
+    if let Some(baseline) = resolve_live_file_index_baseline(db, &path_str) {
+        return baseline;
     }
 
     // 5. No record at all → file never seen

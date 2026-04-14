@@ -64,6 +64,9 @@ pub fn run() {
             commands::preview_rollback,
             commands::rollback_task_cmd,
             commands::restore_file_cmd,
+            commands::restore_directory_cmd,
+            commands::get_restore_progress,
+            commands::list_restore_operations,
             // Legacy aliases
             commands::preview_undo,
             commands::undo_task_cmd,

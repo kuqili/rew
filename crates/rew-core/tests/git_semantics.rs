@@ -162,7 +162,16 @@ impl GitRepoEnv {
             let abs = self.path(&rel);
             let sha = store.store(&abs).unwrap();
             self.db
-                .upsert_file_index(&abs.to_string_lossy(), 1, &sha, Some(&sha))
+                .upsert_live_file_index_entry(
+                    &abs.to_string_lossy(),
+                    1,
+                    &sha,
+                    Some(&sha),
+                    "test",
+                    "seed",
+                    &chrono::Utc::now().to_rfc3339(),
+                    Some(1),
+                )
                 .unwrap();
         }
     }
@@ -236,7 +245,6 @@ impl GitRepoEnv {
             diff_text: None,
             lines_added: 0,
             lines_removed: 0,
-            restored_at: None,
             attribution: Some("test".into()),
             old_file_path: None,
         };

@@ -10,6 +10,7 @@ pub mod diff;
 pub mod db;
 pub mod detector;
 pub mod error;
+pub mod file_index;
 pub mod hooks;
 pub mod lifecycle;
 pub mod logging;

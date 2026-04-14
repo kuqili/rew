@@ -59,6 +59,38 @@ pub struct ScanProgress {
     pub dirs: Vec<DirScanStatus>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestorePhase {
+    #[default]
+    Idle,
+    RestoringFiles,
+    SyncingDatabase,
+    Finalizing,
+    Done,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct RestoreProgress {
+    pub is_running: bool,
+    pub phase: RestorePhase,
+    pub task_id: Option<String>,
+    pub dir_path: Option<String>,
+    pub total_files: usize,
+    pub processed_files: usize,
+    pub restored_files: usize,
+    pub deleted_files: usize,
+    pub failed_files: usize,
+    pub current_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SuppressedRestorePath {
+    pub created_at: Instant,
+    pub expected_content_hash: Option<String>,
+    pub deleted: bool,
+}
+
 /// Application state shared across Tauri commands and the tray.
 pub struct AppState {
     /// SQLite database handle.
@@ -82,6 +114,13 @@ pub struct AppState {
     /// `rolling_back` flag. This handles async FSEvent delivery that arrives
     /// after `rolling_back` has already been cleared.
     pub suppressed_paths: Mutex<HashMap<PathBuf, Instant>>,
+    /// Restore-result suppression: used by directory rollback to suppress only
+    /// the exact restored/deleted paths instead of blanketing an entire prefix.
+    /// For restored files, we keep the expected post-restore content hash so
+    /// later real user edits can pass through once the content diverges.
+    pub suppressed_restore_paths: Mutex<HashMap<PathBuf, SuppressedRestorePath>>,
+    /// Live directory-restore progress for large rollback operations.
+    pub restore_progress: Arc<Mutex<RestoreProgress>>,
     /// Channel to send hot-update commands (add/remove path) to the running daemon pipeline.
     /// Set by the daemon after the pipeline starts; None if daemon not yet running.
     pub pipeline_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<PipelineCmd>>>,
@@ -101,6 +140,8 @@ impl AppState {
             fs_window_task: Mutex::new(None),
             rolling_back: Mutex::new(false),
             suppressed_paths: Mutex::new(HashMap::new()),
+            suppressed_restore_paths: Mutex::new(HashMap::new()),
+            restore_progress: Arc::new(Mutex::new(RestoreProgress::default())),
             pipeline_tx: Mutex::new(None),
         }
     }

@@ -13,6 +13,7 @@
 use crate::db::Database;
 use crate::objects::ObjectStore;
 use crate::watcher::filter::PathFilter;
+use chrono::Utc;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::{info, warn, debug};
@@ -147,6 +148,9 @@ pub fn full_scan(
         let mut dir_stored = 0usize;
         let mut dir_skipped = 0usize;
         let mut dir_failed = 0usize;
+        let mut dir_had_errors = false;
+        let scan_epoch = Utc::now().timestamp_millis();
+        let scan_at = Utc::now().to_rfc3339();
 
         // Wrap each directory in a transaction for batch insert performance
         let _ = db.begin_transaction();
@@ -164,8 +168,14 @@ pub fn full_scan(
             dir,
             estimated_total,
             max_file_size,
+            scan_epoch,
+            &scan_at,
+            &mut dir_had_errors,
         );
 
+        if !dir_had_errors {
+            let _ = db.tombstone_missing_paths_under_dir(dir, scan_epoch, &scan_at);
+        }
         let _ = db.commit_transaction();
 
         files_scanned += dir_scanned;
@@ -211,6 +221,9 @@ fn walk_and_store(
     root_dir: &Path,
     total_estimate: usize,
     max_file_size: Option<u64>,
+    scan_epoch: i64,
+    scan_at: &str,
+    had_errors: &mut bool,
 ) {
     let mut stack = vec![dir.to_path_buf()];
 
@@ -218,6 +231,7 @@ fn walk_and_store(
         let entries = match std::fs::read_dir(&current_dir) {
             Ok(e) => e,
             Err(e) => {
+                *had_errors = true;
                 debug!("Scan: cannot read {}: {}", current_dir.display(), e);
                 continue;
             }
@@ -226,7 +240,10 @@ fn walk_and_store(
         for entry in entries {
             let entry = match entry {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(_) => {
+                    *had_errors = true;
+                    continue;
+                }
             };
 
             let path = entry.path();
@@ -246,10 +263,26 @@ fn walk_and_store(
                 stack.push(path);
             } else if path.is_file() {
                 *scanned += 1;
+                let path_key = path.to_string_lossy().to_string();
+                let current_mtime = file_mtime_secs(&path);
 
                 if let Some(max_size) = max_file_size {
                     if let Ok(meta) = std::fs::metadata(&path) {
                         if meta.len() > max_size {
+                            if let Some(mtime) = current_mtime {
+                                if let Ok(Some(existing)) = db.get_file_index_entry(&path_key) {
+                                    let _ = db.upsert_live_file_index_entry(
+                                        &path_key,
+                                        mtime,
+                                        &existing.fast_hash,
+                                        existing.content_hash.as_deref(),
+                                        "scanner",
+                                        "scan_skipped_large",
+                                        scan_at,
+                                        Some(scan_epoch),
+                                    );
+                                }
+                            }
                             *skipped += 1;
                             if *scanned % 100 == 0 {
                                 fire_progress(on_progress, root_dir, *scanned, *stored, *skipped, *failed, total_estimate);
@@ -259,13 +292,21 @@ fn walk_and_store(
                     }
                 }
 
-                let path_key = path.to_string_lossy().to_string();
-                let current_mtime = file_mtime_secs(&path);
-
                 // Check file_index in DB: skip if mtime unchanged and object exists
                 if let Some(mtime) = current_mtime {
                     if let Ok(Some((db_mtime, db_hash, _))) = db.get_file_index(&path_key) {
                         if db_mtime == mtime && store.exists(&db_hash) {
+                            let existing = db.get_file_index_entry(&path_key).ok().flatten();
+                            let _ = db.upsert_live_file_index_entry(
+                                &path_key,
+                                mtime,
+                                existing.as_ref().map(|e| e.fast_hash.as_str()).unwrap_or(db_hash.as_str()),
+                                existing.as_ref().and_then(|e| e.content_hash.as_deref()),
+                                "scanner",
+                                "scan_seen",
+                                scan_at,
+                                Some(scan_epoch),
+                            );
                             *skipped += 1;
                             if *scanned % 100 == 0 {
                                 fire_progress(on_progress, root_dir, *scanned, *stored, *skipped, *failed, total_estimate);
@@ -279,10 +320,20 @@ fn walk_and_store(
                     Ok(hash) => {
                         *stored += 1;
                         if let Some(mtime) = current_mtime {
-                            let _ = db.upsert_file_index(&path_key, mtime, &hash, None);
+                            let _ = db.upsert_live_file_index_entry(
+                                &path_key,
+                                mtime,
+                                &hash,
+                                None,
+                                "scanner",
+                                "scan_seen",
+                                scan_at,
+                                Some(scan_epoch),
+                            );
                         }
                     }
                     Err(e) => {
+                        *had_errors = true;
                         *failed += 1;
                         debug!("Scan: failed to store {}: {}", path.display(), e);
                     }

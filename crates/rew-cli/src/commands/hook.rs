@@ -19,6 +19,7 @@ use rew_core::backup::clonefile;
 use rew_core::baseline::resolve_baseline;
 use rew_core::db::Database;
 use rew_core::error::RewResult;
+use rew_core::file_index::sync_file_index_after_change;
 use rew_core::objects::{sha256_file, ObjectStore};
 use rew_core::scope::{ScopeEngine, ScopeResult};
 use rew_core::types::{Change, ChangeType, Task, TaskStats, TaskStatus};
@@ -605,12 +606,12 @@ pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
             diff_text: None,
             lines_added,
             lines_removed,
-            restored_at: None,
             attribution: Some("hook".into()),
             old_file_path: None,
         };
 
         db.upsert_change(&change)?;
+        let _ = sync_file_index_after_change(&db, &change, "hook", &Utc::now().to_rfc3339());
     } else if let (Some(task_id), Some(cmd)) = (task_id.as_ref(), input.command.as_ref()) {
         if is_shell_tool(&input.tool_name) {
             let predicted = predict_bash_file_paths(cmd, input.cwd.as_deref());
@@ -653,11 +654,17 @@ pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
                         diff_text: None,
                         lines_added,
                         lines_removed,
-                        restored_at: None,
                         attribution: Some("bash_predicted".into()),
                         old_file_path: None,
                     };
-                    let _ = db.upsert_change(&change);
+                    if db.upsert_change(&change).is_ok() {
+                        let _ = sync_file_index_after_change(
+                            &db,
+                            &change,
+                            "bash_predicted",
+                            &Utc::now().to_rfc3339(),
+                        );
+                    }
                 }
             }
         }
