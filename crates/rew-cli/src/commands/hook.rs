@@ -332,6 +332,31 @@ fn predict_bash_file_paths(cmd: &str, cwd: Option<&str>) -> Vec<PathBuf> {
     paths
 }
 
+fn is_shell_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "Bash" | "bash" | "Shell" | "shell")
+}
+
+fn infer_path_change_type(
+    tool_name: &str,
+    path_exists: bool,
+    baseline_existed: bool,
+) -> ChangeType {
+    if !path_exists {
+        return ChangeType::Deleted;
+    }
+
+    match tool_name {
+        "Edit" | "edit" | "MultiEdit" => ChangeType::Modified,
+        _ => {
+            if baseline_existed {
+                ChangeType::Modified
+            } else {
+                ChangeType::Created
+            }
+        }
+    }
+}
+
 // ================================================================
 // Hook handlers
 // ================================================================
@@ -486,7 +511,7 @@ pub fn handle_pre_tool(source: Option<&str>) -> RewResult<i32> {
             }
             Ok(0)
         }
-        "Bash" | "bash" => {
+        _ if is_shell_tool(&input.tool_name) => {
             if let Some(ref cmd) = input.command {
                 match scope.check_command(cmd) {
                     ScopeResult::Deny(reason) => {
@@ -535,17 +560,11 @@ pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
 
         let baseline = resolve_baseline(&db, task_id, &path, Some(&session_key));
 
-        let change_type = if path.exists() {
-            match input.tool_name.as_str() {
-                "Write" | "write" => {
-                    if baseline.existed { ChangeType::Modified } else { ChangeType::Created }
-                }
-                "Edit" | "edit" | "MultiEdit" => ChangeType::Modified,
-                _ => ChangeType::Modified,
-            }
-        } else {
-            ChangeType::Deleted
-        };
+        let change_type = infer_path_change_type(
+            &input.tool_name,
+            path.exists(),
+            baseline.existed,
+        );
 
         let new_hash = if path.exists() {
             sha256_file(&path).ok()
@@ -593,7 +612,7 @@ pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
 
         db.upsert_change(&change)?;
     } else if let (Some(task_id), Some(cmd)) = (task_id.as_ref(), input.command.as_ref()) {
-        if input.tool_name == "Bash" || input.tool_name == "bash" {
+        if is_shell_tool(&input.tool_name) {
             let predicted = predict_bash_file_paths(cmd, input.cwd.as_deref());
             if !predicted.is_empty() {
                 let rew_dir = rew_home_dir();
@@ -608,7 +627,10 @@ pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
                         obj_store.store(&path).ok();
                     }
                     let bash_baseline = resolve_baseline(&db, task_id, &path, Some(&session_key));
-                    let old_hash = bash_baseline.hash;
+                    let old_hash = bash_baseline.hash.clone();
+
+                    let change_type =
+                        infer_path_change_type(&input.tool_name, path.exists(), bash_baseline.existed);
 
                     let (lines_added, lines_removed) = {
                         let read = |h: Option<&str>| -> Vec<u8> {
@@ -625,7 +647,7 @@ pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
                         id: None,
                         task_id: task_id.clone(),
                         file_path: path,
-                        change_type: ChangeType::Modified,
+                        change_type,
                         old_hash,
                         new_hash,
                         diff_text: None,
@@ -980,5 +1002,62 @@ fn backup_file_to_objects(path: &Path) -> RewResult<String> {
     let rew_dir = rew_home_dir();
     let obj_store = ObjectStore::new(rew_dir.join("objects"))?;
     obj_store.store(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_aliases_are_recognized() {
+        assert!(is_shell_tool("Bash"));
+        assert!(is_shell_tool("bash"));
+        assert!(is_shell_tool("Shell"));
+        assert!(is_shell_tool("shell"));
+        assert!(!is_shell_tool("Write"));
+        assert!(!is_shell_tool("Edit"));
+    }
+
+    #[test]
+    fn shell_new_file_is_created() {
+        assert_eq!(
+            infer_path_change_type("Shell", true, false),
+            ChangeType::Created
+        );
+        assert_eq!(
+            infer_path_change_type("shell", true, false),
+            ChangeType::Created
+        );
+    }
+
+    #[test]
+    fn shell_existing_file_is_modified() {
+        assert_eq!(
+            infer_path_change_type("Shell", true, true),
+            ChangeType::Modified
+        );
+        assert_eq!(
+            infer_path_change_type("bash", true, true),
+            ChangeType::Modified
+        );
+    }
+
+    #[test]
+    fn edit_tools_remain_modified() {
+        assert_eq!(
+            infer_path_change_type("Edit", true, false),
+            ChangeType::Modified
+        );
+        assert_eq!(
+            infer_path_change_type("MultiEdit", true, false),
+            ChangeType::Modified
+        );
+    }
+
+    #[test]
+    fn predicted_shell_paths_resolve_from_cwd() {
+        let paths = predict_bash_file_paths("touch notes.txt", Some("/tmp/project"));
+        assert_eq!(paths, vec![PathBuf::from("/tmp/project/notes.txt")]);
+    }
 }
 

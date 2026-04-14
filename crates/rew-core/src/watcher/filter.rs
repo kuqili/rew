@@ -93,10 +93,14 @@ impl PathFilter {
             format!("{}/Library/**", home),
             format!("{}/Applications/**", home),
             format!("{}/.Trash/**", home),
-            // Photos Library internal analysis / search indexes are system-
-            // generated churn, not user-authored content.
+            // Photos Library internal analysis / search indexes / journals are
+            // system-generated churn, not user-authored content.
             "**/*.photoslibrary/private/**".to_string(),
-            "**/*.photoslibrary/database/search/**".to_string(),
+            "**/*.photoslibrary/database/**".to_string(),
+            "**/*.photoslibrary/resources/**".to_string(),
+            // Music Library bundles are app-managed database stores, not
+            // user-authored files we want to surface in the timeline.
+            "**/*.musiclibrary/**".to_string(),
             // ── Shell history & caches (change on every command / login) ───
             format!("{}/.zsh_history", home),
             format!("{}/.zsh_history.*", home),
@@ -516,6 +520,15 @@ mod tests {
         )));
         assert!(filter.should_ignore(&PathBuf::from(
             "/Users/foo/Pictures/Photos Library.photoslibrary/database/search/store.db"
+        )));
+        assert!(filter.should_ignore(&PathBuf::from(
+            "/Users/foo/Pictures/Photos Library.photoslibrary/resources/journals/HistoryToken.plist"
+        )));
+        assert!(filter.should_ignore(&PathBuf::from(
+            "/Users/foo/Pictures/Photos Library.photoslibrary/resources/journals/Memory-change.plj"
+        )));
+        assert!(filter.should_ignore(&PathBuf::from(
+            "/Users/foo/Music/Music/Music Library.musiclibrary/Library.musicdb"
         )));
         // Keep non-noise asset paths outside the known churn subdirs.
         assert!(filter.should_process(&PathBuf::from(
