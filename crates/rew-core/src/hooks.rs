@@ -610,7 +610,7 @@ fn remove_workbuddy_hooks(_rew_bin: &str) -> Result<(), String> {
 fn make_hook_command(rew_bin: &str, subcommand: &str, source: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "command",
-        "command": format!("{} hook {} --source {}", rew_bin, subcommand, source)
+        "command": format!("/usr/bin/env REW_HOOK_DEBUG=1 {} hook {} --source {}", rew_bin, subcommand, source)
     })
 }
 

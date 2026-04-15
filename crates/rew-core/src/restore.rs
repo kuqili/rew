@@ -2081,6 +2081,63 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_prepared_directory_undo_restores_deleted_directory_and_emits_suppressions() {
+        let dir = tempdir().unwrap();
+        let (db, obj_store, engine) = setup_task_restore(dir.path());
+
+        create_test_task(&db, "t005_dir_full");
+
+        let file_a = dir.path().join("go/pkg/a.txt");
+        let file_b = dir.path().join("go/pkg/sub/b.txt");
+        std::fs::create_dir_all(file_a.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(file_b.parent().unwrap()).unwrap();
+        std::fs::write(&file_a, "alpha original").unwrap();
+        std::fs::write(&file_b, "beta original").unwrap();
+        let hash_a = obj_store.store(&file_a).unwrap();
+        let hash_b = obj_store.store(&file_b).unwrap();
+
+        std::fs::remove_file(&file_a).unwrap();
+        std::fs::remove_file(&file_b).unwrap();
+        let _ = std::fs::remove_dir_all(dir.path().join("go"));
+
+        for (path, hash) in [(&file_a, &hash_a), (&file_b, &hash_b)] {
+            db.insert_change(&Change {
+                id: None,
+                task_id: "t005_dir_full".to_string(),
+                file_path: path.clone(),
+                change_type: ChangeType::Deleted,
+                old_hash: Some(hash.clone()),
+                new_hash: None,
+                diff_text: None,
+                lines_added: 0,
+                lines_removed: 1,
+                attribution: None,
+                old_file_path: None,
+            })
+            .unwrap();
+        }
+
+        let plan = engine
+            .prepare_directory_undo(&db, "t005_dir_full", &dir.path().join("go"))
+            .unwrap();
+        let outcome = engine.execute_prepared_directory_undo(&plan);
+
+        assert_eq!(outcome.result.files_restored, 2);
+        assert_eq!(outcome.result.files_deleted, 0);
+        assert_eq!(outcome.result.failures.len(), 0);
+        assert_eq!(outcome.restored_change_paths.len(), 2);
+        assert_eq!(outcome.suppression_entries.len(), 2);
+        assert!(file_a.exists());
+        assert!(file_b.exists());
+        assert_eq!(std::fs::read_to_string(&file_a).unwrap(), "alpha original");
+        assert_eq!(std::fs::read_to_string(&file_b).unwrap(), "beta original");
+        assert!(outcome
+            .suppression_entries
+            .iter()
+            .all(|entry| !entry.deleted && entry.expected_content_hash.is_some()));
+    }
+
+    #[test]
     fn test_preview_undo() {
         let dir = tempdir().unwrap();
         let (db, _obj, engine) = setup_task_restore(dir.path());

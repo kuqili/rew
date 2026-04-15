@@ -513,11 +513,12 @@ fn test_backup_respects_ignore_patterns() {
     let backup_dir = temp_dir.path().join("backups");
     fs::create_dir_all(&source_dir).unwrap();
 
-    // Create a .git directory with a file
-    let git_dir = source_dir.join(".git");
-    fs::create_dir(&git_dir).unwrap();
-    let config_file = git_dir.join("config");
-    fs::write(&config_file, "[core]").unwrap();
+    // Use node_modules here instead of .git/config because some sandboxed
+    // environments reject writes to git-like metadata paths.
+    let ignored_dir = source_dir.join("node_modules");
+    fs::create_dir(&ignored_dir).unwrap();
+    let config_file = ignored_dir.join("package.js");
+    fs::write(&config_file, "exports = {}").unwrap();
 
     // Create regular file
     let normal_file = source_dir.join("main.rs");
@@ -549,7 +550,7 @@ fn test_backup_respects_ignore_patterns() {
     };
 
     let backup_result = engine.backup_batch(&job).unwrap();
-    // Should only backup the normal file, git files are ignored
+    // Should only backup the normal file, ignored files are skipped.
     assert_eq!(backup_result.files_backed_up, 1);
 }
 
@@ -591,13 +592,14 @@ fn test_backup_respects_ignore_patterns_debug() {
     let backup_dir = temp_dir.path().join("backups");
     fs::create_dir_all(&source_dir).unwrap();
 
-    // Create a .git directory with a file
-    let git_dir = source_dir.join(".git");
-    fs::create_dir(&git_dir).unwrap();
-    let config_file = git_dir.join("config");
-    fs::write(&config_file, "[core]").unwrap();
+    // Use node_modules here instead of .git/config because some sandboxed
+    // environments reject writes to git-like metadata paths.
+    let ignored_dir = source_dir.join("node_modules");
+    fs::create_dir(&ignored_dir).unwrap();
+    let config_file = ignored_dir.join("package.js");
+    fs::write(&config_file, "exports = {}").unwrap();
 
-    println!("Created git config at: {}", config_file.display());
+    println!("Created ignored file at: {}", config_file.display());
 
     // Create regular file
     let normal_file = source_dir.join("main.rs");
@@ -636,6 +638,6 @@ fn test_backup_respects_ignore_patterns_debug() {
     println!("Files backed up: {}", backup_result.files_backed_up);
     println!("Failed files: {:?}", backup_result.failed_files);
     
-    // Should only backup the normal file, git files are ignored
+    // Should only backup the normal file, ignored files are skipped.
     assert_eq!(backup_result.files_backed_up, 1, "Expected 1 file backed up, got {}", backup_result.files_backed_up);
 }

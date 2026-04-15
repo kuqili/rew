@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "scripts": {
     "dev": "tauri dev",
+    "test:all": "./scripts/test-all.sh",
+    "test:semantics": "./scripts/test-change-semantics.sh",
     "build": "tauri build",
     "tauri": "tauri"
   },

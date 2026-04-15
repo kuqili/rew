@@ -4,8 +4,9 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-use rew_core::baseline::resolve_baseline;
+use rew_core::baseline::resolve_baseline_with_objects_root;
 use rew_core::db::Database;
+use rew_core::file_index::sync_file_index_after_change;
 use rew_core::objects::ObjectStore;
 use rew_core::reconcile::reconcile_task;
 use rew_core::types::{Change, ChangeType, FileEventKind, Task, TaskStatus};
@@ -27,9 +28,10 @@ struct GitRepoEnv {
 
 impl GitRepoEnv {
     fn new() -> Self {
-        let workspace_tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/git-semantics");
-        fs::create_dir_all(&workspace_tmp).unwrap();
-        let dir = tempfile::tempdir_in(&workspace_tmp).unwrap();
+        // Use the OS temp directory instead of a workspace-local path because
+        // some sandboxed environments reject git's writes under nested repo
+        // paths inside the workspace target directory.
+        let dir = tempfile::tempdir().unwrap();
         let repo_root = dir.path().join("repo");
         let empty_template = dir.path().join("empty-git-template");
         fs::create_dir_all(&repo_root).unwrap();
@@ -186,7 +188,13 @@ impl GitRepoEnv {
 
     fn simulate_event(&self, rel: &str, event_kind: FileEventKind) {
         let path = self.path(rel);
-        let baseline = resolve_baseline(&self.db, &self.task_id, &path, None);
+        let baseline = resolve_baseline_with_objects_root(
+            &self.db,
+            &self.task_id,
+            &path,
+            None,
+            self.objects_root.clone(),
+        );
         let new_hash = if path.exists() {
             let store = ObjectStore::new(self.objects_root.clone()).unwrap();
             Some(store.store(&path).unwrap())
@@ -249,6 +257,13 @@ impl GitRepoEnv {
             old_file_path: None,
         };
         self.db.upsert_change(&change).unwrap();
+        sync_file_index_after_change(
+            &self.db,
+            &change,
+            "test",
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap();
     }
 
     fn finalize_rew(&self) -> Vec<Change> {

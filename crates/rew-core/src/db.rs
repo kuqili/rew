@@ -886,6 +886,75 @@ impl Database {
         Ok(())
     }
 
+    pub fn create_task_bundle(
+        &self,
+        task: &Task,
+        stats: &TaskStats,
+        session_id: &str,
+        tool_source: &str,
+        generation_id: Option<&str>,
+    ) -> RewResult<()> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+
+        let result: RewResult<()> = (|| {
+            self.conn.execute(
+            "INSERT INTO tasks (id, prompt, tool, started_at, completed_at, status, risk_level, summary, cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                task.id,
+                task.prompt,
+                task.tool,
+                task.started_at.to_rfc3339(),
+                task.completed_at.map(|t| t.to_rfc3339()),
+                task.status.to_string(),
+                task.risk_level.as_ref().map(|r| r.to_string()),
+                task.summary,
+                task.cwd,
+            ],
+            )?;
+            self.conn.execute(
+            "INSERT OR IGNORE INTO task_stats
+             (task_id, model, duration_secs, tool_calls, files_changed,
+              input_tokens, output_tokens, total_cost_usd,
+              session_id, conversation_id, extra_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                stats.task_id,
+                stats.model,
+                stats.duration_secs,
+                stats.tool_calls,
+                stats.files_changed,
+                stats.input_tokens,
+                stats.output_tokens,
+                stats.total_cost_usd,
+                stats.session_id,
+                stats.conversation_id,
+                stats.extra_json,
+            ],
+            )?;
+            self.conn.execute(
+            "INSERT OR REPLACE INTO active_sessions (session_id, task_id, tool_source, started_at, is_active)
+             VALUES (?1, ?2, ?3, ?4, 1)",
+            params![session_id, task.id, tool_source, task.started_at.to_rfc3339()],
+            )?;
+            if let Some(gid) = generation_id {
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO session_stop_guard (session_id, generation_id)
+                     VALUES (?1, ?2)",
+                    params![session_id, gid],
+                )?;
+            }
+            self.conn.execute_batch("COMMIT")?;
+            Ok(())
+        })();
+
+        if result.is_err() {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+
+        result
+    }
+
     pub fn clear_task_summary(&self, id: &str) -> RewResult<()> {
         self.conn.execute(
             "UPDATE tasks SET summary = NULL WHERE id = ?1",
@@ -1017,17 +1086,29 @@ impl Database {
         Ok(())
     }
 
-    pub fn claim_hook_event_receipt(
+    pub fn hook_event_receipt_exists(
+        &self,
+        idempotency_key: &str,
+    ) -> RewResult<bool> {
+        let result = self.conn.query_row(
+            "SELECT 1 FROM hook_event_receipts WHERE idempotency_key = ?1",
+            params![idempotency_key],
+            |row| row.get::<_, i64>(0),
+        ).optional()?;
+        Ok(result.is_some())
+    }
+
+    pub fn record_hook_event_receipt(
         &self,
         idempotency_key: &str,
         event_type: &str,
-    ) -> RewResult<bool> {
-        let inserted = self.conn.execute(
+    ) -> RewResult<()> {
+        self.conn.execute(
             "INSERT OR IGNORE INTO hook_event_receipts (idempotency_key, event_type, processed_at)
              VALUES (?1, ?2, ?3)",
             params![idempotency_key, event_type, Utc::now().to_rfc3339()],
         )?;
-        Ok(inserted > 0)
+        Ok(())
     }
 
     /// Set the APFS snapshot reference on a task.
@@ -2394,13 +2475,50 @@ mod tests {
         ChangeType, RestoreOperationStatus, RestoreScopeType, RestoreTriggeredBy, SnapshotTrigger,
         TaskStatus,
     };
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
 
     fn test_db() -> Database {
         let dir = tempdir().unwrap();
         let db = Database::open(&dir.path().join("test.db")).unwrap();
         db.initialize().unwrap();
         db
+    }
+
+    fn test_db_with_dir() -> (TempDir, Database) {
+        let dir = tempdir().unwrap();
+        let db = Database::open(&dir.path().join("test.db")).unwrap();
+        db.initialize().unwrap();
+        (dir, db)
+    }
+
+    fn sample_task(id: &str) -> Task {
+        Task {
+            id: id.to_string(),
+            prompt: Some("test".to_string()),
+            tool: Some("cursor".to_string()),
+            started_at: Utc::now(),
+            completed_at: None,
+            status: TaskStatus::Active,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        }
+    }
+
+    fn sample_stats(task_id: &str, session_id: &str) -> TaskStats {
+        TaskStats {
+            task_id: task_id.to_string(),
+            model: Some("test-model".to_string()),
+            duration_secs: None,
+            tool_calls: 0,
+            files_changed: 0,
+            input_tokens: None,
+            output_tokens: None,
+            total_cost_usd: None,
+            session_id: Some(session_id.to_string()),
+            conversation_id: Some("conv".to_string()),
+            extra_json: None,
+        }
     }
 
     #[test]
@@ -2560,12 +2678,73 @@ mod tests {
     #[test]
     fn test_hook_event_receipt_claim_is_idempotent() {
         let db = test_db();
+        assert!(!db.hook_event_receipt_exists("prompt:cursor:abc").unwrap());
+        db.record_hook_event_receipt("prompt:cursor:abc", "prompt-started")
+            .unwrap();
+        assert!(db.hook_event_receipt_exists("prompt:cursor:abc").unwrap());
+    }
+
+    #[test]
+    fn create_task_bundle_rolls_back_when_late_insert_fails() {
+        let db = test_db();
+        db.connection()
+            .execute_batch(
+                "CREATE TRIGGER fail_active_session_insert
+                 BEFORE INSERT ON active_sessions
+                 BEGIN
+                    SELECT RAISE(ABORT, 'forced active session failure');
+                 END;",
+            )
+            .unwrap();
+
+        let task = sample_task("bundle_fail_late");
+        let stats = sample_stats("bundle_fail_late", "cursor:late");
+        let err = db
+            .create_task_bundle(&task, &stats, "cursor:late", "cursor", Some("gen-late"))
+            .unwrap_err();
+        assert!(err.to_string().contains("forced active session failure"));
+        assert!(db.get_task("bundle_fail_late").unwrap().is_none());
+        assert!(db.get_task_stats("bundle_fail_late").unwrap().is_none());
+        assert!(db.get_active_task_for_session("cursor:late").unwrap().is_none());
+        assert!(db.get_stop_guard("cursor:late").unwrap().is_none());
+    }
+
+    #[test]
+    fn create_task_bundle_primary_key_conflict_leaves_no_partial_session_state() {
+        let db = test_db();
+        let existing = sample_task("bundle_conflict");
+        db.create_task(&existing).unwrap();
+
+        let task = sample_task("bundle_conflict");
+        let stats = sample_stats("bundle_conflict", "cursor:conflict");
         assert!(db
-            .claim_hook_event_receipt("prompt:cursor:abc", "prompt-started")
-            .unwrap());
-        assert!(!db
-            .claim_hook_event_receipt("prompt:cursor:abc", "prompt-started")
-            .unwrap());
+            .create_task_bundle(&task, &stats, "cursor:conflict", "cursor", Some("gen-conflict"))
+            .is_err());
+        assert!(db.get_task_stats("bundle_conflict").unwrap().is_none());
+        assert!(db.get_active_task_for_session("cursor:conflict").unwrap().is_none());
+        assert!(db.get_stop_guard("cursor:conflict").unwrap().is_none());
+    }
+
+    #[test]
+    fn create_task_bundle_fails_cleanly_when_another_connection_holds_immediate_lock() {
+        let (dir, db1) = test_db_with_dir();
+        let db2 = Database::open(&dir.path().join("test.db")).unwrap();
+        db2.initialize().unwrap();
+
+        db1.connection().execute_batch("BEGIN IMMEDIATE").unwrap();
+        let task = sample_task("bundle_locked");
+        let stats = sample_stats("bundle_locked", "cursor:locked");
+        let result = db2.create_task_bundle(
+            &task,
+            &stats,
+            "cursor:locked",
+            "cursor",
+            Some("gen-locked"),
+        );
+        assert!(result.is_err());
+        db1.connection().execute_batch("ROLLBACK").unwrap();
+        assert!(db2.get_task("bundle_locked").unwrap().is_none());
+        assert!(db2.get_active_task_for_session("cursor:locked").unwrap().is_none());
     }
 
     #[test]

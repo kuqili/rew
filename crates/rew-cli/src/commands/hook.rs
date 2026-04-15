@@ -493,12 +493,7 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
         payload_version: 1,
         payload: HookEventPayload::PromptStarted(payload.clone()),
     };
-    if append_hook_event(&envelope).is_err() {
-        let db = open_db()?;
-        let _ = process_hook_event(&db, &envelope)?;
-    }
-
-    Ok(())
+    persist_hook_envelope(&envelope)
 }
 
 /// Handle `rew hook pre-tool` — called before AI executes a tool.
@@ -513,6 +508,7 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
 /// - 2 = deny (block AI operation, stderr has reason)
 pub fn handle_pre_tool(source: Option<&str>) -> RewResult<i32> {
     let raw = read_stdin_text();
+    append_hook_debug_log("pre-tool", source, &raw);
     let input = match normalize_pre_tool(&raw) {
         Some(v) => v,
         None => return Ok(0),
@@ -652,12 +648,7 @@ pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
         payload_version: 1,
         payload: HookEventPayload::PostToolObserved(payload),
     };
-    if append_hook_event(&envelope).is_err() {
-        let db = open_db()?;
-        let _ = process_hook_event(&db, &envelope)?;
-    }
-
-    Ok(())
+    persist_hook_envelope(&envelope)
 }
 
 /// Handle `rew hook stop` — called when AI finishes responding.
@@ -683,12 +674,7 @@ pub fn handle_stop(source: Option<&str>) -> RewResult<()> {
         payload_version: 1,
         payload: HookEventPayload::TaskStopRequested(payload),
     };
-    if append_hook_event(&envelope).is_err() {
-        let db = open_db()?;
-        let _ = process_hook_event(&db, &envelope)?;
-    }
-
-    Ok(())
+    persist_hook_envelope(&envelope)
 }
 
 // === Helper functions ===
@@ -942,6 +928,26 @@ fn backup_file_to_objects(path: &Path) -> RewResult<String> {
     obj_store.store(path)
 }
 
+fn persist_hook_envelope(envelope: &HookEventEnvelope) -> RewResult<()> {
+    persist_hook_envelope_with(envelope, append_hook_event, open_db)
+}
+
+fn persist_hook_envelope_with<AppendFn, OpenDbFn>(
+    envelope: &HookEventEnvelope,
+    append_fn: AppendFn,
+    open_db_fn: OpenDbFn,
+) -> RewResult<()>
+where
+    AppendFn: FnOnce(&HookEventEnvelope) -> RewResult<PathBuf>,
+    OpenDbFn: FnOnce() -> RewResult<Database>,
+{
+    if append_fn(envelope).is_err() {
+        let db = open_db_fn()?;
+        let _ = process_hook_event(&db, envelope)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1186,6 +1192,229 @@ mod tests {
 
         let normalized = normalize_post_tool(raw).expect("should parse delete tool file path array");
         assert_eq!(normalized.file_path.as_deref(), Some("/tmp/project/a.md"));
+    }
+
+    #[test]
+    fn claude_code_full_hook_payloads_normalize_consistently() {
+        let prompt_raw = r#"{
+            "session_id":"claude-session-1",
+            "cwd":"/tmp/project",
+            "prompt":"refactor parser",
+            "model":"claude-4.6",
+            "generation_id":"gen-claude-1"
+        }"#;
+        let pre_raw = r#"{
+            "session_id":"claude-session-1",
+            "cwd":"/tmp/project",
+            "tool_name":"Edit",
+            "tool_input":{"file_path":"src/parser.rs"}
+        }"#;
+        let post_raw = r#"{
+            "session_id":"claude-session-1",
+            "cwd":"/tmp/project",
+            "tool_name":"Edit",
+            "tool_input":{"file_path":"src/parser.rs"},
+            "tool_response":{"success":true}
+        }"#;
+
+        let prompt = normalize_prompt(prompt_raw);
+        assert_eq!(prompt.prompt, "refactor parser");
+        assert_eq!(prompt.session_id.as_deref(), Some("claude-session-1"));
+        assert_eq!(extract_session_key(prompt_raw, "claude-code"), "claude-code:claude-session-1");
+
+        let pre = normalize_pre_tool(pre_raw).expect("claude pre");
+        assert_eq!(pre.tool_name, "Edit");
+        assert_eq!(pre.file_path.as_deref(), Some("src/parser.rs"));
+
+        let post = normalize_post_tool(post_raw).expect("claude post");
+        assert_eq!(post.tool_name, "Edit");
+        assert_eq!(post.file_path.as_deref(), Some("src/parser.rs"));
+        assert_eq!(post.success, Some(true));
+    }
+
+    #[test]
+    fn cursor_full_hook_payloads_normalize_consistently() {
+        let prompt_raw = r#"{
+            "conversation_id":"cursor-conv-1",
+            "cwd":"/tmp/project",
+            "prompt":"create release note",
+            "model":"gpt-5",
+            "generation_id":"cursor-gen-1"
+        }"#;
+        let post_raw = r#"{
+            "hook_event_name":"afterFileEdit",
+            "conversation_id":"cursor-conv-1",
+            "cwd":"/tmp/project",
+            "file_path":"/tmp/project/docs/release.md"
+        }"#;
+
+        let prompt = normalize_prompt(prompt_raw);
+        assert_eq!(prompt.prompt, "create release note");
+        assert_eq!(prompt.conversation_id.as_deref(), Some("cursor-conv-1"));
+        assert_eq!(extract_session_key(prompt_raw, "cursor"), "cursor:cursor-conv-1");
+
+        let post = normalize_post_tool(post_raw).expect("cursor afterFileEdit");
+        assert_eq!(post.tool_name, "Write");
+        assert_eq!(post.file_path.as_deref(), Some("/tmp/project/docs/release.md"));
+        assert_eq!(post.success, Some(true));
+        assert_eq!(resolve_tool_source(None, post_raw), "cursor");
+    }
+
+    #[test]
+    fn codebuddy_full_hook_payloads_normalize_consistently() {
+        let prompt_raw = r#"{
+            "session_id":"codebuddy-session-1",
+            "cwd":"/tmp/project",
+            "prompt":"create api doc"
+        }"#;
+        let pre_raw = r#"{
+            "session_id":"codebuddy-session-1",
+            "cwd":"/tmp/project",
+            "tool_name":"Write",
+            "tool_input":{"filePath":"/tmp/project/docs/api.md"}
+        }"#;
+        let post_raw = r#"{
+            "session_id":"codebuddy-session-1",
+            "cwd":"/tmp/project",
+            "tool_name":"write_to_file",
+            "tool_input":{"filePath":"/tmp/project/docs/api.md"},
+            "tool_response":{"path":"/tmp/project/docs/api.md","success":true}
+        }"#;
+
+        let prompt = normalize_prompt(prompt_raw);
+        assert_eq!(prompt.prompt, "create api doc");
+        assert_eq!(extract_session_key(prompt_raw, "codebuddy"), "codebuddy:codebuddy-session-1");
+
+        let pre = normalize_pre_tool(pre_raw).expect("codebuddy pre");
+        assert_eq!(pre.tool_name, "Write");
+        assert_eq!(pre.file_path.as_deref(), Some("/tmp/project/docs/api.md"));
+
+        let post = normalize_post_tool(post_raw).expect("codebuddy post");
+        assert_eq!(post.tool_name, "write_to_file");
+        assert_eq!(post.file_path.as_deref(), Some("/tmp/project/docs/api.md"));
+        assert_eq!(post.success, Some(true));
+    }
+
+    #[test]
+    fn workbuddy_full_hook_payloads_normalize_consistently() {
+        let prompt_raw = r#"{
+            "session_id":"workbuddy-session-1",
+            "cwd":"/tmp/project",
+            "prompt":"remove temp artifact"
+        }"#;
+        let pre_raw = r#"{
+            "session_id":"workbuddy-session-1",
+            "cwd":"/tmp/project",
+            "tool_name":"delete_file",
+            "tool_input":{"target_file":"/tmp/project/tmp/out.log"}
+        }"#;
+        let post_raw = r#"{
+            "session_id":"workbuddy-session-1",
+            "cwd":"/tmp/project",
+            "tool_name":"remove_file",
+            "tool_input":{"target_file":"/tmp/project/tmp/out.log"},
+            "tool_response":{"success":true}
+        }"#;
+
+        let prompt = normalize_prompt(prompt_raw);
+        assert_eq!(prompt.prompt, "remove temp artifact");
+        assert_eq!(extract_session_key(prompt_raw, "workbuddy"), "workbuddy:workbuddy-session-1");
+
+        let pre = normalize_pre_tool(pre_raw).expect("workbuddy pre");
+        assert_eq!(pre.tool_name, "delete_file");
+        assert_eq!(pre.file_path.as_deref(), Some("/tmp/project/tmp/out.log"));
+
+        let post = normalize_post_tool(post_raw).expect("workbuddy post");
+        assert_eq!(post.tool_name, "remove_file");
+        assert_eq!(post.file_path.as_deref(), Some("/tmp/project/tmp/out.log"));
+        assert_eq!(post.success, Some(true));
+    }
+
+    #[test]
+    fn fallback_to_direct_db_persists_prompt_when_spool_write_fails() {
+        let dir = std::env::temp_dir().join(format!("rew-hook-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open(&dir.join("test.db")).unwrap();
+        db.initialize().unwrap();
+        let envelope = HookEventEnvelope {
+            event_id: "prompt_fallback".to_string(),
+            idempotency_key: "prompt:cursor:fallback".to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            payload_version: 1,
+            payload: HookEventPayload::PromptStarted(PromptStartedPayload {
+                tool_source: "cursor".to_string(),
+                session_key: "cursor:conv-fallback".to_string(),
+                prompt: Some("fallback prompt".to_string()),
+                cwd: Some("/tmp/project".to_string()),
+                model: Some("test".to_string()),
+                conversation_id: Some("conv-fallback".to_string()),
+                generation_id: Some("gen-fallback".to_string()),
+            }),
+        };
+
+        persist_hook_envelope_with(
+            &envelope,
+            |_| Err(rew_core::error::RewError::Snapshot("spool down".into())),
+            || Ok(db),
+        )
+        .unwrap();
+
+        let db = Database::open(&dir.join("test.db")).unwrap();
+        db.initialize().unwrap();
+        let task_id = db
+            .get_active_task_for_session("cursor:conv-fallback")
+            .unwrap()
+            .expect("fallback should create task");
+        let task = db.get_task(&task_id).unwrap().unwrap();
+        assert_eq!(task.tool.as_deref(), Some("cursor"));
+        assert_eq!(task.prompt.as_deref(), Some("fallback prompt"));
+        assert!(db.hook_event_receipt_exists("prompt:cursor:fallback").unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fallback_processing_remains_idempotent_if_writer_replays_same_event() {
+        let dir = std::env::temp_dir().join(format!("rew-hook-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open(&dir.join("test.db")).unwrap();
+        db.initialize().unwrap();
+        let envelope = HookEventEnvelope {
+            event_id: "prompt_dup".to_string(),
+            idempotency_key: "prompt:cursor:dup".to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            payload_version: 1,
+            payload: HookEventPayload::PromptStarted(PromptStartedPayload {
+                tool_source: "cursor".to_string(),
+                session_key: "cursor:conv-dup".to_string(),
+                prompt: Some("dup prompt".to_string()),
+                cwd: Some("/tmp/project".to_string()),
+                model: Some("test".to_string()),
+                conversation_id: Some("conv-dup".to_string()),
+                generation_id: Some("gen-dup".to_string()),
+            }),
+        };
+
+        persist_hook_envelope_with(
+            &envelope,
+            |_| Err(rew_core::error::RewError::Snapshot("spool down".into())),
+            || Ok(db),
+        )
+        .unwrap();
+
+        let db = Database::open(&dir.join("test.db")).unwrap();
+        db.initialize().unwrap();
+        let fallback_task = db
+            .get_active_task_for_session("cursor:conv-dup")
+            .unwrap()
+            .expect("fallback created task");
+        let replay = process_hook_event(&db, &envelope).unwrap();
+        assert!(replay.task_id.is_none(), "writer replay should be absorbed by receipt idempotency");
+        assert_eq!(
+            db.get_active_task_for_session("cursor:conv-dup").unwrap().as_deref(),
+            Some(fallback_task.as_str())
+        );
+        assert!(db.hook_event_receipt_exists("prompt:cursor:dup").unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

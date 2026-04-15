@@ -102,13 +102,34 @@ cargo build -p rew-cli --release
 
 ## 测试
 
-文件变更语义相关的回归，统一从这个脚本入口跑：
+日常文件变更语义回归，统一从这个脚本入口跑：
 
 ```bash
 ./scripts/test-change-semantics.sh
 ```
 
-这个脚本会串起当前最关键的 4 组测试：
+这个脚本会串起当前最关键的语义测试矩阵，适合本地快速回归。
+
+如果要跑发布前的全量 workspace 测试，使用：
+
+```bash
+./scripts/test-all.sh
+```
+
+对应的 `pnpm` 命令：
+
+```bash
+pnpm test:semantics
+pnpm test:all
+```
+
+说明：
+
+- `test:semantics`：聚焦文件变更语义 / Git 对拍 / hook 与 daemon 关键链路
+- `test:all`：运行 `cargo test --workspace`，覆盖整个 Rust workspace
+- `tauri build` 的发布门禁现在走 `./scripts/test-all.sh`
+
+`test-change-semantics.sh` 当前重点覆盖：
 
 - `change_tracking.rs`：核心 DB / baseline / reconcile / dedup 回归
 - `git_semantics.rs`：真实 Git 对拍

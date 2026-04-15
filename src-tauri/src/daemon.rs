@@ -533,6 +533,77 @@ mod tests {
     }
 
     #[test]
+    fn route_prefers_latest_active_task_even_across_multiple_ai_tools() {
+        let (_dir, db) = temp_db();
+        let now = Utc::now();
+
+        create_task(
+            &db,
+            "t_codebuddy",
+            now - Duration::seconds(8),
+            None,
+            TaskStatus::Active,
+        );
+        db.insert_active_session(
+            "codebuddy:session",
+            "t_codebuddy",
+            "codebuddy",
+            now - Duration::seconds(8),
+        )
+        .unwrap();
+
+        create_task(
+            &db,
+            "t_cursor",
+            now - Duration::seconds(2),
+            None,
+            TaskStatus::Active,
+        );
+        db.insert_active_session("cursor:conv", "t_cursor", "cursor", now - Duration::seconds(2))
+            .unwrap();
+
+        let (task_id, attribution) = resolve_fsevent_task_route(&db, 15);
+        assert_eq!(task_id.as_deref(), Some("t_cursor"));
+        assert_eq!(attribution, "fsevent_active");
+    }
+
+    #[test]
+    fn route_keeps_completed_task_just_inside_grace_boundary() {
+        let (_dir, db) = temp_db();
+        let now = Utc::now();
+
+        create_task(
+            &db,
+            "t_boundary",
+            now - Duration::seconds(30),
+            Some(now - Duration::seconds(14)),
+            TaskStatus::Completed,
+        );
+
+        let (task_id, attribution) = resolve_fsevent_task_route(&db, 15);
+        assert_eq!(task_id.as_deref(), Some("t_boundary"));
+        assert_eq!(attribution, "fsevent_grace");
+    }
+
+    #[test]
+    fn route_switches_to_monitoring_immediately_after_grace_expires() {
+        let (_dir, db) = temp_db();
+        let now = Utc::now();
+
+        create_task(
+            &db,
+            "t_expired",
+            now - Duration::seconds(30),
+            Some(now - Duration::seconds(16)),
+            TaskStatus::Completed,
+        );
+
+        let (task_id, attribution) = resolve_fsevent_task_route(&db, 15);
+        assert!(task_id.is_none());
+        assert_eq!(attribution, "monitoring");
+    }
+
+    #[test]
     fn route_falls_back_to_monitoring_when_no_ai_task_matches() {
         let (_dir, db) = temp_db();
         let now = Utc::now();
@@ -738,6 +809,62 @@ mod tests {
         };
 
         assert!(!should_suppress_restore_event(&event, &entry));
+    }
+
+    #[test]
+    fn directory_restore_suppression_allows_edit_inside_restored_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("go/pkg");
+        let restored_a = root.join("a.rs");
+        let restored_b = root.join("b.rs");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&restored_a, "fn a() {}\n").unwrap();
+        std::fs::write(&restored_b, "fn b() {}\n").unwrap();
+        let restored_a_hash = rew_core::objects::sha256_file(&restored_a).unwrap();
+        let restored_b_hash = rew_core::objects::sha256_file(&restored_b).unwrap();
+
+        let restored_event_a = FileEvent {
+            path: restored_a.clone(),
+            kind: FileEventKind::Modified,
+            timestamp: Utc::now(),
+            size_bytes: None,
+        };
+        let restored_event_b = FileEvent {
+            path: restored_b.clone(),
+            kind: FileEventKind::Modified,
+            timestamp: Utc::now(),
+            size_bytes: None,
+        };
+        let entry_a = SuppressedRestorePath {
+            created_at: Instant::now(),
+            expected_content_hash: Some(restored_a_hash),
+            deleted: false,
+        };
+        let entry_b = SuppressedRestorePath {
+            created_at: Instant::now(),
+            expected_content_hash: Some(restored_b_hash),
+            deleted: false,
+        };
+
+        assert!(should_suppress_restore_event(&restored_event_a, &entry_a));
+        assert!(should_suppress_restore_event(&restored_event_b, &entry_b));
+
+        std::fs::write(&restored_b, "fn b() { println!(\"edited\"); }\n").unwrap();
+        let user_edit_event = FileEvent {
+            path: restored_b.clone(),
+            kind: FileEventKind::Modified,
+            timestamp: Utc::now(),
+            size_bytes: None,
+        };
+
+        assert!(
+            !should_suppress_restore_event(&user_edit_event, &entry_b),
+            "real user edits under a restored directory must not stay suppressed"
+        );
+        assert!(
+            should_suppress_restore_event(&restored_event_a, &entry_a),
+            "neighboring restored files should still suppress the restore echo"
+        );
     }
 }
 
