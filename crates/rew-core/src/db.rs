@@ -1024,6 +1024,45 @@ impl Database {
         Ok(updated)
     }
 
+    /// Periodic safety net: enqueue completed AI tasks that have change rows
+    /// but never entered the finalization queue.
+    ///
+    /// This repairs rare cases where stop processing marked a task completed
+    /// but queue insertion was missed, leaving rollup fields stale.
+    pub fn enqueue_orphaned_task_finalizations(
+        &self,
+        since: DateTime<Utc>,
+        limit: usize,
+    ) -> RewResult<usize> {
+        let now = Utc::now().to_rfc3339();
+        let since_ts = since.to_rfc3339();
+        let inserted = self.conn.execute(
+            "INSERT INTO task_finalization_queue (
+                task_id, stop_event_id, status, enqueued_at, started_at, completed_at, attempts, last_error
+             )
+             SELECT t.id, NULL, 'pending', ?1, NULL, NULL, 0, 'periodic backfill'
+             FROM tasks t
+             WHERE t.status = 'completed'
+               AND t.id NOT LIKE 'fs_%'
+               AND COALESCE(t.changes_count, 0) = 0
+               AND t.started_at >= ?2
+               AND EXISTS (
+                   SELECT 1
+                   FROM changes c
+                   WHERE c.task_id = t.id
+               )
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM task_finalization_queue q
+                   WHERE q.task_id = t.id
+               )
+             ORDER BY t.started_at DESC
+             LIMIT ?3",
+            params![now, since_ts, limit as i64],
+        )?;
+        Ok(inserted)
+    }
+
     pub fn claim_next_task_finalization_job(&self) -> RewResult<Option<TaskFinalizationJob>> {
         let tx = self.conn.unchecked_transaction()?;
 
@@ -1534,6 +1573,28 @@ impl Database {
             .filter_map(|row| row.ok().map(PathBuf::from))
             .collect();
         Ok(paths)
+    }
+
+    /// Count live files under a directory prefix. Millisecond-level via index.
+    pub fn count_live_files_under_dir(&self, dir_prefix: &Path) -> RewResult<usize> {
+        let like_pattern = subpath_like_pattern(&dir_prefix.to_string_lossy());
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM file_index
+             WHERE exists_now = 1 AND file_path LIKE ?1 ESCAPE '\\'",
+            params![like_pattern],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Count all live files across all directories. Millisecond-level.
+    pub fn count_all_live_files(&self) -> RewResult<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM file_index WHERE exists_now = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
     }
 
     /// Get changes for a task matching a specific file path exactly.
@@ -2630,6 +2691,80 @@ mod tests {
         assert_eq!(recovered, 1);
         assert_eq!(
             db.get_task_finalization_status(&task.id).unwrap().as_deref(),
+            Some("pending")
+        );
+    }
+
+    #[test]
+    fn test_enqueue_orphaned_task_finalizations_backfills_only_missing_rows() {
+        let db = test_db();
+        let now = Utc::now();
+        let orphan = Task {
+            id: "task_orphan_finalize".to_string(),
+            prompt: Some("orphan".to_string()),
+            tool: Some("claude-code".to_string()),
+            started_at: now,
+            completed_at: Some(now),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        };
+        db.create_task(&orphan).unwrap();
+        db.insert_change(&Change {
+            id: None,
+            task_id: orphan.id.clone(),
+            file_path: PathBuf::from("/tmp/orphan.rs"),
+            change_type: ChangeType::Modified,
+            old_hash: Some("old".to_string()),
+            new_hash: Some("new".to_string()),
+            diff_text: None,
+            lines_added: 1,
+            lines_removed: 0,
+            attribution: Some("hook".to_string()),
+            old_file_path: None,
+        })
+        .unwrap();
+
+        let queued = Task {
+            id: "task_already_queued".to_string(),
+            prompt: Some("queued".to_string()),
+            tool: Some("claude-code".to_string()),
+            started_at: now,
+            completed_at: Some(now),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        };
+        db.create_task(&queued).unwrap();
+        db.insert_change(&Change {
+            id: None,
+            task_id: queued.id.clone(),
+            file_path: PathBuf::from("/tmp/queued.rs"),
+            change_type: ChangeType::Modified,
+            old_hash: Some("old2".to_string()),
+            new_hash: Some("new2".to_string()),
+            diff_text: None,
+            lines_added: 1,
+            lines_removed: 0,
+            attribution: Some("hook".to_string()),
+            old_file_path: None,
+        })
+        .unwrap();
+        db.enqueue_task_finalization(&queued.id, Some("stop-queued"))
+            .unwrap();
+
+        let inserted = db
+            .enqueue_orphaned_task_finalizations(now - chrono::Duration::hours(1), 20)
+            .unwrap();
+        assert_eq!(inserted, 1);
+        assert_eq!(
+            db.get_task_finalization_status(&orphan.id).unwrap().as_deref(),
+            Some("pending")
+        );
+        assert_eq!(
+            db.get_task_finalization_status(&queued.id).unwrap().as_deref(),
             Some("pending")
         );
     }

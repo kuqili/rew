@@ -4,11 +4,11 @@ import { X, Plus, FolderOpen, RefreshCw, Trash2, ChevronDown, ChevronRight, Info
 import { useScanProgress } from "../hooks/useScanProgress";
 import { getToolBrandIcon } from "./ToolIcons";
 import {
-  analyzeDirectories, getStorageInfo, addWatchDir, removeWatchDir,
+  analyzeDirectories, getStorageInfo, getDirStats, addWatchDir, removeWatchDir,
   getMonitoringWindow, setMonitoringWindow,
   getDirIgnoreConfig, updateDirIgnoreConfig, listDirContents, rescanWatchDir,
   detectAiTools, installToolHook, uninstallToolHook,
-  type FullAnalysis, type StorageInfo, type DirScanStatus,
+  type FullAnalysis, type StorageInfo, type DirScanStatus, type DirStatsResult,
   type DirIgnoreConfigInfo, type DirContentItem, type AiToolInfo,
 } from "../lib/tauri";
 
@@ -37,8 +37,10 @@ const TABS = [
 
 export default function SettingsPanel({ onClose }: Props) {
   const [tab, setTab] = useState<"dirs" | "record" | "ai_tools" | "about">("dirs");
+  const [dirStats, setDirStats] = useState<DirStatsResult | null>(null);
   const [analysis, setAnalysis] = useState<FullAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const analysisLoadedRef = useRef(false);
   const [storage, setStorage] = useState<StorageInfo | null>(null);
   const [expandedDir, setExpandedDir] = useState<string | null>(null);
   const [windowSecs, setWindowSecs] = useState<number>(600);
@@ -48,31 +50,48 @@ export default function SettingsPanel({ onClose }: Props) {
   const [addSuccess, setAddSuccess] = useState<string | null>(null);
   const scanProgress = useScanProgress();
 
+  // Merge sources: dirStats (fast, file counts) + analysis (slow, sizes) + scanProgress (live)
   const allDirs = useMemo((): DirScanStatus[] => {
     const spDirs = scanProgress?.dirs ?? [];
+    // Use dirStats paths as base, fallback to analysis dirs
+    const statDirs = dirStats?.dirs ?? [];
     const aDirs = analysis?.dirs ?? [];
     const paths = Array.from(
-      new Set([...aDirs.map((d) => d.path), ...spDirs.map((d) => d.path)])
+      new Set([
+        ...statDirs.map((d) => d.path),
+        ...aDirs.map((d) => d.path),
+        ...spDirs.map((d) => d.path),
+      ])
     );
     return paths.map((path) => {
       const sp = spDirs.find((d) => d.path === path);
       if (sp) return sp;
+      const statEntry = statDirs.find((d) => d.path === path);
+      const aEntry = aDirs.find((d) => d.path === path);
+      const fileCount = statEntry?.file_count ?? aEntry?.total_files ?? 0;
       const name = path.split("/").filter(Boolean).pop() ?? path;
       return {
         path,
         name,
         status: "complete" as const,
-        files_total: aDirs.find((d) => d.path === path)?.total_files ?? 0,
-        files_done: aDirs.find((d) => d.path === path)?.total_files ?? 0,
+        files_total: fileCount,
+        files_done: fileCount,
         files_failed: 0,
         percent: 100,
         last_completed_at: null,
       };
     });
-  }, [scanProgress?.dirs, analysis?.dirs]);
+  }, [scanProgress?.dirs, dirStats?.dirs, analysis?.dirs]);
 
+  // Fast refresh: file counts from file_index (ms-level)
+  const refreshDirStats = useCallback(() => {
+    getDirStats().then(setDirStats).catch(console.error);
+  }, []);
+
+  // Slow refresh: full analysis with sizes (seconds, runs in background)
   const refreshAnalysis = useCallback(() => {
     setAnalyzing(true);
+    analysisLoadedRef.current = true;
     analyzeDirectories()
       .then(setAnalysis)
       .catch(console.error)
@@ -81,28 +100,28 @@ export default function SettingsPanel({ onClose }: Props) {
   }, []);
 
   useEffect(() => {
-    refreshAnalysis();
+    // Fast path only — file counts appear instantly, sizes on-demand
+    refreshDirStats();
     getMonitoringWindow().then(setWindowSecs).catch(() => {});
-    const storageTimer = setInterval(() => {
-      getStorageInfo().then(setStorage).catch(() => {});
-    }, 3000);
     const unlistenComplete = listen("scan-complete", () => {
-      refreshAnalysis();
+      refreshDirStats();
+      // If user had already triggered analysis, refresh it
+      if (analysisLoadedRef.current) refreshAnalysis();
     });
     return () => {
-      clearInterval(storageTimer);
       unlistenComplete.then((fn) => fn());
     };
-  }, [refreshAnalysis]);
+  }, [refreshDirStats, refreshAnalysis]);
 
   const wasScanningRef = useRef(false);
   useEffect(() => {
     const isNowScanning = scanProgress?.is_scanning ?? false;
     if (wasScanningRef.current && !isNowScanning) {
-      refreshAnalysis();
+      refreshDirStats();
+      if (analysisLoadedRef.current) refreshAnalysis();
     }
     wasScanningRef.current = isNowScanning;
-  }, [scanProgress?.is_scanning, refreshAnalysis]);
+  }, [scanProgress?.is_scanning, refreshDirStats, refreshAnalysis]);
 
   const handleAddDir = async () => {
     setAddError(null);
@@ -218,24 +237,37 @@ export default function SettingsPanel({ onClose }: Props) {
           <div className="space-y-6">
             {/* Global overview */}
             <div className="bg-bg-grouped rounded-md px-5 py-4">
-              {analyzing ? (
+              {!dirStats && !analysis ? (
                 <div className="flex items-center gap-2 text-[13px] text-t-2">
                   <span className="inline-block animate-spin">◐</span> 正在分析保护目录...
                 </div>
-              ) : analysis ? (
+              ) : (
                 <div className="space-y-3">
                   <div>
                     <div className="text-[11px] text-t-3 mb-0.5">保护范围</div>
                     <div className="flex items-baseline gap-2">
-                      <span className="text-[17px] font-semibold text-t-1">{analysis.total_files.toLocaleString()}</span>
+                      <span className="text-[17px] font-semibold text-t-1">{(dirStats?.total_files ?? analysis?.total_files ?? 0).toLocaleString()}</span>
                       <span className="text-[13px] text-t-3">个文件</span>
-                      <span className="text-[13px] text-t-2">· {fmt(analysis.total_bytes)}</span>
+                      {analysis ? (
+                        <span className="text-[13px] text-t-2">· {fmt(analysis.total_bytes)}</span>
+                      ) : analyzing ? (
+                        <span className="text-[13px] text-t-4">· 计算大小中...</span>
+                      ) : (
+                        <button
+                          onClick={refreshAnalysis}
+                          className="text-[12px] text-sys-blue hover:text-sys-blue/80 transition-colors cursor-default"
+                        >
+                          计算大小
+                        </button>
+                      )}
                     </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-t-3 mt-1">
-                      {analysis.dirs.map((d) => (
-                        <span key={d.path}>{d.path.split("/").pop()}: {fmt(d.total_bytes)}</span>
-                      ))}
-                    </div>
+                    {analysis && (
+                      <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-t-3 mt-1">
+                        {analysis.dirs.map((d) => (
+                          <span key={d.path}>{d.path.split("/").pop()}: {fmt(d.total_bytes)}</span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   {(() => {
                     const isCurrentlyScanning = scanProgress?.is_scanning ?? false;
@@ -270,7 +302,7 @@ export default function SettingsPanel({ onClose }: Props) {
                             <span className="text-[15px] font-semibold text-sys-amber">⚠ 部分文件未能备份</span>
                           </div>
                           <div className="text-[12px] text-t-3 leading-relaxed">
-                            共 {analysis.total_files.toLocaleString()} 个文件，其中
+                            共 {(dirStats?.total_files ?? analysis?.total_files ?? 0).toLocaleString()} 个文件，其中
                             <span className="text-sys-amber font-medium"> {totalFailed.toLocaleString()} 个备份失败</span>
                             （通常是权限不足或文件被锁定），点击对应目录重新扫描。
                           </div>
@@ -281,7 +313,7 @@ export default function SettingsPanel({ onClose }: Props) {
                                 <button
                                   key={d.path}
                                   onClick={async () => {
-                                    try { await rescanWatchDir(d.path); refreshAnalysis(); }
+                                    try { await rescanWatchDir(d.path); refreshDirStats(); if (analysisLoadedRef.current) refreshAnalysis(); }
                                     catch (e) { console.error(e); }
                                   }}
                                   className="px-3 py-1.5 rounded-md border border-sys-amber/40 bg-sys-amber/10 text-sys-amber text-[12px] hover:opacity-80 transition-opacity"
@@ -299,7 +331,7 @@ export default function SettingsPanel({ onClose }: Props) {
                       return (
                         <div className="flex items-center gap-2">
                           <span className="text-[15px] font-semibold text-sys-green">✓ 初始备份已完成</span>
-                          <span className="text-[13px] text-t-3">{analysis.total_files.toLocaleString()} 个文件受保护</span>
+                          <span className="text-[13px] text-t-3">{(dirStats?.total_files ?? analysis?.total_files ?? 0).toLocaleString()} 个文件受保护</span>
                         </div>
                       );
                     }
@@ -321,7 +353,7 @@ export default function SettingsPanel({ onClose }: Props) {
                     </div>
                   )}
                 </div>
-              ) : null}
+              )}
             </div>
 
             {/* Directory list */}
@@ -358,12 +390,14 @@ export default function SettingsPanel({ onClose }: Props) {
                     key={dir.path}
                     dir={dir}
                     da={analysis?.dirs.find((d) => d.path === dir.path) || null}
+                    fileCount={dirStats?.dirs.find((d) => d.path === dir.path)?.file_count ?? null}
                     expanded={expandedDir === dir.path}
                     onToggle={() => setExpandedDir(expandedDir === dir.path ? null : dir.path)}
                     onRemove={async () => {
                       if (confirm(`停止保护「${dir.name}」？\n已备份的文件不会被删除。`)) {
                         await removeWatchDir(dir.path);
-                        refreshAnalysis();
+                        refreshDirStats();
+                        if (analysisLoadedRef.current) refreshAnalysis();
                         setAddError(null);
                       }
                     }}
@@ -413,10 +447,11 @@ export default function SettingsPanel({ onClose }: Props) {
 // ─── Directory Card ───
 
 function DirCard({
-  dir, da, expanded, onToggle, onRemove,
+  dir, da, fileCount, expanded, onToggle, onRemove,
 }: {
   dir: DirScanStatus;
   da: { total_files: number; total_bytes: number; categories: { category: string; total_bytes: number; file_count: number }[] } | null;
+  fileCount: number | null;
   expanded: boolean;
   onToggle: () => void;
   onRemove: () => Promise<void>;
@@ -435,11 +470,15 @@ function DirCard({
           {expanded ? <ChevronDown className="w-4 h-4 text-t-3" /> : <ChevronRight className="w-4 h-4 text-t-3" />}
         </div>
         <div className="text-[11px] text-t-3 ml-[26px]">{dir.path}</div>
-        {da && (
+        {da ? (
           <div className="text-[11px] text-t-2 mt-1">
             {da.total_files.toLocaleString()} 个文件 · {fmt(da.total_bytes)}
           </div>
-        )}
+        ) : fileCount != null ? (
+          <div className="text-[11px] text-t-2 mt-1">
+            {fileCount.toLocaleString()} 个文件
+          </div>
+        ) : null}
         {dir.status === "scanning" && (
           <div className="mt-2 w-full bg-border rounded-full h-1 overflow-hidden">
             <div className="h-full bg-sys-blue rounded-full transition-all duration-300" style={{ width: `${Math.min(dir.percent, 100)}%` }} />

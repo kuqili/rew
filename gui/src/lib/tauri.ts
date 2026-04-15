@@ -362,6 +362,21 @@ export async function analyzeDirectories(): Promise<FullAnalysis> {
   return invoke<FullAnalysis>("analyze_directories");
 }
 
+export interface DirStatEntry {
+  path: string;
+  file_count: number;
+}
+
+export interface DirStatsResult {
+  dirs: DirStatEntry[];
+  total_files: number;
+}
+
+/** Fast file counts from file_index (ms-level, no disk traversal). */
+export async function getDirStats(): Promise<DirStatsResult> {
+  return invoke<DirStatsResult>("get_dir_stats");
+}
+
 export interface StorageInfo {
   object_count: number;
   apparent_bytes: number;

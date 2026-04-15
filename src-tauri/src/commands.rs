@@ -2314,6 +2314,41 @@ pub struct FullAnalysis {
     pub large_file_bytes: u64,
 }
 
+/// Fast directory stats from file_index (millisecond-level, no disk traversal).
+/// Returns file counts per watched directory. Size is NOT included — use
+/// analyze_directories for full size computation (async/slow).
+#[tauri::command]
+pub async fn get_dir_stats(state: State<'_, AppState>) -> Result<DirStatsResult, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let mut dirs = Vec::new();
+    let mut total_files = 0usize;
+
+    for dir_path in &config.watch_dirs {
+        let count = db.count_live_files_under_dir(dir_path).unwrap_or(0);
+        total_files += count;
+        dirs.push(DirStatEntry {
+            path: dir_path.display().to_string(),
+            file_count: count,
+        });
+    }
+
+    Ok(DirStatsResult { dirs, total_files })
+}
+
+#[derive(serde::Serialize)]
+pub struct DirStatEntry {
+    pub path: String,
+    pub file_count: usize,
+}
+
+#[derive(serde::Serialize)]
+pub struct DirStatsResult {
+    pub dirs: Vec<DirStatEntry>,
+    pub total_files: usize,
+}
+
 /// Analyze all watched directories: count files per category and estimate sizes.
 /// Optimized: skips deep recursion into dev dirs (node_modules, .git, etc.)
 /// and limits traversal depth to keep analysis fast (~seconds, not minutes).

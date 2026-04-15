@@ -78,6 +78,7 @@ pub fn run() {
             commands::update_ignore_config,
             commands::get_ignore_config,
             commands::get_storage_info,
+            commands::get_dir_stats,
             commands::analyze_directories,
             // Per-directory ignore config
             commands::get_dir_ignore_config,
@@ -115,6 +116,7 @@ pub fn run() {
             {
                 let handle_for_sealer = app.handle().clone();
                 std::thread::spawn(move || {
+                    let mut last_finalization_backfill_at = std::time::Instant::now();
                     loop {
                         std::thread::sleep(std::time::Duration::from_secs(10));
 
@@ -186,6 +188,33 @@ pub fn run() {
                                     let _ = std::fs::remove_file(rew_dir.join(".current_session"));
                                     if let Ok(db) = state.db.lock() {
                                         let _ = db.recover_stale_ai_tasks(now);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Periodic safety net (every 15 minutes):
+                        // re-enqueue completed AI tasks that have changes but
+                        // never entered the finalization queue.
+                        if last_finalization_backfill_at.elapsed()
+                            >= std::time::Duration::from_secs(15 * 60)
+                        {
+                            last_finalization_backfill_at = std::time::Instant::now();
+                            if let Ok(db) = state.db.lock() {
+                                let since = chrono::Utc::now() - chrono::Duration::hours(48);
+                                match db.enqueue_orphaned_task_finalizations(since, 20) {
+                                    Ok(inserted) if inserted > 0 => {
+                                        info!(
+                                            "Periodic finalization backfill enqueued {} orphaned task(s)",
+                                            inserted
+                                        );
+                                    }
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        warn!(
+                                            "Periodic finalization backfill failed: {}",
+                                            err
+                                        );
                                     }
                                 }
                             }
