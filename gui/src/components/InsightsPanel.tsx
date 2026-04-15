@@ -57,13 +57,9 @@ function periodDateRange(period: InsightPeriod): string {
 
 // ─── Main Component ─────────────────────────────────────────────
 
-interface Props {
-  dirFilter?: string | null;
-}
-
-export default function InsightsPanel({ dirFilter }: Props) {
+export default function InsightsPanel() {
   const [period, setPeriod] = useState<InsightPeriod>("week");
-  const { data, loading } = useInsights(period, dirFilter);
+  const { data, loading } = useInsights(period);
 
   if (loading && !data) {
     return (

@@ -324,6 +324,8 @@ function TaskCard({
   const isWindow = isMonitoringWindow(task);
   const isRolledBack = task.status === "rolled-back";
   const isActive = task.status === "active";
+  const isFinalizing = task.finalization_status === "pending" || task.finalization_status === "running";
+  const isFinalizeFailed = task.finalization_status === "failed";
   const toolMeta = !isWindow ? getToolMeta(task.tool) : null;
 
   let description: string;
@@ -363,6 +365,16 @@ function TaskCard({
         {isActive && (
           <span className={`text-[10px] px-1.5 py-0 rounded ${selected ? "bg-white/20 text-white/85" : "bg-sys-amber/10 text-sys-amber"}`}>
             进行中
+          </span>
+        )}
+        {isFinalizing && (
+          <span className={`text-[10px] px-1.5 py-0 rounded ${selected ? "bg-white/20 text-white/85" : "bg-sys-blue/10 text-sys-blue"}`}>
+            整理中
+          </span>
+        )}
+        {isFinalizeFailed && (
+          <span className={`text-[10px] px-1.5 py-0 rounded ${selected ? "bg-white/20 text-white/85" : "bg-sys-red/10 text-sys-red"}`}>
+            整理失败
           </span>
         )}
 

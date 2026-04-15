@@ -10,6 +10,10 @@ use rew_core::backup::{BackupEngine, BackupJob};
 use rew_core::config::RewConfig;
 use rew_core::detector::RuleEngine;
 use rew_core::file_index::sync_file_index_after_change;
+use rew_core::hook_events::{
+    claim_oldest_hook_event, mark_hook_event_done, mark_hook_event_failed, process_hook_event,
+    requeue_hook_spool_processing_files,
+};
 use rew_core::objects::ObjectStore;
 use rew_core::pipeline;
 use rew_core::scanner::ProgressCallback;
@@ -24,6 +28,150 @@ use tracing::{error, info, warn};
 
 const SUPPRESSED_PATH_TTL_SECS: u64 = 90;
 const SUPPRESSED_RESTORE_TTL_SECS: u64 = 600;
+
+fn build_task_summary(changes: &[Change]) -> Option<String> {
+    if changes.is_empty() {
+        return None;
+    }
+
+    let created = changes
+        .iter()
+        .filter(|c| c.change_type == ChangeType::Created)
+        .count();
+    let modified = changes
+        .iter()
+        .filter(|c| c.change_type == ChangeType::Modified)
+        .count();
+    let deleted = changes
+        .iter()
+        .filter(|c| c.change_type == ChangeType::Deleted)
+        .count();
+
+    Some(format!(
+        "{} files changed (+{} created, ~{} modified, -{} deleted)",
+        changes.len(), created, modified, deleted
+    ))
+}
+
+fn finalize_task_job(db: &rew_core::db::Database, task_id: &str) -> rew_core::error::RewResult<()> {
+    let objects_root = rew_home_dir().join("objects");
+    let _ = rew_core::reconcile::reconcile_task(db, task_id, &objects_root);
+
+    let changes = db.get_changes_for_task(task_id)?;
+    let (changes_count, _, _) = db.refresh_task_rollup_from_changes(task_id).unwrap_or((
+        changes.len() as u32,
+        changes.iter().map(|c| c.lines_added).sum(),
+        changes.iter().map(|c| c.lines_removed).sum(),
+    ));
+
+    if let Some(summary) = build_task_summary(&changes) {
+        db.update_task_summary(task_id, &summary)?;
+    } else {
+        db.clear_task_summary(task_id)?;
+    }
+
+    if let Some(task) = db.get_task(task_id)? {
+        let end_at = task.completed_at.unwrap_or_else(chrono::Utc::now);
+        let duration_secs =
+            (end_at - task.started_at).num_milliseconds().max(0) as f64 / 1000.0;
+        db.finalize_task_stats(task_id, duration_secs, changes_count as i32)?;
+    }
+
+    Ok(())
+}
+
+fn start_task_finalization_worker(app: &AppHandle) {
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let db_path = rew_home_dir().join("snapshots.db");
+        let db = match rew_core::db::Database::open(&db_path) {
+            Ok(db) => db,
+            Err(e) => {
+                error!("Finalization worker failed to open DB: {}", e);
+                return;
+            }
+        };
+        let _ = db.initialize();
+        let _ = db.recover_stale_task_finalizations();
+
+        loop {
+            match db.claim_next_task_finalization_job() {
+                Ok(Some(job)) => {
+                    let task_id = job.task_id.clone();
+                    let _ = app_handle.emit("task-updated", serde_json::json!({
+                        "task_id": task_id,
+                        "finalization_status": "running",
+                    }));
+                    match finalize_task_job(&db, &job.task_id) {
+                        Ok(()) => {
+                            let _ = db.mark_task_finalization_done(&job.task_id);
+                            let _ = app_handle.emit("task-updated", serde_json::json!({
+                                "task_id": job.task_id,
+                                "finalization_status": "done",
+                            }));
+                        }
+                        Err(err) => {
+                            error!("Failed to finalize task {}: {}", job.task_id, err);
+                            let _ = db.mark_task_finalization_failed(&job.task_id, &err.to_string());
+                            let _ = app_handle.emit("task-updated", serde_json::json!({
+                                "task_id": job.task_id,
+                                "finalization_status": "failed",
+                            }));
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
+                    }
+                }
+                Ok(None) => {
+                    std::thread::sleep(std::time::Duration::from_millis(350));
+                }
+                Err(err) => {
+                    error!("Finalization worker queue error: {}", err);
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        }
+    });
+}
+
+fn start_hook_event_writer(app: &AppHandle) {
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let db_path = rew_home_dir().join("snapshots.db");
+        let db = match rew_core::db::Database::open(&db_path) {
+            Ok(db) => db,
+            Err(e) => {
+                error!("Hook event writer failed to open DB: {}", e);
+                return;
+            }
+        };
+        let _ = db.initialize();
+        let _ = requeue_hook_spool_processing_files();
+
+        loop {
+            match claim_oldest_hook_event() {
+                Ok(Some((processing_path, envelope))) => {
+                    match process_hook_event(&db, &envelope) {
+                        Ok(outcome) => {
+                            let _ = mark_hook_event_done(&processing_path);
+                            if let Some(task_id) = outcome.task_id {
+                                let _ = app_handle.emit("task-updated", &task_id);
+                            }
+                        }
+                        Err(err) => {
+                            error!("Failed to process hook event {}: {}", envelope.event_id, err);
+                            let _ = mark_hook_event_failed(&processing_path, &err.to_string());
+                        }
+                    }
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(120)),
+                Err(err) => {
+                    error!("Hook event writer queue error: {}", err);
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        }
+    });
+}
 
 fn should_suppress_restore_event(
     event: &rew_core::types::FileEvent,
@@ -121,6 +269,8 @@ pub fn start_daemon(app: &AppHandle) {
     // then restore the previous monitoring window.
     recover_stale_ai_tasks_on_startup(app);
     restore_monitoring_window_from_db(app);
+    start_hook_event_writer(app);
+    start_task_finalization_worker(app);
 
     let app_handle = app.clone();
 
@@ -928,6 +1078,7 @@ async fn run_pipeline(
                                                     let _ = db.update_task_completed_at(&old.task_id, now);
                                                     let objs = rew_home_dir().join("objects");
                                                     let _ = rew_core::reconcile::reconcile_task(&db, &old.task_id, &objs);
+                                                    let _ = db.refresh_task_rollup_from_changes(&old.task_id);
                                                 }
                                                 info!("Sealed monitoring window {} (AI task started)", &old.task_id);
                                             }
@@ -1004,6 +1155,7 @@ async fn run_pipeline(
                                                 let _ = db.update_task_completed_at(old_id, now);
                                                 let objs = rew_home_dir().join("objects");
                                                 let _ = rew_core::reconcile::reconcile_task(&db, old_id, &objs);
+                                                let _ = db.refresh_task_rollup_from_changes(old_id);
                                             }
                                             // Track last-event time for the current window
                                             let _ = db.update_task_completed_at(&task_id, now);

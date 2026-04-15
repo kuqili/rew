@@ -236,6 +236,12 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
               {timeString}
             </div>
             <div className="text-[13px] text-t-2 tabular-nums">{dateString}</div>
+            {(task.finalization_status === "pending" || task.finalization_status === "running") && (
+              <div className="text-[12px] text-sys-blue mt-1">正在整理变更...</div>
+            )}
+            {task.finalization_status === "failed" && (
+              <div className="text-[12px] text-sys-red mt-1">变更整理失败，稍后会自动重试</div>
+            )}
           </div>
 
           {/* Restore button */}

@@ -493,7 +493,7 @@ fn detect_codebuddy(rew_bin: &str) -> Option<AiToolInfo> {
 
 /// Matcher covering both CLI-style and IDE-style tool names.
 const CODEBUDDY_TOOL_MATCHER: &str =
-    "Write|write_to_file|Edit|replace_in_file|MultiEdit|Bash|execute_command";
+    "Write|write_to_file|Edit|replace_in_file|MultiEdit|Bash|execute_command|Delete|delete_file|remove_file";
 
 fn install_codebuddy_hooks(rew_bin: &str) -> Result<(), String> {
     let settings_path = codebuddy_settings_path()
@@ -765,6 +765,7 @@ mod tests {
             assert!(matcher.contains("write_to_file"));
             assert!(matcher.contains("replace_in_file"));
             assert!(matcher.contains("execute_command"));
+            assert!(matcher.contains("delete_file"));
         }
     }
 }

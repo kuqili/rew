@@ -96,6 +96,7 @@ pub fn run() {
             commands::uninstall_tool_hook,
             // Task statistics
             commands::get_task_stats,
+            commands::get_insights,
         ])
         .setup(|app| {
             // Install CLI binary from bundled resources to ~/.rew/bin/rew

@@ -18,7 +18,7 @@ export default function MainLayout() {
   const [toolFilter, setToolFilter] = useState<string | null>(null);
 
   // Load tasks to compute active tools for sidebar
-  const { tasks: allTasks } = useTasks(selectedDir);
+  const { tasks: allTasks } = useTasks(selectedDir, { enabled: viewMode !== "insights" });
 
   const activeTools = useMemo(() => {
     const seen = new Map<string, string>();
@@ -75,7 +75,7 @@ export default function MainLayout() {
         {viewMode === "insights" ? (
           /* Insights full panel (replaces timeline + detail) */
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-white">
-            <InsightsPanel dirFilter={selectedDir} />
+            <InsightsPanel />
           </div>
         ) : (
           <>

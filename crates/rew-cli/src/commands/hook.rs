@@ -15,19 +15,21 @@
 //! - Copilot: `toolName`/`toolArgs` format
 //! - Generic: flat `tool_name`/`file_path` (legacy rew format)
 
-use rew_core::backup::clonefile;
-use rew_core::baseline::resolve_baseline;
 use rew_core::db::Database;
 use rew_core::error::RewResult;
-use rew_core::file_index::sync_file_index_after_change;
+use rew_core::hook_events::{
+    append_hook_event, deterministic_event_id, process_hook_event, HookEventEnvelope,
+    HookEventPayload, ObservedPathChange, PostToolObservedPayload, PromptStartedPayload,
+    TaskStopRequestedPayload,
+};
 use rew_core::objects::{sha256_file, ObjectStore};
 use rew_core::scope::{ScopeEngine, ScopeResult};
-use rew_core::types::{Change, ChangeType, Task, TaskStats, TaskStatus};
+use rew_core::types::ChangeType;
 use rew_core::watcher::filter::PathFilter;
 use rew_core::rew_home_dir;
 
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -143,7 +145,8 @@ fn normalize_pre_tool(raw: &str) -> Option<NormalizedPreTool> {
     // Try Claude Code format first (nested tool_input)
     if let Ok(input) = serde_json::from_str::<ClaudeCodeInput>(raw) {
         if let Some(tool_name) = input.tool_name {
-            let (file_path, command) = extract_from_tool_input(&input.tool_input);
+            let (file_path, command) =
+                extract_tool_path_and_command(&input.tool_input, None);
             return Some(NormalizedPreTool {
                 tool_name,
                 file_path,
@@ -172,7 +175,8 @@ fn normalize_post_tool(raw: &str) -> Option<NormalizedPostTool> {
     // Try Claude Code / Cursor postToolUse format (has tool_name + tool_input)
     if let Ok(input) = serde_json::from_str::<ClaudeCodeInput>(raw) {
         if let Some(tool_name) = input.tool_name {
-            let (file_path, command) = extract_from_tool_input(&input.tool_input);
+            let (file_path, command) =
+                extract_tool_path_and_command(&input.tool_input, input.tool_response.as_ref());
             let success = input.tool_response.as_ref().and_then(|r| {
                 r.get("success").and_then(|v| v.as_bool())
             });
@@ -218,24 +222,80 @@ fn normalize_post_tool(raw: &str) -> Option<NormalizedPostTool> {
     None
 }
 
-/// Extract file_path and command from Claude Code's nested `tool_input` object.
+fn first_string_field(
+    obj: &serde_json::Value,
+    keys: &[&str],
+) -> Option<String> {
+    keys.iter()
+        .find_map(|key| obj.get(*key).and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+}
+
+fn first_path_field(
+    obj: &serde_json::Value,
+    scalar_keys: &[&str],
+    array_keys: &[&str],
+) -> Option<String> {
+    first_string_field(obj, scalar_keys).or_else(|| {
+        array_keys.iter().find_map(|key| {
+            obj.get(*key)
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.iter().find_map(|v| v.as_str()))
+                .map(|s| s.to_string())
+        })
+    })
+}
+
+/// Extract file path and command from nested tool payloads.
 ///
 /// Claude Code passes tool arguments like:
 /// - Write/Edit: `{ "file_path": "/path/to/file", "content": "..." }`
 /// - Bash: `{ "command": "ls -la" }`
-fn extract_from_tool_input(tool_input: &Option<serde_json::Value>) -> (Option<String>, Option<String>) {
-    match tool_input {
-        Some(obj) => {
-            let file_path = obj.get("file_path")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let command = obj.get("command")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            (file_path, command)
-        }
-        None => (None, None),
-    }
+///
+/// CodeBuddy / WorkBuddy IDE payloads use camelCase (`filePath`) and may only
+/// expose the final path in `tool_response.path`, so we accept both.
+fn extract_tool_path_and_command(
+    tool_input: &Option<serde_json::Value>,
+    tool_response: Option<&serde_json::Value>,
+) -> (Option<String>, Option<String>) {
+    let file_path = tool_input
+        .as_ref()
+        .and_then(|obj| {
+            first_path_field(
+                obj,
+                &[
+                    "file_path",
+                    "filePath",
+                    "path",
+                    "target_file",
+                    "targetFile",
+                    "target_path",
+                    "targetPath",
+                ],
+                &["file_paths", "filePaths", "paths", "target_files", "targetFiles"],
+            )
+        })
+        .or_else(|| {
+            tool_response.and_then(|obj| {
+                first_path_field(
+                    obj,
+                    &[
+                        "file_path",
+                        "filePath",
+                        "path",
+                        "target_file",
+                        "targetFile",
+                    ],
+                    &["file_paths", "filePaths", "paths"],
+                )
+            })
+        });
+
+    let command = tool_input
+        .as_ref()
+        .and_then(|obj| first_string_field(obj, &["command", "cmd", "shellCommand"]));
+
+    (file_path, command)
 }
 
 /// Parse a shell command and predict which file paths it might write to.
@@ -345,6 +405,10 @@ fn is_edit_tool(tool_name: &str) -> bool {
     matches!(tool_name, "Edit" | "edit" | "MultiEdit" | "replace_in_file")
 }
 
+fn is_delete_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "Delete" | "delete" | "delete_file" | "remove_file")
+}
+
 fn infer_path_change_type(
     tool_name: &str,
     path_exists: bool,
@@ -412,56 +476,26 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
         .ok()
         .and_then(|v| v.generation_id);
     let tool_source = resolve_tool_source(source, &raw);
-
-    let rew_dir = rew_home_dir();
-    std::fs::create_dir_all(&rew_dir)?;
-
-    let db = open_db()?;
-
     let effective_sid = extract_session_key(&raw, &tool_source);
-
-    // Close any orphan active task left by a previous session
-    if let Ok(Some(old_tid)) = db.get_active_task_for_session(&effective_sid) {
-        let _ = db.update_task_status(&old_tid, &TaskStatus::Completed, Some(Utc::now()));
-        let _ = db.deactivate_session(&effective_sid);
-    }
-
-    let task_id = generate_task_id();
-    let task = Task {
-        id: task_id.clone(),
+    let payload = PromptStartedPayload {
+        tool_source: tool_source.clone(),
+        session_key: effective_sid.clone(),
         prompt: if input.prompt.is_empty() { None } else { Some(input.prompt) },
-        tool: Some(tool_source.clone()),
-        started_at: Utc::now(),
-        completed_at: None,
-        status: TaskStatus::Active,
-        risk_level: None,
-        summary: None,
         cwd: input.cwd,
+        model: input.model,
+        conversation_id: input.conversation_id,
+        generation_id,
     };
-
-    db.create_task(&task)?;
-
-    let stats = TaskStats {
-        task_id: task_id.clone(),
-        model: input.model.clone(),
-        duration_secs: None,
-        tool_calls: 0,
-        files_changed: 0,
-        input_tokens: None,
-        output_tokens: None,
-        total_cost_usd: None,
-        session_id: Some(effective_sid.clone()),
-        conversation_id: input.conversation_id.clone(),
-        extra_json: None,
+    let envelope = HookEventEnvelope {
+        event_id: format!("prompt_{}", deterministic_event_id(&format!("{}:{}", tool_source, raw))),
+        idempotency_key: format!("prompt:{}:{}", effective_sid, deterministic_event_id(&raw)),
+        created_at: Utc::now().to_rfc3339(),
+        payload_version: 1,
+        payload: HookEventPayload::PromptStarted(payload.clone()),
     };
-    let _ = db.create_task_stats(&stats);
-
-    // Register session -> task mapping in DB (replaces session files)
-    let _ = db.insert_active_session(&effective_sid, &task_id, &tool_source, Utc::now());
-
-    // Store generation_id for Cursor stop-hook dedup (replaces .genid file)
-    if let Some(ref gid) = generation_id {
-        let _ = db.set_stop_guard(&effective_sid, gid);
+    if append_hook_event(&envelope).is_err() {
+        let db = open_db()?;
+        let _ = process_hook_event(&db, &envelope)?;
     }
 
     Ok(())
@@ -490,7 +524,7 @@ pub fn handle_pre_tool(source: Option<&str>) -> RewResult<i32> {
     );
 
     match input.tool_name.as_str() {
-        t if is_write_tool(t) || is_edit_tool(t) => {
+        t if is_write_tool(t) || is_edit_tool(t) || is_delete_tool(t) => {
             if let Some(ref path_str) = input.file_path {
                 let path = canonicalize_path(path_str);
 
@@ -555,123 +589,72 @@ pub fn handle_post_tool(source: Option<&str>) -> RewResult<()> {
 
     let tool_source = resolve_tool_source(source, &raw);
     let session_key = extract_session_key(&raw, &tool_source);
-    let db = open_db()?;
-    let task_id = db.get_active_task_for_session(&session_key)?;
+    let rew_dir = rew_home_dir();
+    std::fs::create_dir_all(&rew_dir)?;
+    let obj_store = ObjectStore::new(rew_dir.join("objects"))?;
+    let mut observations = Vec::new();
 
-    if let Some(ref tid) = task_id {
-        let _ = db.increment_tool_calls(tid);
-    }
-
-    if let (Some(task_id), Some(path_str)) = (task_id.as_ref(), input.file_path.as_ref()) {
+    if let Some(path_str) = input.file_path.as_ref() {
         let path = canonicalize_path(path_str);
-
-        if is_temp_file(&path) || should_ignore_path(&path) {
-            return Ok(());
+        if !is_temp_file(&path) && !should_ignore_path(&path) {
+            let file_exists_after = path.exists();
+            let new_hash = if file_exists_after {
+                let hash = sha256_file(&path).ok();
+                let _ = obj_store.store(&path);
+                hash
+            } else {
+                None
+            };
+            observations.push(ObservedPathChange {
+                file_path: path.to_string_lossy().to_string(),
+                file_exists_after,
+                new_hash,
+            });
         }
-
-        let baseline = resolve_baseline(&db, task_id, &path, Some(&session_key));
-
-        let change_type = infer_path_change_type(
-            &input.tool_name,
-            path.exists(),
-            baseline.existed,
-        );
-
-        let new_hash = if path.exists() {
-            sha256_file(&path).ok()
-        } else {
-            None
-        };
-
-        let rew_dir = rew_home_dir();
-        let obj_store = ObjectStore::new(rew_dir.join("objects"))?;
-        if path.exists() {
-            obj_store.store(&path).ok();
-        }
-
-        let old_hash = if change_type == ChangeType::Created {
-            None
-        } else {
-            baseline.hash
-        };
-
-        let (lines_added, lines_removed) = {
-            rew_core::diff::count_changed_lines_from_store(
-                &obj_store,
-                old_hash.as_deref(),
-                new_hash.as_deref(),
-            )
-        };
-
-        let change = Change {
-            id: None,
-            task_id: task_id.clone(),
-            file_path: path,
-            change_type,
-            old_hash,
-            new_hash,
-            diff_text: None,
-            lines_added,
-            lines_removed,
-            attribution: Some("hook".into()),
-            old_file_path: None,
-        };
-
-        db.upsert_change(&change)?;
-        let _ = sync_file_index_after_change(&db, &change, "hook", &Utc::now().to_rfc3339());
-    } else if let (Some(task_id), Some(cmd)) = (task_id.as_ref(), input.command.as_ref()) {
+    } else if let Some(cmd) = input.command.as_ref() {
         if is_shell_tool(&input.tool_name) {
-            let predicted = predict_bash_file_paths(cmd, input.cwd.as_deref());
-            if !predicted.is_empty() {
-                let rew_dir = rew_home_dir();
-                let obj_store = ObjectStore::new(rew_dir.join("objects"))?;
-
-                for path in predicted {
-                    if !path.exists() || is_temp_file(&path) || should_ignore_path(&path) {
-                        continue;
-                    }
-                    let new_hash = sha256_file(&path).ok();
-                    if path.exists() {
-                        obj_store.store(&path).ok();
-                    }
-                    let bash_baseline = resolve_baseline(&db, task_id, &path, Some(&session_key));
-                    let old_hash = bash_baseline.hash.clone();
-
-                    let change_type =
-                        infer_path_change_type(&input.tool_name, path.exists(), bash_baseline.existed);
-
-                    let (lines_added, lines_removed) = {
-                        rew_core::diff::count_changed_lines_from_store(
-                            &obj_store,
-                            old_hash.as_deref(),
-                            new_hash.as_deref(),
-                        )
-                    };
-
-                    let change = Change {
-                        id: None,
-                        task_id: task_id.clone(),
-                        file_path: path,
-                        change_type,
-                        old_hash,
-                        new_hash,
-                        diff_text: None,
-                        lines_added,
-                        lines_removed,
-                        attribution: Some("bash_predicted".into()),
-                        old_file_path: None,
-                    };
-                    if db.upsert_change(&change).is_ok() {
-                        let _ = sync_file_index_after_change(
-                            &db,
-                            &change,
-                            "bash_predicted",
-                            &Utc::now().to_rfc3339(),
-                        );
-                    }
+            for path in predict_bash_file_paths(cmd, input.cwd.as_deref()) {
+                if is_temp_file(&path) || should_ignore_path(&path) {
+                    continue;
                 }
+                let file_exists_after = path.exists();
+                let new_hash = if file_exists_after {
+                    let hash = sha256_file(&path).ok();
+                    let _ = obj_store.store(&path);
+                    hash
+                } else {
+                    None
+                };
+                observations.push(ObservedPathChange {
+                    file_path: path.to_string_lossy().to_string(),
+                    file_exists_after,
+                    new_hash,
+                });
             }
         }
+    }
+
+    if observations.is_empty() {
+        return Ok(());
+    }
+
+    let payload = PostToolObservedPayload {
+        tool_source,
+        session_key: session_key.clone(),
+        tool_name: input.tool_name.clone(),
+        cwd: input.cwd.clone(),
+        observations,
+    };
+    let envelope = HookEventEnvelope {
+        event_id: format!("post_{}", deterministic_event_id(&format!("{}:{}", session_key, raw))),
+        idempotency_key: format!("post:{}:{}", session_key, deterministic_event_id(&raw)),
+        created_at: Utc::now().to_rfc3339(),
+        payload_version: 1,
+        payload: HookEventPayload::PostToolObserved(payload),
+    };
+    if append_hook_event(&envelope).is_err() {
+        let db = open_db()?;
+        let _ = process_hook_event(&db, &envelope)?;
     }
 
     Ok(())
@@ -688,57 +671,22 @@ pub fn handle_stop(source: Option<&str>) -> RewResult<()> {
 
     let tool_source = resolve_tool_source(source, &raw);
     let session_key = extract_session_key(&raw, &tool_source);
-
-    let db = open_db()?;
-    let task_id = match db.get_active_task_for_session(&session_key)? {
-        Some(tid) => tid,
-        None => return Ok(()),
+    let payload = TaskStopRequestedPayload {
+        tool_source,
+        session_key: session_key.clone(),
+        generation_id: stop_generation_id,
     };
-
-    // generation_id guard (Cursor): compare stop's generation_id with stored one
-    if let Some(ref stop_gid) = stop_generation_id {
-        if let Ok(Some(stored_gid)) = db.get_stop_guard(&session_key) {
-            if stored_gid != *stop_gid {
-                return Ok(());
-            }
-        }
-    } else {
-        // No generation_id (Claude Code etc.): time-based guard
-        if let Ok(Some(t)) = db.get_task(&task_id) {
-            let age_ms = (Utc::now() - t.started_at).num_milliseconds();
-            if age_ms < 3_000 {
-                return Ok(());
-            }
-        }
+    let envelope = HookEventEnvelope {
+        event_id: format!("stop_{}", deterministic_event_id(&format!("{}:{}", session_key, raw))),
+        idempotency_key: format!("stop:{}:{}", session_key, deterministic_event_id(&raw)),
+        created_at: Utc::now().to_rfc3339(),
+        payload_version: 1,
+        payload: HookEventPayload::TaskStopRequested(payload),
+    };
+    if append_hook_event(&envelope).is_err() {
+        let db = open_db()?;
+        let _ = process_hook_event(&db, &envelope)?;
     }
-
-    db.update_task_status(&task_id, &TaskStatus::Completed, Some(Utc::now()))?;
-
-    let objects_root = rew_home_dir().join("objects");
-    let _ = rew_core::reconcile::reconcile_task(&db, &task_id, &objects_root);
-
-    let changes = db.get_changes_for_task(&task_id)?;
-    if !changes.is_empty() {
-        let created = changes.iter().filter(|c| c.change_type == ChangeType::Created).count();
-        let modified = changes.iter().filter(|c| c.change_type == ChangeType::Modified).count();
-        let deleted = changes.iter().filter(|c| c.change_type == ChangeType::Deleted).count();
-
-        let summary = format!(
-            "{} files changed (+{} created, ~{} modified, -{} deleted)",
-            changes.len(), created, modified, deleted
-        );
-        db.update_task_summary(&task_id, &summary)?;
-    }
-
-    if let Ok(Some(task)) = db.get_task(&task_id) {
-        let duration_secs = (Utc::now() - task.started_at).num_milliseconds() as f64 / 1000.0;
-        let _ = db.finalize_task_stats(&task_id, duration_secs, changes.len() as i32);
-    }
-
-    // Deactivate session + cleanup (replaces 6+ file delete operations)
-    let _ = db.deactivate_sessions_for_task(&task_id);
-    let _ = db.delete_stop_guard(&session_key);
-    let _ = db.delete_pre_tool_hashes_for_session(&session_key);
 
     Ok(())
 }
@@ -882,23 +830,6 @@ fn open_db() -> RewResult<Database> {
     let db = Database::open(&db_path)?;
     db.initialize()?;
     Ok(db)
-}
-
-fn generate_task_id() -> String {
-    // Short nanoid-style ID: timestamp + random suffix
-    let ts = Utc::now().format("%m%d%H%M").to_string();
-    let rand: u32 = rand_u32() % 10000;
-    format!("t{}_{:04}", ts, rand)
-}
-
-fn rand_u32() -> u32 {
-    // Simple random using std (no extra dependency)
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    std::time::SystemTime::now().hash(&mut hasher);
-    std::thread::current().id().hash(&mut hasher);
-    hasher.finish() as u32
 }
 
 fn append_hook_debug_log(kind: &str, source: Option<&str>, raw: &str) {
@@ -1046,6 +977,16 @@ mod tests {
     }
 
     #[test]
+    fn delete_aliases_are_recognized() {
+        assert!(is_delete_tool("Delete"));
+        assert!(is_delete_tool("delete"));
+        assert!(is_delete_tool("delete_file"));
+        assert!(is_delete_tool("remove_file"));
+        assert!(!is_delete_tool("Write"));
+        assert!(!is_delete_tool("replace_in_file"));
+    }
+
+    #[test]
     fn shell_new_file_is_created() {
         assert_eq!(
             infer_path_change_type("Shell", true, false),
@@ -1184,6 +1125,67 @@ mod tests {
         assert_eq!(normalized.file_path.as_deref(), Some("notes.md"));
         assert_eq!(normalized.cwd.as_deref(), Some("/tmp/project"));
         assert_eq!(normalized.success, Some(true));
+    }
+
+    #[test]
+    fn codebuddy_camel_case_file_path_is_normalized() {
+        let raw = r#"{
+            "session_id":"cb-301",
+            "cwd":"/tmp/project",
+            "tool_name":"Write",
+            "tool_input":{"filePath":"/tmp/project/notes.md"},
+            "tool_response":{"path":"/tmp/project/notes.md","success":true}
+        }"#;
+
+        let normalized = normalize_post_tool(raw).expect("should parse codebuddy post tool");
+        assert_eq!(normalized.tool_name, "Write");
+        assert_eq!(normalized.file_path.as_deref(), Some("/tmp/project/notes.md"));
+        assert_eq!(normalized.success, Some(true));
+    }
+
+    #[test]
+    fn tool_response_path_is_used_as_fallback() {
+        let raw = r#"{
+            "session_id":"cb-302",
+            "cwd":"/tmp/project",
+            "tool_name":"Write",
+            "tool_input":{"explanation":"create file"},
+            "tool_response":{"path":"/tmp/project/output.md","success":true}
+        }"#;
+
+        let normalized = normalize_post_tool(raw).expect("should parse response path fallback");
+        assert_eq!(normalized.file_path.as_deref(), Some("/tmp/project/output.md"));
+        assert_eq!(normalized.success, Some(true));
+    }
+
+    #[test]
+    fn delete_tool_target_file_is_normalized() {
+        let raw = r#"{
+            "session_id":"cb-303",
+            "cwd":"/tmp/project",
+            "tool_name":"delete_file",
+            "tool_input":{"target_file":"/tmp/project/old.md"},
+            "tool_response":{"success":true}
+        }"#;
+
+        let normalized = normalize_post_tool(raw).expect("should parse delete tool target file");
+        assert_eq!(normalized.tool_name, "delete_file");
+        assert_eq!(normalized.file_path.as_deref(), Some("/tmp/project/old.md"));
+        assert_eq!(normalized.success, Some(true));
+    }
+
+    #[test]
+    fn delete_tool_first_file_path_from_array_is_normalized() {
+        let raw = r#"{
+            "session_id":"cb-304",
+            "cwd":"/tmp/project",
+            "tool_name":"delete_file",
+            "tool_input":{"filePaths":["/tmp/project/a.md","/tmp/project/b.md"]},
+            "tool_response":{"success":true}
+        }"#;
+
+        let normalized = normalize_post_tool(raw).expect("should parse delete tool file path array");
+        assert_eq!(normalized.file_path.as_deref(), Some("/tmp/project/a.md"));
     }
 }
 

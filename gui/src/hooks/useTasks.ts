@@ -2,12 +2,19 @@ import { useState, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { listTasks, getTaskChanges, getStatus, type TaskInfo, type ChangeInfo, type DeletedDirSummaryInfo, type StatusInfo } from "../lib/tauri";
 
-export function useTasks(dirFilter?: string | null) {
+export function useTasks(dirFilter?: string | null, options?: { enabled?: boolean }) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const enabled = options?.enabled ?? true;
 
   const refresh = useCallback(async () => {
+    if (!enabled) {
+      setTasks([]);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     try {
       const data = await listTasks(dirFilter ?? undefined);
       setTasks(data || []);
@@ -18,9 +25,15 @@ export function useTasks(dirFilter?: string | null) {
     } finally {
       setLoading(false);
     }
-  }, [dirFilter]);
+  }, [dirFilter, enabled]);
 
   useEffect(() => {
+    if (!enabled) {
+      setTasks([]);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     refresh();
 
@@ -32,7 +45,7 @@ export function useTasks(dirFilter?: string | null) {
       clearInterval(timer);
       unlistenTask.then(fn => fn());
     };
-  }, [refresh]);
+  }, [refresh, enabled]);
 
   return { tasks, loading, error, refresh };
 }

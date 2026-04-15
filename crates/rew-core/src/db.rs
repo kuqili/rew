@@ -81,6 +81,32 @@ pub struct TaskDeletedDirSummary {
     pub file_count: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct InsightTaskRow {
+    pub task_id: String,
+    pub prompt: Option<String>,
+    pub summary: Option<String>,
+    pub tool: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub duration_secs: Option<f64>,
+    pub task_changes_count: u32,
+    pub stat_files_changed: Option<u32>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_cost_usd: Option<f64>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskFinalizationJob {
+    pub task_id: String,
+    pub stop_event_id: Option<String>,
+    pub status: String,
+    pub attempts: u32,
+    pub enqueued_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RestoreFailureSample {
     pub file_path: PathBuf,
@@ -112,6 +138,10 @@ impl Database {
 
     /// Create the database tables if they don't exist.
     pub fn initialize(&self) -> RewResult<()> {
+        let has_task_changes_count = table_has_column(&self.conn, "tasks", "changes_count");
+        let has_task_lines_added = table_has_column(&self.conn, "tasks", "lines_added");
+        let has_task_lines_removed = table_has_column(&self.conn, "tasks", "lines_removed");
+
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS snapshots (
                 id               TEXT PRIMARY KEY,
@@ -253,6 +283,18 @@ impl Database {
             "ALTER TABLE tasks ADD COLUMN os_snapshot_ref TEXT",
             [],
         );
+        let _ = self.conn.execute(
+            "ALTER TABLE tasks ADD COLUMN changes_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE tasks ADD COLUMN lines_added INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE tasks ADD COLUMN lines_removed INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
 
         // V9: Performance index for get_latest_change_for_file + UNIQUE constraint.
         // Clean up any duplicate (task_id, file_path) rows first (keep highest id).
@@ -319,7 +361,26 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_restore_operations_status_started
                 ON restore_operations(status, started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_restore_operations_scope
-                ON restore_operations(scope_type, scope_path);",
+                ON restore_operations(scope_type, scope_path);
+
+            CREATE TABLE IF NOT EXISTS task_finalization_queue (
+                task_id        TEXT PRIMARY KEY REFERENCES tasks(id),
+                stop_event_id  TEXT,
+                status         TEXT NOT NULL DEFAULT 'pending',
+                enqueued_at    TEXT NOT NULL,
+                started_at     TEXT,
+                completed_at   TEXT,
+                attempts       INTEGER NOT NULL DEFAULT 0,
+                last_error     TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_finalization_queue_status_enqueued
+                ON task_finalization_queue(status, enqueued_at);
+
+            CREATE TABLE IF NOT EXISTS hook_event_receipts (
+                idempotency_key TEXT PRIMARY KEY,
+                event_type      TEXT NOT NULL,
+                processed_at    TEXT NOT NULL
+            );",
         )?;
 
         if table_has_column(&self.conn, "changes", "restored_at") {
@@ -360,6 +421,10 @@ impl Database {
                 ON file_index(last_scan_epoch, file_path)",
             [],
         );
+
+        if !has_task_changes_count || !has_task_lines_added || !has_task_lines_removed {
+            self.backfill_task_rollups_from_changes()?;
+        }
 
         Ok(())
     }
@@ -584,13 +649,11 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT t.id, t.prompt, t.tool, t.started_at, t.completed_at,
                     t.status, t.risk_level, t.summary, t.cwd,
-                    COUNT(c.id) AS changes_count,
-                    COALESCE(SUM(c.lines_added), 0) AS total_lines_added,
-                    COALESCE(SUM(c.lines_removed), 0) AS total_lines_removed
+                    COALESCE(t.changes_count, 0) AS changes_count,
+                    COALESCE(t.lines_added, 0) AS total_lines_added,
+                    COALESCE(t.lines_removed, 0) AS total_lines_removed
              FROM tasks t
-             LEFT JOIN changes c ON c.task_id = t.id
              WHERE (t.tool != '文件监听' OR t.completed_at IS NOT NULL)
-             GROUP BY t.id
              ORDER BY t.started_at DESC",
         )?;
 
@@ -603,6 +666,126 @@ impl Database {
         }
 
         Ok(tasks)
+    }
+
+    pub fn list_insight_tasks(
+        &self,
+        started_at_min: &str,
+        started_at_max: &str,
+    ) -> RewResult<Vec<InsightTaskRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.prompt, t.summary, t.tool, t.started_at, t.completed_at,
+                    ts.duration_secs,
+                    COALESCE(t.changes_count, 0) AS task_changes_count,
+                    ts.files_changed,
+                    ts.input_tokens,
+                    ts.output_tokens,
+                    ts.total_cost_usd,
+                    ts.model
+             FROM tasks t
+             LEFT JOIN task_stats ts ON ts.task_id = t.id
+             WHERE t.started_at >= ?1
+               AND t.started_at <= ?2
+               AND t.tool IS NOT NULL
+               AND t.tool NOT IN ('文件监听', '手动存档')
+               AND t.status != 'active'
+             ORDER BY t.started_at DESC",
+        )?;
+
+        let mut rows = stmt.query(params![started_at_min, started_at_max])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let started_at_str: String = row.get(4)?;
+            let completed_at_str: Option<String> = row.get(5)?;
+            out.push(InsightTaskRow {
+                task_id: row.get(0)?,
+                prompt: row.get(1)?,
+                summary: row.get(2)?,
+                tool: row.get(3)?,
+                started_at: parse_datetime_flexible(&started_at_str)
+                    .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                        std::io::Error::new(std::io::ErrorKind::Other, e),
+                    ))))?,
+                completed_at: completed_at_str
+                    .map(|s| parse_datetime_flexible(&s))
+                    .transpose()
+                    .map_err(|e| RewError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                        std::io::Error::new(std::io::ErrorKind::Other, e),
+                    ))))?,
+                duration_secs: row.get(6)?,
+                task_changes_count: row.get::<_, i64>(7)? as u32,
+                stat_files_changed: row.get::<_, Option<i64>>(8)?.map(|v| v as u32),
+                input_tokens: row.get(9)?,
+                output_tokens: row.get(10)?,
+                total_cost_usd: row.get(11)?,
+                model: row.get(12)?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn get_task_rollup(&self, task_id: &str) -> RewResult<(u32, u32, u32)> {
+        let result = self.conn.query_row(
+            "SELECT COALESCE(changes_count, 0), COALESCE(lines_added, 0), COALESCE(lines_removed, 0)
+             FROM tasks WHERE id = ?1",
+            params![task_id],
+            |row| Ok((
+                row.get::<_, i64>(0)? as u32,
+                row.get::<_, i64>(1)? as u32,
+                row.get::<_, i64>(2)? as u32,
+            )),
+        ).optional()?;
+        Ok(result.unwrap_or((0, 0, 0)))
+    }
+
+    pub fn update_task_rollup(
+        &self,
+        task_id: &str,
+        changes_count: u32,
+        lines_added: u32,
+        lines_removed: u32,
+    ) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE tasks
+             SET changes_count = ?1, lines_added = ?2, lines_removed = ?3
+             WHERE id = ?4",
+            params![changes_count as i64, lines_added as i64, lines_removed as i64, task_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn refresh_task_rollup_from_changes(&self, task_id: &str) -> RewResult<(u32, u32, u32)> {
+        let rollup = self.conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(lines_added), 0),
+                    COALESCE(SUM(lines_removed), 0)
+             FROM changes
+             WHERE task_id = ?1",
+            params![task_id],
+            |row| Ok((
+                row.get::<_, i64>(0)? as u32,
+                row.get::<_, i64>(1)? as u32,
+                row.get::<_, i64>(2)? as u32,
+            )),
+        )?;
+        self.update_task_rollup(task_id, rollup.0, rollup.1, rollup.2)?;
+        Ok(rollup)
+    }
+
+    fn backfill_task_rollups_from_changes(&self) -> RewResult<()> {
+        self.conn.execute_batch(
+            "UPDATE tasks
+             SET changes_count = COALESCE((
+                    SELECT COUNT(*) FROM changes c WHERE c.task_id = tasks.id
+                 ), 0),
+                 lines_added = COALESCE((
+                    SELECT SUM(c.lines_added) FROM changes c WHERE c.task_id = tasks.id
+                 ), 0),
+                 lines_removed = COALESCE((
+                    SELECT SUM(c.lines_removed) FROM changes c WHERE c.task_id = tasks.id
+                 ), 0);",
+        )?;
+        Ok(())
     }
 
     /// Update task status and optionally set completed_at.
@@ -701,6 +884,150 @@ impl Database {
             params![summary, id],
         )?;
         Ok(())
+    }
+
+    pub fn clear_task_summary(&self, id: &str) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE tasks SET summary = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    pub fn enqueue_task_finalization(
+        &self,
+        task_id: &str,
+        stop_event_id: Option<&str>,
+    ) -> RewResult<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO task_finalization_queue (
+                task_id, stop_event_id, status, enqueued_at, started_at, completed_at, attempts, last_error
+             ) VALUES (?1, ?2, 'pending', ?3, NULL, NULL, 0, NULL)
+             ON CONFLICT(task_id) DO UPDATE SET
+                stop_event_id = excluded.stop_event_id,
+                status = 'pending',
+                enqueued_at = excluded.enqueued_at,
+                started_at = NULL,
+                completed_at = NULL,
+                last_error = NULL",
+            params![task_id, stop_event_id, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_task_finalization_status(&self, task_id: &str) -> RewResult<Option<String>> {
+        let result = self.conn.query_row(
+            "SELECT status FROM task_finalization_queue WHERE task_id = ?1",
+            params![task_id],
+            |row| row.get::<_, String>(0),
+        ).optional()?;
+        Ok(result)
+    }
+
+    pub fn recover_stale_task_finalizations(&self) -> RewResult<usize> {
+        let now = Utc::now().to_rfc3339();
+        let updated = self.conn.execute(
+            "UPDATE task_finalization_queue
+             SET status = 'pending',
+                 enqueued_at = COALESCE(started_at, enqueued_at),
+                 started_at = NULL,
+                 completed_at = NULL,
+                 last_error = COALESCE(last_error, ?1)
+             WHERE status = 'running'",
+            params![format!("worker interrupted before {}", now)],
+        )?;
+        Ok(updated)
+    }
+
+    pub fn claim_next_task_finalization_job(&self) -> RewResult<Option<TaskFinalizationJob>> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        let next_job = {
+            let mut stmt = tx.prepare(
+                "SELECT task_id, stop_event_id, status, attempts, enqueued_at
+                 FROM task_finalization_queue
+                 WHERE status IN ('pending', 'failed')
+                 ORDER BY enqueued_at ASC
+                 LIMIT 1",
+            )?;
+            stmt.query_row([], |row| {
+                Ok(TaskFinalizationJob {
+                    task_id: row.get(0)?,
+                    stop_event_id: row.get(1)?,
+                    status: row.get(2)?,
+                    attempts: row.get::<_, i64>(3)? as u32,
+                    enqueued_at: row.get(4)?,
+                })
+            }).optional()?
+        };
+
+        let Some(job) = next_job else {
+            tx.commit()?;
+            return Ok(None);
+        };
+
+        let now = Utc::now().to_rfc3339();
+        let updated = tx.execute(
+            "UPDATE task_finalization_queue
+             SET status = 'running',
+                 started_at = ?1,
+                 completed_at = NULL,
+                 attempts = attempts + 1,
+                 last_error = NULL
+             WHERE task_id = ?2 AND status IN ('pending', 'failed')",
+            params![now, job.task_id.as_str()],
+        )?;
+
+        if updated == 0 {
+            tx.commit()?;
+            return Ok(None);
+        }
+
+        tx.commit()?;
+
+        Ok(Some(TaskFinalizationJob {
+            attempts: job.attempts + 1,
+            status: "running".to_string(),
+            ..job
+        }))
+    }
+
+    pub fn mark_task_finalization_done(&self, task_id: &str) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE task_finalization_queue
+             SET status = 'done',
+                 completed_at = ?1,
+                 last_error = NULL
+             WHERE task_id = ?2",
+            params![Utc::now().to_rfc3339(), task_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_task_finalization_failed(&self, task_id: &str, error: &str) -> RewResult<()> {
+        self.conn.execute(
+            "UPDATE task_finalization_queue
+             SET status = 'failed',
+                 completed_at = NULL,
+                 last_error = ?1
+             WHERE task_id = ?2",
+            params![error, task_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn claim_hook_event_receipt(
+        &self,
+        idempotency_key: &str,
+        event_type: &str,
+    ) -> RewResult<bool> {
+        let inserted = self.conn.execute(
+            "INSERT OR IGNORE INTO hook_event_receipts (idempotency_key, event_type, processed_at)
+             VALUES (?1, ?2, ?3)",
+            params![idempotency_key, event_type, Utc::now().to_rfc3339()],
+        )?;
+        Ok(inserted > 0)
     }
 
     /// Set the APFS snapshot reference on a task.
@@ -2166,6 +2493,135 @@ mod tests {
         // List
         let all = db.list_tasks().unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn test_task_finalization_queue_claims_and_completes_jobs() {
+        let db = test_db();
+        let task = Task {
+            id: "task_finalize".to_string(),
+            prompt: Some("finalize".to_string()),
+            tool: Some("cursor".to_string()),
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        };
+        db.create_task(&task).unwrap();
+
+        db.enqueue_task_finalization(&task.id, Some("stop-1")).unwrap();
+        assert_eq!(
+            db.get_task_finalization_status(&task.id).unwrap().as_deref(),
+            Some("pending")
+        );
+
+        let claimed = db.claim_next_task_finalization_job().unwrap().unwrap();
+        assert_eq!(claimed.task_id, task.id);
+        assert_eq!(claimed.stop_event_id.as_deref(), Some("stop-1"));
+        assert_eq!(claimed.status, "running");
+        assert_eq!(claimed.attempts, 1);
+        assert!(db.claim_next_task_finalization_job().unwrap().is_none());
+
+        db.mark_task_finalization_done(&task.id).unwrap();
+        assert_eq!(
+            db.get_task_finalization_status(&task.id).unwrap().as_deref(),
+            Some("done")
+        );
+    }
+
+    #[test]
+    fn test_recover_stale_task_finalizations_requeues_running_jobs() {
+        let db = test_db();
+        let task = Task {
+            id: "task_finalize_recover".to_string(),
+            prompt: Some("recover".to_string()),
+            tool: Some("codebuddy".to_string()),
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        };
+        db.create_task(&task).unwrap();
+        db.enqueue_task_finalization(&task.id, Some("stop-2")).unwrap();
+        let _ = db.claim_next_task_finalization_job().unwrap().unwrap();
+
+        let recovered = db.recover_stale_task_finalizations().unwrap();
+        assert_eq!(recovered, 1);
+        assert_eq!(
+            db.get_task_finalization_status(&task.id).unwrap().as_deref(),
+            Some("pending")
+        );
+    }
+
+    #[test]
+    fn test_hook_event_receipt_claim_is_idempotent() {
+        let db = test_db();
+        assert!(db
+            .claim_hook_event_receipt("prompt:cursor:abc", "prompt-started")
+            .unwrap());
+        assert!(!db
+            .claim_hook_event_receipt("prompt:cursor:abc", "prompt-started")
+            .unwrap());
+    }
+
+    #[test]
+    fn test_refresh_task_rollup_from_changes_persists_summary_fields_on_tasks() {
+        let db = test_db();
+        let task = Task {
+            id: "task_rollup".to_string(),
+            prompt: Some("test".to_string()),
+            tool: Some("cursor".to_string()),
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        };
+        db.create_task(&task).unwrap();
+
+        db.insert_change(&Change {
+            id: None,
+            task_id: "task_rollup".to_string(),
+            file_path: PathBuf::from("/tmp/a.rs"),
+            change_type: ChangeType::Modified,
+            old_hash: Some("old".to_string()),
+            new_hash: Some("new".to_string()),
+            diff_text: None,
+            lines_added: 3,
+            lines_removed: 1,
+            attribution: None,
+            old_file_path: None,
+        })
+        .unwrap();
+        db.insert_change(&Change {
+            id: None,
+            task_id: "task_rollup".to_string(),
+            file_path: PathBuf::from("/tmp/b.rs"),
+            change_type: ChangeType::Created,
+            old_hash: None,
+            new_hash: Some("new2".to_string()),
+            diff_text: None,
+            lines_added: 5,
+            lines_removed: 0,
+            attribution: None,
+            old_file_path: None,
+        })
+        .unwrap();
+
+        let rollup = db.refresh_task_rollup_from_changes("task_rollup").unwrap();
+        assert_eq!(rollup, (2, 8, 1));
+        assert_eq!(db.get_task_rollup("task_rollup").unwrap(), (2, 8, 1));
+
+        let listed = db.list_tasks().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].changes_count, 2);
+        assert_eq!(listed[0].total_lines_added, 8);
+        assert_eq!(listed[0].total_lines_removed, 1);
     }
 
     #[test]

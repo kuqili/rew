@@ -1,6 +1,7 @@
 //! Tauri IPC commands exposing rew-core functionality to the frontend.
 
 use crate::state::{AppState, RestorePhase, SuppressedRestorePath};
+use chrono::{Duration, Local, NaiveTime, TimeZone};
 use rew_core::db::{RestoreFailureSample, RestoreFileIndexSyncEntry};
 use rew_core::restore::{PreparedSuppressionEntry, TaskRestoreEngine, UndoResult};
 use rew_core::types::{
@@ -586,6 +587,7 @@ pub struct TaskInfo {
     pub started_at: String,
     pub completed_at: Option<String>,
     pub status: String,
+    pub finalization_status: Option<String>,
     pub risk_level: Option<String>,
     pub summary: Option<String>,
     pub changes_count: usize,
@@ -691,6 +693,45 @@ fn infer_path_filter_mode(db: &rew_core::db::Database, path: &str) -> PathFilter
     }
 }
 
+fn task_info_from_parts(
+    db: &rew_core::db::Database,
+    task: rew_core::types::Task,
+    changes_count: u32,
+    total_lines_added: u32,
+    total_lines_removed: u32,
+) -> TaskInfo {
+    let finalization_status = db.get_task_finalization_status(&task.id).ok().flatten();
+    TaskInfo {
+        id: task.id,
+        prompt: task.prompt,
+        tool: task.tool,
+        started_at: task.started_at.to_rfc3339(),
+        completed_at: task.completed_at.map(|t| t.to_rfc3339()),
+        status: task.status.to_string(),
+        finalization_status,
+        risk_level: task.risk_level.map(|r| r.to_string()),
+        summary: task.summary,
+        changes_count: changes_count as usize,
+        cwd: task.cwd,
+        total_lines_added,
+        total_lines_removed,
+    }
+}
+
+fn active_task_rollup_from_changes(
+    db: &rew_core::db::Database,
+    task_id: &str,
+) -> (u32, u32, u32) {
+    match db.get_changes_for_task(task_id) {
+        Ok(changes) => (
+            changes.len() as u32,
+            changes.iter().map(|c| c.lines_added).sum(),
+            changes.iter().map(|c| c.lines_removed).sum(),
+        ),
+        Err(_) => (0, 0, 0),
+    }
+}
+
 #[tauri::command]
 pub async fn list_tasks(
     state: State<'_, AppState>,
@@ -725,22 +766,31 @@ pub async fn list_tasks(
 
     tracing::info!("list_tasks: found {} tasks in DB (dir_filter={:?})", tasks.len(), dir_filter);
 
-    let result: Vec<TaskInfo> = tasks.into_iter().map(|tw| {
-        TaskInfo {
-            id: tw.task.id,
-            prompt: tw.task.prompt,
-            tool: tw.task.tool,
-            started_at: tw.task.started_at.to_rfc3339(),
-            completed_at: tw.task.completed_at.map(|t| t.to_rfc3339()),
-            status: tw.task.status.to_string(),
-            risk_level: tw.task.risk_level.map(|r| r.to_string()),
-            summary: tw.task.summary,
-            changes_count: tw.changes_count as usize,
-            cwd: tw.task.cwd,
-            total_lines_added: tw.total_lines_added,
-            total_lines_removed: tw.total_lines_removed,
-        }
-    }).collect();
+    let use_active_fallback = dir_filter.is_none();
+    let result: Vec<TaskInfo> = tasks
+        .into_iter()
+        .map(|tw| {
+            let finalization_status = db.get_task_finalization_status(&tw.task.id).ok().flatten();
+            let needs_live_rollup = matches!(tw.task.status, rew_core::types::TaskStatus::Active)
+                || matches!(
+                    finalization_status.as_deref(),
+                    Some("pending") | Some("running") | Some("failed")
+                );
+            let (changes_count, total_lines_added, total_lines_removed) =
+                if use_active_fallback && needs_live_rollup {
+                    active_task_rollup_from_changes(&db, &tw.task.id)
+                } else {
+                    (tw.changes_count, tw.total_lines_added, tw.total_lines_removed)
+                };
+            task_info_from_parts(
+                &db,
+                tw.task,
+                changes_count,
+                total_lines_added,
+                total_lines_removed,
+            )
+        })
+        .collect();
 
     tracing::info!("list_tasks: returning {} tasks to frontend", result.len());
     Ok(result)
@@ -752,27 +802,26 @@ pub async fn get_task(state: State<'_, AppState>, task_id: String) -> Result<Tas
     let task = db.get_task(&task_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+    let finalization_status = db.get_task_finalization_status(&task.id).map_err(|e| e.to_string())?;
+    let (changes_count, total_lines_added, total_lines_removed) =
+        if matches!(task.status, rew_core::types::TaskStatus::Active)
+            || matches!(
+                finalization_status.as_deref(),
+                Some("pending") | Some("running") | Some("failed")
+            )
+        {
+            active_task_rollup_from_changes(&db, &task.id)
+        } else {
+            db.get_task_rollup(&task.id).map_err(|e| e.to_string())?
+        };
 
-    let changes = db.get_changes_for_task(&task.id)
-        .unwrap_or_default();
-    let changes_count = changes.len();
-    let total_lines_added: u32 = changes.iter().map(|c| c.lines_added).sum();
-    let total_lines_removed: u32 = changes.iter().map(|c| c.lines_removed).sum();
-
-    Ok(TaskInfo {
-        id: task.id,
-        prompt: task.prompt,
-        tool: task.tool,
-        started_at: task.started_at.to_rfc3339(),
-        completed_at: task.completed_at.map(|t| t.to_rfc3339()),
-        status: task.status.to_string(),
-        risk_level: task.risk_level.map(|r| r.to_string()),
-        summary: task.summary,
+    Ok(task_info_from_parts(
+        &db,
+        task,
         changes_count,
-        cwd: task.cwd,
         total_lines_added,
         total_lines_removed,
-    })
+    ))
 }
 
 #[tauri::command]
@@ -873,6 +922,47 @@ pub struct TaskStatsInfo {
     pub conversation_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsightsToolStatInfo {
+    pub tool_key: String,
+    pub task_count: usize,
+    pub total_duration_secs: f64,
+    pub total_tokens: i64,
+    pub total_cost_usd: f64,
+    pub duration_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsightsDailyPointInfo {
+    pub date: String,
+    pub date_iso: String,
+    pub task_count: usize,
+    pub total_duration_secs: f64,
+    pub total_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsightsTopTaskInfo {
+    pub id: String,
+    pub prompt: String,
+    pub tool: Option<String>,
+    pub duration_secs: f64,
+    pub changes_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsightsDataInfo {
+    pub period: String,
+    pub total_tokens: i64,
+    pub total_duration_secs: f64,
+    pub total_cost_usd: f64,
+    pub total_tasks: usize,
+    pub total_files_changed: usize,
+    pub tool_stats: Vec<InsightsToolStatInfo>,
+    pub daily_points: Vec<InsightsDailyPointInfo>,
+    pub top_tasks: Vec<InsightsTopTaskInfo>,
+}
+
 #[tauri::command]
 pub async fn get_task_stats(
     state: State<'_, AppState>,
@@ -892,6 +982,159 @@ pub async fn get_task_stats(
         session_id: s.session_id,
         conversation_id: s.conversation_id,
     }))
+}
+
+fn insights_period_bounds(period: &str) -> Result<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>), String> {
+    let now = Local::now();
+    let end_date = now.date_naive();
+    let start_date = match period {
+        "day" => end_date,
+        "week" => end_date - Duration::days(6),
+        "month" => end_date - Duration::days(29),
+        _ => return Err(format!("Unsupported insights period: {}", period)),
+    };
+
+    let start_local = Local
+        .from_local_datetime(&start_date.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap()))
+        .single()
+        .ok_or_else(|| "Failed to compute local start time".to_string())?;
+    let end_local = Local
+        .from_local_datetime(&end_date.and_time(NaiveTime::from_hms_opt(23, 59, 59).unwrap()))
+        .single()
+        .ok_or_else(|| "Failed to compute local end time".to_string())?;
+    Ok((start_local.with_timezone(&chrono::Utc), end_local.with_timezone(&chrono::Utc)))
+}
+
+#[tauri::command]
+pub async fn get_insights(
+    state: State<'_, AppState>,
+    period: String,
+) -> Result<InsightsDataInfo, String> {
+    let (start_at, end_at) = insights_period_bounds(&period)?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let rows = db
+        .list_insight_tasks(&start_at.to_rfc3339(), &end_at.to_rfc3339())
+        .map_err(|e| e.to_string())?;
+
+    let mut total_tokens = 0i64;
+    let mut total_duration_secs = 0f64;
+    let mut total_cost_usd = 0f64;
+    let mut total_files_changed = 0usize;
+    let mut total_tasks = 0usize;
+
+    let mut tool_map: std::collections::BTreeMap<String, (usize, f64, i64, f64)> =
+        std::collections::BTreeMap::new();
+    let mut day_map: std::collections::BTreeMap<String, InsightsDailyPointInfo> =
+        std::collections::BTreeMap::new();
+    let mut top_tasks = Vec::new();
+
+    let mut cursor = start_at.with_timezone(&Local).date_naive();
+    let end_date = end_at.with_timezone(&Local).date_naive();
+    while cursor <= end_date {
+        let iso = cursor.format("%Y-%m-%d").to_string();
+        day_map.insert(
+            iso.clone(),
+            InsightsDailyPointInfo {
+                date: cursor.format("%m/%d").to_string(),
+                date_iso: iso,
+                task_count: 0,
+                total_duration_secs: 0.0,
+                total_tokens: 0,
+            },
+        );
+        cursor += Duration::days(1);
+    }
+
+    for row in rows {
+        total_tasks += 1;
+        let local_started = row.started_at.with_timezone(&Local);
+        let duration_secs = row.duration_secs.unwrap_or_else(|| {
+            row.completed_at
+                .map(|end| ((end - row.started_at).num_milliseconds().max(0) as f64) / 1000.0)
+                .unwrap_or(0.0)
+        });
+        let files_changed = row
+            .stat_files_changed
+            .filter(|value| *value > 0 || row.task_changes_count == 0)
+            .unwrap_or(row.task_changes_count) as usize;
+        let tokens = row.input_tokens.unwrap_or(0) + row.output_tokens.unwrap_or(0);
+        let cost = row.total_cost_usd.unwrap_or(0.0);
+        let tool_key = row
+            .tool
+            .as_deref()
+            .unwrap_or("unknown")
+            .to_lowercase()
+            .replace('_', "-");
+
+        total_tokens += tokens;
+        total_duration_secs += duration_secs;
+        total_cost_usd += cost;
+        total_files_changed += files_changed;
+
+        let tool_entry = tool_map.entry(tool_key.clone()).or_insert((0, 0.0, 0, 0.0));
+        tool_entry.0 += 1;
+        tool_entry.1 += duration_secs;
+        tool_entry.2 += tokens;
+        tool_entry.3 += cost;
+
+        let date_iso = local_started.format("%Y-%m-%d").to_string();
+        if let Some(point) = day_map.get_mut(&date_iso) {
+            point.task_count += 1;
+            point.total_duration_secs += duration_secs;
+            point.total_tokens += tokens;
+        }
+
+        top_tasks.push(InsightsTopTaskInfo {
+            id: row.task_id,
+            prompt: row
+                .prompt
+                .or(row.summary)
+                .unwrap_or_else(|| "未命名任务".to_string()),
+            tool: row.tool,
+            duration_secs,
+            changes_count: files_changed,
+        });
+    }
+
+    let mut tool_stats: Vec<InsightsToolStatInfo> = tool_map
+        .into_iter()
+        .map(|(tool_key, (task_count, duration, tokens, cost))| InsightsToolStatInfo {
+            tool_key,
+            task_count,
+            total_duration_secs: duration,
+            total_tokens: tokens,
+            total_cost_usd: cost,
+            duration_percent: if total_duration_secs > 0.0 {
+                (duration / total_duration_secs) * 100.0
+            } else {
+                0.0
+            },
+        })
+        .collect();
+    tool_stats.sort_by(|a, b| {
+        b.total_duration_secs
+            .partial_cmp(&a.total_duration_secs)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    top_tasks.sort_by(|a, b| {
+        b.duration_secs
+            .partial_cmp(&a.duration_secs)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    top_tasks.truncate(5);
+
+    Ok(InsightsDataInfo {
+        period,
+        total_tokens,
+        total_duration_secs,
+        total_cost_usd,
+        total_tasks,
+        total_files_changed,
+        tool_stats,
+        daily_points: day_map.into_values().collect(),
+        top_tasks,
+    })
 }
 
 // ----------------------------------------------------------------

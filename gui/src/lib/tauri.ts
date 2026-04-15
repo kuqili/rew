@@ -10,6 +10,7 @@ export interface TaskInfo {
   started_at: string;
   completed_at: string | null;
   status: "active" | "completed" | "rolled-back" | "partial-rolled-back";
+  finalization_status: "pending" | "running" | "done" | "failed" | null;
   risk_level: string | null;
   summary: string | null;
   changes_count: number;
@@ -87,6 +88,43 @@ export interface TaskStatsInfo {
   conversation_id: string | null;
 }
 
+export interface InsightsToolStatInfo {
+  tool_key: string;
+  task_count: number;
+  total_duration_secs: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  duration_percent: number;
+}
+
+export interface InsightsDailyPointInfo {
+  date: string;
+  date_iso: string;
+  task_count: number;
+  total_duration_secs: number;
+  total_tokens: number;
+}
+
+export interface InsightsTopTaskInfo {
+  id: string;
+  prompt: string;
+  tool: string | null;
+  duration_secs: number;
+  changes_count: number;
+}
+
+export interface InsightsDataInfo {
+  period: string;
+  total_tokens: number;
+  total_duration_secs: number;
+  total_cost_usd: number;
+  total_tasks: number;
+  total_files_changed: number;
+  tool_stats: InsightsToolStatInfo[];
+  daily_points: InsightsDailyPointInfo[];
+  top_tasks: InsightsTopTaskInfo[];
+}
+
 export interface ChangeDiffResult {
   diff_text: string | null;
   lines_added: number;
@@ -144,6 +182,10 @@ export async function listTasks(dirFilter?: string): Promise<TaskInfo[]> {
 
 export async function getTask(taskId: string): Promise<TaskInfo> {
   return invoke<TaskInfo>("get_task", { taskId });
+}
+
+export async function getInsights(period: "day" | "week" | "month"): Promise<InsightsDataInfo> {
+  return invoke<InsightsDataInfo>("get_insights", { period });
 }
 
 export async function getTaskChanges(taskId: string, dirFilter?: string): Promise<TaskChangesResultInfo> {
