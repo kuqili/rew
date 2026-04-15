@@ -49,7 +49,7 @@ export default function MainLayout() {
       {/* Settings modal overlay */}
       {showSettings && (
         <div className="modal-overlay">
-          <div className="w-[520px] max-h-[460px] bg-white rounded-[10px] shadow-lg border border-border flex flex-col overflow-hidden">
+          <div className="w-[720px] h-[540px] bg-white rounded-[10px] shadow-[0_20px_60px_rgba(0,0,0,0.2),0_0_0_0.5px_rgba(0,0,0,0.1)] flex overflow-hidden">
             <SettingsPanel onClose={() => setShowSettings(false)} />
           </div>
         </div>

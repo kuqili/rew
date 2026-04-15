@@ -13,13 +13,8 @@ export const TOOL_REGISTRY: Record<string, ToolMeta> = {
   },
   "claude-code": {
     label: "Claude Code",
-    color: "#da7b3a",
+    color: "#C15F3C",
     badgeClass: "bg-tool-claude-bg text-tool-claude",
-  },
-  windsurf: {
-    label: "Windsurf",
-    color: "#06b6d4",
-    badgeClass: "bg-cyan-50 text-cyan-600",
   },
   copilot: {
     label: "Copilot",
@@ -34,12 +29,12 @@ export const TOOL_REGISTRY: Record<string, ToolMeta> = {
   codebuddy: {
     label: "CodeBuddy",
     color: "#10b981",
-    badgeClass: "bg-emerald-50 text-emerald-600",
+    badgeClass: "bg-tool-codebuddy-bg text-tool-codebuddy",
   },
   workbuddy: {
     label: "WorkBuddy",
     color: "#8b5cf6",
-    badgeClass: "bg-violet-50 text-violet-600",
+    badgeClass: "bg-tool-workbuddy-bg text-tool-workbuddy",
   },
 };
 

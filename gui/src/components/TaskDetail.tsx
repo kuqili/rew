@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
+import { RotateCcw, ChevronDown, ChevronRight, Clock } from "lucide-react";
 import { useTaskChanges } from "../hooks/useTasks";
 import {
   type TaskInfo,
@@ -20,6 +20,7 @@ import { timeAgo, fileName, dirName } from "../lib/format";
 import { getToolMeta } from "../lib/tools";
 import DiffViewer from "./DiffViewer";
 import RollbackPanel from "./RollbackPanel";
+import RestoreHistoryModal from "./RestoreHistoryModal";
 
 // Format duration: e.g. 90s → "1m30s", 60s → "1m"
 function formatDuration(secs: number): string {
@@ -53,32 +54,6 @@ function restoreButtonLabel(progress: RestoreProgressInfo | null): string {
       return "收尾中...";
     default:
       return "恢复中...";
-  }
-}
-
-function restoreStatusLabel(status: RestoreOperationInfo["status"]): string {
-  switch (status) {
-    case "completed":
-      return "已完成";
-    case "partial":
-      return "部分完成";
-    case "failed":
-      return "失败";
-    default:
-      return "进行中";
-  }
-}
-
-function restoreScopeLabel(operation: RestoreOperationInfo): string {
-  switch (operation.scope_type) {
-    case "task":
-      return "整任务恢复";
-    case "directory":
-      return operation.scope_path ? `目录恢复 · ${operation.scope_path}` : "目录恢复";
-    case "file":
-      return operation.scope_path ? `单文件恢复 · ${operation.scope_path}` : "单文件恢复";
-    default:
-      return "恢复操作";
   }
 }
 
@@ -136,6 +111,7 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
   const [dirRestoreError, setDirRestoreError] = useState<string | null>(null);
   const [restoreProgress, setRestoreProgress] = useState<RestoreProgressInfo | null>(null);
   const [restoreOperations, setRestoreOperations] = useState<RestoreOperationInfo[]>([]);
+  const [showRestoreHistory, setShowRestoreHistory] = useState(false);
 
   // Which file is expanded to show diff (null = none)
   const [expandedFilePath, setExpandedFilePath] = useState<string | null>(null);
@@ -245,7 +221,7 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
           </div>
 
           {/* Restore button */}
-          {totalCount > 0 && !showRollback && (
+          {totalCount > 0 && (
             <button
               onClick={() => setShowRollback(true)}
               className="flex items-center gap-2 px-4 py-1.5 bg-sys-blue text-white rounded-md text-[13px] font-medium hover:bg-sys-blue-hover transition-colors"
@@ -256,22 +232,6 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
           )}
         </div>
       </div>
-
-      {/* Rollback panel (inline) */}
-      {showRollback && (
-        <RollbackPanel
-          taskId={taskId}
-          isMonitoringWindow={isWindow}
-          windowLabel={isWindow ? windowLabel(task) : undefined}
-          onClose={() => setShowRollback(false)}
-          onRolledBack={() => {
-            setShowRollback(false);
-            onTaskUpdated();
-            getTask(taskId).then(setTask);
-            listRestoreOperations(taskId).then(setRestoreOperations).catch(() => {});
-          }}
-        />
-      )}
 
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto min-h-0">
@@ -336,107 +296,40 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
         </div>
 
         {restoreOperations.length > 0 && (
-          <div className="mx-5 mb-3 rounded-lg border border-border overflow-hidden">
-            <div className="px-3.5 py-2 border-b border-border bg-surface-hover text-[11px] font-semibold text-t-3 uppercase tracking-wider">
+          <div className="mx-5 mb-2">
+            <button
+              onClick={() => setShowRestoreHistory(true)}
+              className="flex items-center gap-1.5 text-[11px] text-t-3 hover:text-sys-blue transition-colors"
+            >
+              <Clock className="w-3 h-3" />
               恢复历史
-            </div>
-            <div>
-              {restoreOperations.map((operation) => (
-                <div
-                  key={operation.id}
-                  className="px-3.5 py-2.5 border-b border-border-light last:border-b-0"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-[12px] text-t-1 break-all">
-                        {restoreScopeLabel(operation)}
-                      </div>
-                      <div className="mt-1 text-[11px] text-t-2">
-                        {new Date(operation.started_at).toLocaleString("zh-CN", {
-                          year: "numeric",
-                          month: "2-digit",
-                          day: "2-digit",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                          hour12: false,
-                        })}
-                        {" · "}
-                        {operation.triggered_by === "cli" ? "CLI" : "UI"}
-                      </div>
-                      <div className="mt-1 text-[11px] text-t-3">
-                        请求 {operation.requested_count}，恢复 {operation.restored_count}，删除 {operation.deleted_count}，失败 {operation.failed_count}
-                      </div>
-                    </div>
-                    <span
-                      className={`flex-shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                        operation.status === "completed"
-                          ? "bg-sys-green/10 text-sys-green"
-                          : operation.status === "partial"
-                          ? "bg-sys-amber/10 text-sys-amber"
-                          : operation.status === "failed"
-                          ? "bg-sys-red/10 text-sys-red"
-                          : "bg-sys-blue/10 text-sys-blue"
-                      }`}
-                    >
-                      {restoreStatusLabel(operation.status)}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
+              <span className="inline-flex items-center justify-center min-w-[16px] h-4 rounded-full bg-bg-grouped text-[10px] font-semibold text-t-2 px-1">
+                {restoreOperations.length}
+              </span>
+            </button>
           </div>
         )}
 
         {visibleDeletedDirGroups.length > 0 && (
-          <div className="mx-5 mb-2 space-y-2">
-            {visibleDeletedDirGroups.map((group) => (
-              <div key={group.dir_path} className="rounded-md border border-sys-red/20 bg-sys-red/5 px-3 py-2.5">
-                {(() => {
-                  const activeRestore = restoreProgress?.task_id === taskId && restoreProgress.dir_path === group.dir_path
-                    ? restoreProgress
-                    : null;
-                  return (
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-[12px] font-medium text-t-1">
-                      检测到目录级删除
+          <div className="mx-5 mb-2 space-y-1.5">
+            {visibleDeletedDirGroups.map((group) => {
+              const activeRestore = restoreProgress?.task_id === taskId && restoreProgress.dir_path === group.dir_path
+                ? restoreProgress
+                : null;
+              return (
+                <div key={group.dir_path} className="flex items-center justify-between gap-3 py-1.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0 text-sys-red">
+                      <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-.867 12.142A2 2 0 0 1 16.138 20H7.862a2 2 0 0 1-1.995-1.858L5 6" />
+                    </svg>
+                    <div className="min-w-0">
+                      <span className="text-[12px] text-t-1 font-mono truncate block">{group.dir_path}</span>
+                      <span className="text-[11px] text-t-3">
+                        {onlyDeletedChangesLoaded
+                          ? `整个目录被删除，共 ${group.total_files} 个文件`
+                          : `${group.total_files} 个文件受影响`}
+                      </span>
                     </div>
-                    <div className="mt-1 text-[11px] font-mono text-t-1 break-all">
-                      {group.dir_path}
-                    </div>
-                    <div className="mt-1 text-[11px] text-t-2">
-                      {onlyDeletedChangesLoaded
-                        ? `当前任务主要是在删除目录。你可以单独恢复这个目录；总文件数 ${group.total_files}。`
-                        : `这个目录在当前任务中命中的总文件数为 ${group.total_files}。`}
-                    </div>
-                    {activeRestore && (
-                      <div className="mt-2">
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/80">
-                          <div
-                            className="h-full rounded-full bg-sys-blue transition-all"
-                            style={{
-                              width: `${activeRestore.total_files > 0
-                                ? Math.min(100, (activeRestore.processed_files / activeRestore.total_files) * 100)
-                                : 0}%`,
-                            }}
-                          />
-                        </div>
-                        <div className="mt-1 text-[11px] text-t-2">
-                          {restorePhaseLabel(activeRestore.phase)} · 已处理 {activeRestore.processed_files}/{activeRestore.total_files}
-                          ，成功 {activeRestore.restored_files + activeRestore.deleted_files}
-                          ，失败 {activeRestore.failed_files}
-                        </div>
-                        {activeRestore.phase === "restoring-files" && activeRestore.current_path && (
-                          <div className="mt-1 text-[10px] font-mono text-t-3 break-all">
-                            当前文件：{activeRestore.current_path}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    {dirRestoreError && confirmDirRestore === group.dir_path && (
-                      <div className="mt-2 text-[11px] text-sys-red">{dirRestoreError}</div>
-                    )}
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                     {confirmDirRestore === group.dir_path ? (
@@ -444,9 +337,9 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
                         <button
                           onClick={() => void handleDirectoryRestore(group.dir_path)}
                           disabled={dirRestoreBusy}
-                          className="px-2.5 py-1 rounded-md bg-sys-blue text-white text-[11px] font-medium hover:bg-sys-blue-hover disabled:opacity-50"
+                          className="px-2 py-[3px] rounded text-[11px] font-medium text-sys-red hover:bg-sys-red/8 disabled:opacity-50 transition-colors"
                         >
-                          {dirRestoreBusy ? restoreButtonLabel(activeRestore) : "确认恢复目录"}
+                          {dirRestoreBusy ? restoreButtonLabel(activeRestore) : "确认恢复"}
                         </button>
                         <button
                           onClick={() => setConfirmDirRestore(null)}
@@ -460,17 +353,35 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
                       <button
                         onClick={() => setConfirmDirRestore(group.dir_path)}
                         disabled={dirRestoreBusy}
-                        className="px-2.5 py-1 rounded-md border border-border bg-white text-[11px] font-medium text-t-1 hover:bg-bg-hover disabled:opacity-50"
+                        className="px-2 py-[3px] rounded text-[11px] font-medium text-t-2 hover:text-t-1 hover:bg-bg-hover disabled:opacity-50 transition-colors"
                       >
                         恢复该目录
                       </button>
                     )}
                   </div>
+                  {activeRestore && (
+                    <div className="w-full mt-1">
+                      <div className="h-[3px] w-full overflow-hidden rounded-full" style={{ background: "rgba(0,0,0,0.06)" }}>
+                        <div
+                          className="h-full rounded-full bg-sys-blue transition-all"
+                          style={{
+                            width: `${activeRestore.total_files > 0
+                              ? Math.min(100, (activeRestore.processed_files / activeRestore.total_files) * 100)
+                              : 0}%`,
+                          }}
+                        />
+                      </div>
+                      <div className="mt-1 text-[10px] text-t-3">
+                        {restorePhaseLabel(activeRestore.phase)} · {activeRestore.processed_files}/{activeRestore.total_files}
+                      </div>
+                    </div>
+                  )}
+                  {dirRestoreError && confirmDirRestore === group.dir_path && (
+                    <div className="w-full mt-1 text-[11px] text-sys-red">{dirRestoreError}</div>
+                  )}
                 </div>
-                  );
-                })()}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -507,6 +418,30 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
           )}
         </div>
       </div>
+
+      {/* Rollback confirm modal */}
+      {showRollback && (
+        <RollbackPanel
+          taskId={taskId}
+          isMonitoringWindow={isWindow}
+          windowLabel={isWindow ? windowLabel(task) : undefined}
+          onClose={() => setShowRollback(false)}
+          onRolledBack={() => {
+            setShowRollback(false);
+            onTaskUpdated();
+            getTask(taskId).then(setTask);
+            listRestoreOperations(taskId).then(setRestoreOperations).catch(() => {});
+          }}
+        />
+      )}
+
+      {/* Restore history modal */}
+      {showRestoreHistory && (
+        <RestoreHistoryModal
+          operations={restoreOperations}
+          onClose={() => setShowRestoreHistory(false)}
+        />
+      )}
     </div>
   );
 }

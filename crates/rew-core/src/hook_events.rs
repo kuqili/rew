@@ -999,6 +999,241 @@ mod tests {
     }
 
     #[test]
+    fn shell_delete_uses_pre_tool_hash_as_baseline() {
+        let env = HookFlowEnv::new();
+        let session_key = "cursor:conv-shell-delete";
+        let old_content = "line1\nline2\n";
+        let live_path = env.write_live_file("tmp/shell-old.log", old_content);
+        let file_path = live_path.to_string_lossy().to_string();
+        let old_hash = env.store_content("shell_old.log", old_content);
+        env.delete_live_file("tmp/shell-old.log");
+
+        let prompt = prompt_envelope(
+            "cursor",
+            session_key,
+            "delete file via shell",
+            Some("conv-shell-delete"),
+            Some("gen-shell-delete"),
+        );
+        let task_id = process_event_with_objects(&env.db, &prompt, &env.objects_root)
+            .task_id
+            .expect("shell delete task");
+        env.seed_pre_tool_hash(session_key, &file_path, &old_hash);
+
+        let post = post_envelope(
+            "cursor",
+            session_key,
+            "execute_command",
+            vec![ObservedPathChange {
+                file_path: file_path.clone(),
+                file_exists_after: false,
+                new_hash: None,
+            }],
+        );
+        process_event_with_objects(&env.db, &post, &env.objects_root);
+
+        let stop = stop_envelope("cursor", session_key, Some("gen-shell-delete"));
+        process_event_with_objects(&env.db, &stop, &env.objects_root);
+        env.finalize_next_job();
+
+        let changes = env.db.get_changes_for_task(&task_id).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].change_type, ChangeType::Deleted);
+        assert_eq!(changes[0].old_hash.as_deref(), Some(old_hash.as_str()));
+        assert!(changes[0].new_hash.is_none());
+        assert_eq!(changes[0].attribution.as_deref(), Some("bash_predicted"));
+    }
+
+    #[test]
+    fn shell_deleted_directory_can_be_restored_via_directory_undo() {
+        let env = HookFlowEnv::new();
+        let session_key = "cursor:conv-shell-delete-dir";
+        let root = env.live_path("tmp/design_mockup");
+        let file_a = env.write_live_file("tmp/design_mockup/00-overview.md", "# overview\n");
+        let file_b = env.write_live_file("tmp/design_mockup/specs/a.txt", "alpha spec\n");
+        let file_a_path = file_a.to_string_lossy().to_string();
+        let file_b_path = file_b.to_string_lossy().to_string();
+        let hash_a = env.store_content("shell_delete_dir/00-overview.md", "# overview\n");
+        let hash_b = env.store_content("shell_delete_dir/specs-a.txt", "alpha spec\n");
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let task_id = process_event_with_objects(
+            &env.db,
+            &prompt_envelope(
+                "cursor",
+                session_key,
+                "delete directory via shell",
+                Some("conv-shell-delete-dir"),
+                Some("gen-shell-delete-dir"),
+            ),
+            &env.objects_root,
+        )
+        .task_id
+        .expect("shell delete dir task");
+        env.seed_pre_tool_hash(session_key, &file_a_path, &hash_a);
+        env.seed_pre_tool_hash(session_key, &file_b_path, &hash_b);
+
+        process_event_with_objects(
+            &env.db,
+            &post_envelope(
+                "cursor",
+                session_key,
+                "execute_command",
+                vec![
+                    ObservedPathChange {
+                        file_path: file_a_path.clone(),
+                        file_exists_after: false,
+                        new_hash: None,
+                    },
+                    ObservedPathChange {
+                        file_path: file_b_path.clone(),
+                        file_exists_after: false,
+                        new_hash: None,
+                    },
+                ],
+            ),
+            &env.objects_root,
+        );
+        process_event_with_objects(
+            &env.db,
+            &stop_envelope("cursor", session_key, Some("gen-shell-delete-dir")),
+            &env.objects_root,
+        );
+        env.finalize_next_job();
+
+        let changes = env.db.get_changes_for_task(&task_id).unwrap();
+        assert_eq!(changes.len(), 2);
+        assert!(changes.iter().all(|change| change.change_type == ChangeType::Deleted));
+        assert!(
+            changes
+                .iter()
+                .all(|change| change.attribution.as_deref() == Some("bash_predicted"))
+        );
+
+        let engine = crate::restore::TaskRestoreEngine::new(env.objects_root.clone());
+        let plan = engine.prepare_directory_undo(&env.db, &task_id, &root).unwrap();
+        let outcome = engine.execute_prepared_directory_undo(&plan);
+
+        assert_eq!(outcome.result.files_restored, 2);
+        assert_eq!(outcome.result.files_deleted, 0);
+        assert_eq!(outcome.result.failures.len(), 0);
+        assert_eq!(outcome.suppression_entries.len(), 2);
+        assert_eq!(std::fs::read_to_string(&file_a).unwrap(), "# overview\n");
+        assert_eq!(std::fs::read_to_string(&file_b).unwrap(), "alpha spec\n");
+    }
+
+    #[test]
+    fn restored_ai_deleted_directory_file_can_be_modified_in_followup_task() {
+        let env = HookFlowEnv::new();
+        let delete_session = "cursor:conv-shell-delete-dir-followup";
+        let root = env.live_path("tmp/design_mockup");
+        let restored_file = env.write_live_file("tmp/design_mockup/00-overview.md", "# overview\n");
+        let file_path = restored_file.to_string_lossy().to_string();
+        let deleted_hash = env.store_content("shell_delete_followup/00-overview.md", "# overview\n");
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let delete_task = process_event_with_objects(
+            &env.db,
+            &prompt_envelope(
+                "cursor",
+                delete_session,
+                "delete directory via shell",
+                Some("conv-shell-delete-dir-followup"),
+                Some("gen-shell-delete-dir-followup"),
+            ),
+            &env.objects_root,
+        )
+        .task_id
+        .expect("shell delete dir task");
+        env.seed_pre_tool_hash(delete_session, &file_path, &deleted_hash);
+
+        process_event_with_objects(
+            &env.db,
+            &post_envelope(
+                "cursor",
+                delete_session,
+                "execute_command",
+                vec![ObservedPathChange {
+                    file_path: file_path.clone(),
+                    file_exists_after: false,
+                    new_hash: None,
+                }],
+            ),
+            &env.objects_root,
+        );
+        process_event_with_objects(
+            &env.db,
+            &stop_envelope("cursor", delete_session, Some("gen-shell-delete-dir-followup")),
+            &env.objects_root,
+        );
+        env.finalize_next_job();
+
+        let engine = crate::restore::TaskRestoreEngine::new(env.objects_root.clone());
+        let outcome = engine.execute_prepared_directory_undo(
+            &engine
+                .prepare_directory_undo(&env.db, &delete_task, &root)
+                .unwrap(),
+        );
+        assert_eq!(outcome.result.files_restored, 1);
+        assert_eq!(std::fs::read_to_string(&restored_file).unwrap(), "# overview\n");
+
+        let restored_hash = ObjectStore::new(env.objects_root.clone())
+            .unwrap()
+            .store(&restored_file)
+            .unwrap();
+        let edit_session = "cursor:conv-edit-restored-dir";
+        let edit_task = process_event_with_objects(
+            &env.db,
+            &prompt_envelope(
+                "cursor",
+                edit_session,
+                "edit restored file",
+                Some("conv-edit-restored-dir"),
+                Some("gen-edit-restored-dir"),
+            ),
+            &env.objects_root,
+        )
+        .task_id
+        .expect("followup edit task");
+        env.seed_pre_tool_hash(edit_session, &file_path, &restored_hash);
+
+        std::fs::write(&restored_file, "# overview updated\n").unwrap();
+        let new_hash = ObjectStore::new(env.objects_root.clone())
+            .unwrap()
+            .store(&restored_file)
+            .unwrap();
+
+        process_event_with_objects(
+            &env.db,
+            &post_envelope(
+                "cursor",
+                edit_session,
+                "execute_command",
+                vec![ObservedPathChange {
+                    file_path: file_path.clone(),
+                    file_exists_after: true,
+                    new_hash: Some(new_hash.clone()),
+                }],
+            ),
+            &env.objects_root,
+        );
+        process_event_with_objects(
+            &env.db,
+            &stop_envelope("cursor", edit_session, Some("gen-edit-restored-dir")),
+            &env.objects_root,
+        );
+        env.finalize_next_job();
+
+        let changes = env.db.get_changes_for_task(&edit_task).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].change_type, ChangeType::Modified);
+        assert_eq!(changes[0].old_hash.as_deref(), Some(restored_hash.as_str()));
+        assert_eq!(changes[0].new_hash.as_deref(), Some(new_hash.as_str()));
+        assert_eq!(changes[0].file_path, restored_file);
+        assert_eq!(changes[0].attribution.as_deref(), Some("bash_predicted"));
+    }
+
+    #[test]
     fn interleaved_multi_tool_sessions_remain_isolated() {
         let env = HookFlowEnv::new();
         let cursor_session = "cursor:conv-parallel";

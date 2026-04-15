@@ -17,10 +17,10 @@ const STEPS: { key: Step; label: string }[] = [
 ];
 
 const WINDOW_OPTIONS = [
-  { secs: 300, label: "每 5 分钟", tag: "高频", desc: "适合频繁使用 AI 工具改动文件的场景。" },
-  { secs: 600, label: "每 10 分钟", tag: "推荐", desc: "存档数量适中，磁盘占用少，适合大多数人。" },
-  { secs: 1800, label: "每 30 分钟", tag: null, desc: "偶尔使用 AI 工具、不需要密集保护的场景。" },
-  { secs: 3600, label: "每 1 小时", tag: null, desc: "磁盘占用极少，但相邻存档之间的变更较多。" },
+  { secs: 300, label: "每 5 分钟", tag: "高频" },
+  { secs: 600, label: "每 10 分钟", tag: "推荐" },
+  { secs: 1800, label: "每 30 分钟", tag: null },
+  { secs: 3600, label: "每 1 小时", tag: null},
 ];
 
 // ─── Brand Icon ───────────────────────────────────────────────────
@@ -31,7 +31,7 @@ function BrandIcon() {
     <img
       src={rewIcon}
       alt="rew"
-      className="w-[17px] h-[17px] rounded-[3px] flex-shrink-0"
+      className="w-8 h-8 rounded-lg flex-shrink-0"
       draggable={false}
     />
   );
@@ -47,7 +47,7 @@ function Sidebar({ current }: { current: Step }) {
     <aside className="w-[192px] flex-shrink-0 flex flex-col" style={{ background: "rgba(0,0,0,0.015)", borderRight: "0.5px solid rgba(0,0,0,0.06)", padding: "32px 28px 24px" }}>
       {/* Brand */}
       <div className="mb-10">
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center mb-[7px]" style={{ background: "#3a3a3c" }}>
+        <div className="mb-[7px]">
           <BrandIcon />
         </div>
         <div className="text-[10px] font-semibold uppercase" style={{ color: "#aeaeb2", letterSpacing: "0.1em" }}>rew</div>
@@ -125,17 +125,17 @@ function StepWelcome({ onNext, onSkip }: { onNext: () => void; onSkip: () => voi
           <FeatureRow
             icon={<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5" strokeLinecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>}
             title="静默版本保护"
-            desc="实时捕捉文件变更，利用 APFS clonefile 异步备份，零额外磁盘占用。"
+            desc="实时捕捉文件变更，利用系统级快照技术进行异步备份，无需主动做任何事情。"
           />
           <FeatureRow
             icon={<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h16M4 12h10M4 18h13" /></svg>}
-            title="AI 操作追踪"
-            desc="集成 Cursor 与 Claude Code，自动将文件修改聚合为可回溯的任务节点。"
+            title="AI 行为追踪"
+            desc="深度集成 Cursor 与 Claude Code等主流AI工具，自动将碎片化的文件修改聚合为可理解的AI任务节点。"
           />
           <FeatureRow
             icon={<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5" strokeLinecap="round"><path d="M3 12a9 9 0 1 1 2.5 6.2" /><polyline points="3,8 3,12.5 7.5,12.5" /></svg>}
             title="一键倒带"
-            desc="任意存档点一键恢复，支持单文件级精确还原。"
+            desc="任意存档点一键恢复，支持单文件级精确还原， 支持目录误删一键还原。"
           />
         </div>
       </div>
@@ -174,14 +174,14 @@ function StepDirs({ onNext, onBack }: { onNext: (dirs: string[]) => void; onBack
         setDirs([
           { path: `${home}/Desktop`, label: "桌面", desc: "截图、临时文件、日常使用的文件", checked: false },
           { path: `${home}/Documents`, label: "文稿", desc: "文档、项目、个人资料", checked: false },
-          { path: `${home}/Downloads`, label: "下载", desc: "浏览器下载的文件、安装包等", checked: false },
+          { path: `${home}/Downloads`, label: "下载", desc: "浏览器、社交媒体下载的文件等", checked: false },
         ]);
       })
       .catch(() => {
         setDirs([
           { path: "~/Desktop", label: "桌面", desc: "截图、临时文件、日常使用的文件", checked: false },
           { path: "~/Documents", label: "文稿", desc: "文档、项目、个人资料", checked: false },
-          { path: "~/Downloads", label: "下载", desc: "浏览器下载的文件、安装包等", checked: false },
+          { path: "~/Downloads", label: "下载", desc: "浏览器、社交媒体下载的文件等", checked: false },
         ]);
       });
   }, []);
@@ -367,7 +367,7 @@ function StepScanning({ onNext }: { onNext: () => void }) {
         )}
 
         <div className="text-[11px] leading-[1.45]" style={{ color: "#8e8e93" }}>
-          使用 APFS clonefile 技术，初次扫描不会额外占用磁盘空间。
+          使用 APFS clonefile 技术，初次扫描保护目录不会额外占用磁盘空间。
         </div>
       </div>
       <Actions>

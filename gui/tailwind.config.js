@@ -20,10 +20,14 @@ export default {
           'red-bg': 'rgba(255,59,48,0.06)',
         },
         tool: {
-          claude: '#da7b3a',
-          'claude-bg': 'rgba(218,123,58,0.08)',
+          claude: '#C15F3C',
+          'claude-bg': 'rgba(193,95,60,0.08)',
           cursor: '#6366f1',
           'cursor-bg': 'rgba(99,102,241,0.08)',
+          codebuddy: '#10b981',
+          'codebuddy-bg': 'rgba(16,185,129,0.08)',
+          workbuddy: '#8b5cf6',
+          'workbuddy-bg': 'rgba(139,92,246,0.08)',
         },
         bg: {
           window: '#ffffff',

@@ -558,16 +558,9 @@ impl TaskRestoreEngine {
         db: &crate::db::Database,
         task_id: &str,
     ) -> RewResult<UndoPreview> {
-        let task = db
+        let _task = db
             .get_task(task_id)?
             .ok_or_else(|| RewError::Snapshot(format!("Task '{}' not found", task_id)))?;
-
-        if task.status == crate::types::TaskStatus::RolledBack {
-            return Err(RewError::Snapshot(format!(
-                "Task '{}' is already rolled back",
-                task_id
-            )));
-        }
 
         let changes: Vec<_> = db.get_changes_for_task(task_id)?
             .into_iter()
@@ -617,16 +610,9 @@ impl TaskRestoreEngine {
         db: &crate::db::Database,
         task_id: &str,
     ) -> RewResult<UndoResult> {
-        let task = db
+        let _task = db
             .get_task(task_id)?
             .ok_or_else(|| RewError::Snapshot(format!("Task '{}' not found", task_id)))?;
-
-        if task.status == crate::types::TaskStatus::RolledBack {
-            return Err(RewError::Snapshot(format!(
-                "Task '{}' is already rolled back",
-                task_id
-            )));
-        }
 
         let mut changes = db.get_changes_for_task(task_id)?;
 
@@ -667,8 +653,14 @@ impl TaskRestoreEngine {
 
         for change in &changes {
             match self.undo_single_change(db, change) {
-                Ok(UndoAction::Restored) => files_restored += 1,
-                Ok(UndoAction::Deleted) => files_deleted += 1,
+                Ok((UndoAction::Restored, suppression_entries)) => {
+                    files_restored += 1;
+                    apply_file_index_updates_after_restore(db, &suppression_entries);
+                }
+                Ok((UndoAction::Deleted, suppression_entries)) => {
+                    files_deleted += 1;
+                    apply_file_index_updates_after_restore(db, &suppression_entries);
+                }
                 Err(e) => {
                     failures.push((change.file_path.clone(), e));
                 }
@@ -738,16 +730,9 @@ impl TaskRestoreEngine {
         task_id: &str,
         dir_path: &Path,
     ) -> RewResult<PreparedDirectoryUndoPlan> {
-        let task = db
+        let _task = db
             .get_task(task_id)?
             .ok_or_else(|| RewError::Snapshot(format!("Task '{}' not found", task_id)))?;
-
-        if task.status == crate::types::TaskStatus::RolledBack {
-            return Err(RewError::Snapshot(format!(
-                "Task '{}' is already rolled back",
-                task_id
-            )));
-        }
 
         let mut scoped_changes = db.get_changes_for_task_in_dir_for_restore(
             task_id,
@@ -882,8 +867,14 @@ impl TaskRestoreEngine {
         let (mut files_restored, mut files_deleted) = (0, 0);
 
         match self.undo_single_change(db, change) {
-            Ok(UndoAction::Restored) => files_restored = 1,
-            Ok(UndoAction::Deleted) => files_deleted = 1,
+            Ok((UndoAction::Restored, suppression_entries)) => {
+                files_restored = 1;
+                apply_file_index_updates_after_restore(db, &suppression_entries);
+            }
+            Ok((UndoAction::Deleted, suppression_entries)) => {
+                files_deleted = 1;
+                apply_file_index_updates_after_restore(db, &suppression_entries);
+            }
             Err(e) => failures.push((file_path.to_path_buf(), e)),
         }
 
@@ -899,60 +890,10 @@ impl TaskRestoreEngine {
         &self,
         db: &crate::db::Database,
         change: &crate::types::Change,
-    ) -> Result<UndoAction, String> {
-        use crate::types::ChangeType;
-
-        match change.change_type {
-            ChangeType::Created => {
-                // File was created by AI → delete it to undo.
-                // If the file is already gone, the desired state is already achieved;
-                // still count it as Deleted so callers know something was handled.
-                if change.file_path.exists() {
-                    remove_path_recursively(&change.file_path)?;
-                    self.cleanup_empty_ancestor_dirs(&change.file_path);
-                }
-                Ok(UndoAction::Deleted)
-            }
-            ChangeType::Modified => {
-                if let Some(ref hash) = change.old_hash {
-                    self.restore_from_object(hash, &change.file_path)
-                        .or_else(|_| self.restore_from_file_index(db, &change.file_path).map(|_| ()))?;
-                } else {
-                    self.restore_from_file_index(db, &change.file_path)?;
-                }
-                Ok(UndoAction::Restored)
-            }
-            ChangeType::Deleted => {
-                if let Some(ref hash) = change.old_hash {
-                    self.restore_from_object(hash, &change.file_path)
-                        .or_else(|_| self.restore_from_file_index(db, &change.file_path).map(|_| ()))?;
-                } else {
-                    self.restore_from_file_index(db, &change.file_path)?;
-                }
-                Ok(UndoAction::Restored)
-            }
-            ChangeType::Renamed => {
-                if let Some(ref old_path) = change.old_file_path {
-                    if let Some(ref hash) = change.old_hash {
-                        self.restore_from_object(hash, old_path)
-                            .or_else(|_| self.restore_from_file_index(db, old_path).map(|_| ()))?;
-                    } else {
-                        self.restore_from_file_index(db, old_path)?;
-                    }
-                    if change.file_path.exists() && change.file_path != *old_path {
-                        remove_path_recursively(&change.file_path)?;
-                        self.cleanup_empty_ancestor_dirs(&change.file_path);
-                    }
-                    Ok(UndoAction::Restored)
-                } else if let Some(ref hash) = change.old_hash {
-                    self.restore_from_object(hash, &change.file_path)
-                        .or_else(|_| self.restore_from_file_index(db, &change.file_path).map(|_| ()))?;
-                    Ok(UndoAction::Restored)
-                } else {
-                    self.restore_from_file_index(db, &change.file_path)
-                }
-            }
-        }
+    ) -> Result<(UndoAction, Vec<PreparedSuppressionEntry>), String> {
+        let prepared = self.prepare_undo_change(db, change);
+        let action = self.execute_prepared_undo_change(&prepared)?;
+        Ok((action, prepared.suppression_entries()))
     }
 
     fn prepare_undo_change(
@@ -1110,27 +1051,6 @@ impl TaskRestoreEngine {
         cleanup_empty_ancestor_dirs(path, &self.cleanup_boundaries);
     }
 
-    /// Try to restore a file from the scanner baseline stored in file_index.
-    /// This is the fallback when old_hash is empty or its object is gone.
-    fn restore_from_file_index(
-        &self,
-        db: &crate::db::Database,
-        file_path: &Path,
-    ) -> Result<UndoAction, String> {
-        let path_key = file_path.to_string_lossy().to_string();
-
-        if let Ok(Some(restore_hash)) = db.get_file_index_restore_hash(&path_key) {
-            self.restore_from_object(&restore_hash, file_path)?;
-            return Ok(UndoAction::Restored);
-        }
-
-        Err(format!(
-            "该文件没有可用备份记录（old_hash 为空，file_index 也未命中）。\n\n\
-             可能原因：文件在 rew 建立基线前从未被扫描或备份。\n\
-             建议：检查废纸篓，或重新扫描目录后再继续使用。"
-        ))
-    }
-
     /// Restore a file from the object store.
     fn restore_from_object(
         &self,
@@ -1248,6 +1168,74 @@ fn path_depth(path: &Path) -> usize {
 enum UndoAction {
     Restored,
     Deleted,
+}
+
+fn apply_file_index_updates_after_restore(
+    db: &crate::db::Database,
+    entries: &[PreparedSuppressionEntry],
+) {
+    let seen_at = chrono::Utc::now().to_rfc3339();
+
+    for entry in entries {
+        let path_key = entry.path.to_string_lossy().to_string();
+
+        if entry.deleted {
+            let restore_hash = db
+                .get_file_index_entry(&path_key)
+                .ok()
+                .flatten()
+                .and_then(|existing| existing.content_hash.or(Some(existing.fast_hash)));
+            if let Some(hash) = restore_hash.as_deref() {
+                let _ = db.mark_file_index_deleted(
+                    &path_key,
+                    Some(hash),
+                    "restore",
+                    "restored_delete",
+                    &seen_at,
+                );
+            }
+            continue;
+        }
+
+        if !entry.path.exists() {
+            continue;
+        }
+
+        let mtime_secs = std::fs::metadata(&entry.path)
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+
+        let existing = db.get_file_index_entry(&path_key).ok().flatten();
+        let mut content_hash = entry
+            .expected_content_hash
+            .clone()
+            .or_else(|| existing.as_ref().and_then(|row| row.content_hash.clone()));
+        let mut fast_hash = existing.as_ref().map(|row| row.fast_hash.clone());
+
+        if content_hash.is_none() {
+            content_hash = crate::objects::sha256_file(&entry.path).ok();
+        }
+
+        if fast_hash.is_none() {
+            fast_hash = content_hash.clone();
+        }
+
+        if let Some(fast_hash) = fast_hash {
+            let _ = db.upsert_live_file_index_entry(
+                &path_key,
+                mtime_secs,
+                &fast_hash,
+                content_hash.as_deref(),
+                "restore",
+                "restored_live",
+                &seen_at,
+                None,
+            );
+        }
+    }
 }
 
 /// Restore a file from the most recent APFS snapshot.
@@ -1860,6 +1848,70 @@ mod tests {
     }
 
     #[test]
+    fn test_undo_deleted_file_should_rehydrate_file_index_live_state() {
+        let dir = tempdir().unwrap();
+        let (db, obj_store, engine) = setup_task_restore(dir.path());
+
+        create_test_task(&db, "t003_file_index_live");
+
+        let target_file = dir.path().join("aaa/README.md");
+        std::fs::create_dir_all(target_file.parent().unwrap()).unwrap();
+        std::fs::write(&target_file, "restore me").unwrap();
+        let old_hash = obj_store.store(&target_file).unwrap();
+
+        db.upsert_live_file_index_entry(
+            &target_file.to_string_lossy(),
+            1,
+            &old_hash,
+            Some(&old_hash),
+            "test",
+            "scan_seen",
+            &Utc::now().to_rfc3339(),
+            Some(1),
+        )
+        .unwrap();
+
+        std::fs::remove_file(&target_file).unwrap();
+        db.mark_file_index_deleted(
+            &target_file.to_string_lossy(),
+            Some(&old_hash),
+            "test",
+            "deleted",
+            &Utc::now().to_rfc3339(),
+        )
+        .unwrap();
+
+        db.insert_change(&Change {
+            id: None,
+            task_id: "t003_file_index_live".to_string(),
+            file_path: target_file.clone(),
+            change_type: ChangeType::Deleted,
+            old_hash: Some(old_hash.clone()),
+            new_hash: None,
+            diff_text: None,
+            lines_added: 0,
+            lines_removed: 1,
+            attribution: None,
+            old_file_path: None,
+        })
+        .unwrap();
+
+        let result = engine.undo_task(&db, "t003_file_index_live").unwrap();
+        assert_eq!(result.files_restored, 1);
+        assert!(target_file.exists(), "file should be restored on disk");
+
+        // Regression guard: restore must also flip file_index back to live state.
+        let entry = db
+            .get_file_index_entry(&target_file.to_string_lossy())
+            .unwrap()
+            .expect("file_index row should still exist");
+        assert!(
+            entry.exists_now,
+            "file_index should be marked live after restore (exists_now=1)"
+        );
+    }
+
+    #[test]
     fn test_undo_mixed_changes() {
         let dir = tempdir().unwrap();
         let (db, obj_store, engine) = setup_task_restore(dir.path());
@@ -2168,7 +2220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_undo_already_rolled_back() {
+    fn test_undo_already_rolled_back_is_allowed() {
         let dir = tempdir().unwrap();
         let (db, _obj, engine) = setup_task_restore(dir.path());
 
@@ -2185,9 +2237,9 @@ mod tests {
         };
         db.create_task(&task).unwrap();
 
+        // Should succeed (no changes to restore, but no error either)
         let result = engine.undo_task(&db, "t007");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("already rolled back"));
+        assert!(result.is_ok());
     }
 
     #[test]

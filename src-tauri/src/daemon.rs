@@ -219,6 +219,14 @@ fn expand_deleted_directory_events(
     Vec<rew_core::types::FileEvent>,
     Vec<(std::path::PathBuf, usize)>,
 ) {
+    fn is_child_of(path: &std::path::Path, parent: &std::path::Path) -> bool {
+        path != parent && path.starts_with(parent)
+    }
+
+    fn path_depth(path: &std::path::Path) -> usize {
+        path.components().count()
+    }
+
     let existing_paths: std::collections::HashSet<_> =
         events.iter().map(|event| event.path.clone()).collect();
     let mut expanded = Vec::with_capacity(events.len());
@@ -257,6 +265,78 @@ fn expand_deleted_directory_events(
                 timestamp: event.timestamp,
                 size_bytes: None,
             });
+        }
+    }
+
+    // Fallback inference: rm -rf often emits only file-level delete events on
+    // macOS (without a directory delete event). Detect this by checking whether
+    // all previously-known live descendants under a missing parent directory are
+    // present in this batch's deleted file paths.
+    let explicit_deleted_dir_paths: std::collections::HashSet<std::path::PathBuf> = deleted_dirs
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect();
+    let deleted_file_paths: std::collections::HashSet<std::path::PathBuf> = events
+        .iter()
+        .filter(|event| event.kind == FileEventKind::Deleted && !event.path.exists())
+        .map(|event| event.path.clone())
+        .filter(|path| path.file_name().is_some())
+        .collect();
+
+    if !deleted_file_paths.is_empty() {
+        let mut candidate_dirs = std::collections::HashSet::new();
+        for file_path in &deleted_file_paths {
+            let mut current = file_path.parent();
+            while let Some(dir) = current {
+                if dir.exists() {
+                    break;
+                }
+                let dir_path = dir.to_path_buf();
+                if !explicit_deleted_dir_paths.contains(&dir_path) {
+                    candidate_dirs.insert(dir_path);
+                }
+                current = dir.parent();
+            }
+        }
+
+        let mut inferred = Vec::new();
+        for dir in candidate_dirs {
+            let descendants = db.list_live_files_under_dir(&dir).unwrap_or_default();
+            if descendants.is_empty() {
+                continue;
+            }
+            let covered = descendants
+                .iter()
+                .filter(|path| deleted_file_paths.contains(*path))
+                .count();
+            if covered == descendants.len() {
+                inferred.push((dir, descendants.len()));
+            }
+        }
+
+        // Prefer highest-level directory summary to avoid showing nested
+        // duplicates (e.g. /aaa and /aaa/sub at the same time).
+        inferred.sort_by_key(|(path, _)| path_depth(path));
+        let mut selected: Vec<(std::path::PathBuf, usize)> = Vec::new();
+        for (dir, count) in inferred {
+            if selected
+                .iter()
+                .any(|(existing, _)| is_child_of(&dir, existing))
+            {
+                continue;
+            }
+            selected.push((dir, count));
+        }
+
+        if !selected.is_empty() {
+            for (dir, count) in &selected {
+                info!(
+                    "Inferred deleted directory {} from {} file-level deletions",
+                    dir.display(),
+                    count
+                );
+            }
+            deleted_dirs.extend(selected);
         }
     }
 
@@ -465,6 +545,8 @@ mod tests {
     use crate::state::SuppressedRestorePath;
     use chrono::{Duration, Utc};
     use rew_core::db::Database;
+    use rew_core::objects::ObjectStore;
+    use rew_core::restore::TaskRestoreEngine;
     use rew_core::types::{Change, ChangeType, FileEvent, FileEventKind, Task, TaskStatus};
     use std::path::PathBuf;
     use std::time::Instant;
@@ -684,6 +766,235 @@ mod tests {
         let paths: Vec<PathBuf> = expanded.into_iter().map(|event| event.path).collect();
         assert_eq!(paths, vec![child_b, child_a]);
         assert_eq!(deleted_dirs, vec![(dir.path().join("go"), 1)]);
+    }
+
+    #[test]
+    fn deleted_directory_expansion_does_not_match_sibling_dir_with_dash() {
+        let (dir, db) = temp_db();
+        let deleted_root = dir.path().join("design_mockup");
+        let deleted_child = deleted_root.join("00-overview.md");
+        let sibling_root = dir.path().join("design-mockup");
+        let sibling_child = sibling_root.join("ui-redesign-4areas.html");
+
+        let now = Utc::now().to_rfc3339();
+        db.upsert_live_file_index_entry(
+            &deleted_child.to_string_lossy(),
+            1,
+            "fast-overview",
+            Some("sha-overview"),
+            "scanner",
+            "scan_seen",
+            &now,
+            Some(1),
+        )
+        .unwrap();
+        db.upsert_live_file_index_entry(
+            &sibling_child.to_string_lossy(),
+            1,
+            "fast-html",
+            Some("sha-html"),
+            "scanner",
+            "scan_seen",
+            &now,
+            Some(1),
+        )
+        .unwrap();
+
+        let (expanded, deleted_dirs) = expand_deleted_directory_events(
+            &db,
+            &[FileEvent {
+                path: deleted_root.clone(),
+                kind: FileEventKind::Deleted,
+                timestamp: Utc::now(),
+                size_bytes: None,
+            }],
+        );
+
+        let paths: Vec<PathBuf> = expanded.into_iter().map(|event| event.path).collect();
+        assert_eq!(paths, vec![deleted_child]);
+        assert_eq!(deleted_dirs, vec![(deleted_root, 1)]);
+    }
+
+    #[test]
+    fn file_only_rm_rf_batch_infers_deleted_directory_summary() {
+        let (dir, db) = temp_db();
+        let root = dir.path().join("aaa");
+        let child_a = root.join("README.md");
+        let child_b = root.join("README 2.md");
+        let child_c = root.join("sub/cleanup.sh");
+
+        let now = Utc::now().to_rfc3339();
+        db.upsert_live_file_index_entry(
+            &child_a.to_string_lossy(),
+            1,
+            "fast-a",
+            Some("sha-a"),
+            "scanner",
+            "scan_seen",
+            &now,
+            Some(1),
+        )
+        .unwrap();
+        db.upsert_live_file_index_entry(
+            &child_b.to_string_lossy(),
+            1,
+            "fast-b",
+            Some("sha-b"),
+            "scanner",
+            "scan_seen",
+            &now,
+            Some(1),
+        )
+        .unwrap();
+        db.upsert_live_file_index_entry(
+            &child_c.to_string_lossy(),
+            1,
+            "fast-c",
+            Some("sha-c"),
+            "scanner",
+            "scan_seen",
+            &now,
+            Some(1),
+        )
+        .unwrap();
+
+        let (expanded, deleted_dirs) = expand_deleted_directory_events(
+            &db,
+            &[
+                FileEvent {
+                    path: child_a.clone(),
+                    kind: FileEventKind::Deleted,
+                    timestamp: Utc::now(),
+                    size_bytes: None,
+                },
+                FileEvent {
+                    path: child_b.clone(),
+                    kind: FileEventKind::Deleted,
+                    timestamp: Utc::now(),
+                    size_bytes: None,
+                },
+                FileEvent {
+                    path: child_c.clone(),
+                    kind: FileEventKind::Deleted,
+                    timestamp: Utc::now(),
+                    size_bytes: None,
+                },
+            ],
+        );
+
+        let paths: Vec<PathBuf> = expanded.into_iter().map(|event| event.path).collect();
+        assert_eq!(paths, vec![child_a, child_b, child_c]);
+        assert_eq!(deleted_dirs, vec![(root, 3)]);
+    }
+
+    #[test]
+    fn inferred_deleted_directory_can_be_restored_via_undo_directory() {
+        let (dir, db) = temp_db();
+        let root = dir.path().join("aaa");
+        let child_a = root.join("README.md");
+        let child_b = root.join("README 2.md");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&child_a, "alpha\n").unwrap();
+        std::fs::write(&child_b, "beta\n").unwrap();
+
+        let object_store = ObjectStore::new(dir.path().join("objects")).unwrap();
+        let hash_a = object_store.store(&child_a).unwrap();
+        let hash_b = object_store.store(&child_b).unwrap();
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+
+        db.upsert_live_file_index_entry(
+            &child_a.to_string_lossy(),
+            1,
+            &hash_a,
+            Some(&hash_a),
+            "scanner",
+            "scan_seen",
+            &now_str,
+            Some(1),
+        )
+        .unwrap();
+        db.upsert_live_file_index_entry(
+            &child_b.to_string_lossy(),
+            1,
+            &hash_b,
+            Some(&hash_b),
+            "scanner",
+            "scan_seen",
+            &now_str,
+            Some(1),
+        )
+        .unwrap();
+
+        let task = Task {
+            id: "t_rmrf_restore".to_string(),
+            prompt: Some("rm -rf aaa".into()),
+            tool: Some("workbuddy".into()),
+            started_at: now,
+            completed_at: Some(now),
+            status: TaskStatus::Completed,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        };
+        db.create_task(&task).unwrap();
+
+        std::fs::remove_dir_all(&root).unwrap();
+        let events = vec![
+            FileEvent {
+                path: child_a.clone(),
+                kind: FileEventKind::Deleted,
+                timestamp: now,
+                size_bytes: None,
+            },
+            FileEvent {
+                path: child_b.clone(),
+                kind: FileEventKind::Deleted,
+                timestamp: now,
+                size_bytes: None,
+            },
+        ];
+        let (_expanded, deleted_dirs) = expand_deleted_directory_events(&db, &events);
+        assert_eq!(deleted_dirs, vec![(root.clone(), 2)]);
+        db.upsert_task_deleted_dir("t_rmrf_restore", &root, 2).unwrap();
+
+        db.insert_change(&Change {
+            id: None,
+            task_id: "t_rmrf_restore".to_string(),
+            file_path: child_a.clone(),
+            change_type: ChangeType::Deleted,
+            old_hash: Some(hash_a),
+            new_hash: None,
+            diff_text: None,
+            lines_added: 0,
+            lines_removed: 1,
+            attribution: Some("fsevent_active".into()),
+            old_file_path: None,
+        })
+        .unwrap();
+        db.insert_change(&Change {
+            id: None,
+            task_id: "t_rmrf_restore".to_string(),
+            file_path: child_b.clone(),
+            change_type: ChangeType::Deleted,
+            old_hash: Some(hash_b),
+            new_hash: None,
+            diff_text: None,
+            lines_added: 0,
+            lines_removed: 1,
+            attribution: Some("fsevent_active".into()),
+            old_file_path: None,
+        })
+        .unwrap();
+
+        let engine = TaskRestoreEngine::new(dir.path().join("objects"));
+        let result = engine
+            .undo_directory(&db, "t_rmrf_restore", &root)
+            .expect("directory restore should succeed");
+        assert_eq!(result.files_restored, 2);
+        assert_eq!(result.failures.len(), 0);
+        assert_eq!(std::fs::read_to_string(&child_a).unwrap(), "alpha\n");
+        assert_eq!(std::fs::read_to_string(&child_b).unwrap(), "beta\n");
     }
 
     #[test]

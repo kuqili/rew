@@ -35,11 +35,19 @@ fn parse_datetime_flexible(s: &str) -> Result<DateTime<Utc>, String> {
     Err(format!("Cannot parse datetime: '{}'", s))
 }
 
+fn escape_like_fragment(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 fn subpath_like_pattern(path_prefix: &str) -> String {
+    let escaped = escape_like_fragment(path_prefix.trim_end_matches('/'));
     if path_prefix == "/" {
         "/%".to_string()
     } else {
-        format!("{}/%", path_prefix.trim_end_matches('/'))
+        format!("{}/%", escaped)
     }
 }
 
@@ -1336,7 +1344,7 @@ impl Database {
                     COALESCE(SUM(c.lines_removed), 0) AS total_lines_removed
              FROM tasks t
              JOIN changes c ON c.task_id = t.id
-             WHERE c.file_path LIKE ?1
+             WHERE c.file_path LIKE ?1 ESCAPE '\\'
                AND (t.tool != '文件监听' OR t.completed_at IS NOT NULL)
              GROUP BY t.id
              ORDER BY t.started_at DESC",
@@ -1388,7 +1396,7 @@ impl Database {
     pub fn count_changes_in_dir(&self, task_id: &str, dir_prefix: &str) -> RewResult<usize> {
         let like_pattern = subpath_like_pattern(dir_prefix);
         let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM changes WHERE task_id = ?1 AND file_path LIKE ?2",
+            "SELECT COUNT(*) FROM changes WHERE task_id = ?1 AND file_path LIKE ?2 ESCAPE '\\'",
             params![task_id, like_pattern],
             |row| row.get(0),
         )?;
@@ -1400,7 +1408,7 @@ impl Database {
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM changes
              WHERE task_id = ?1
-               AND (file_path LIKE ?2 OR old_file_path LIKE ?2)",
+               AND (file_path LIKE ?2 ESCAPE '\\' OR old_file_path LIKE ?2 ESCAPE '\\')",
             params![task_id, like_pattern],
             |row| row.get(0),
         )?;
@@ -1422,7 +1430,7 @@ impl Database {
         let like_pattern = subpath_like_pattern(dir_prefix);
         let mut stmt = self.conn.prepare(
             "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
-             FROM changes WHERE task_id = ?1 AND file_path LIKE ?2 ORDER BY id ASC",
+             FROM changes WHERE task_id = ?1 AND file_path LIKE ?2 ESCAPE '\\' ORDER BY id ASC",
         )?;
 
         let mut changes = Vec::new();
@@ -1448,7 +1456,7 @@ impl Database {
             "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
              FROM changes
              WHERE task_id = ?1
-               AND (file_path LIKE ?2 OR old_file_path LIKE ?2)
+               AND (file_path LIKE ?2 ESCAPE '\\' OR old_file_path LIKE ?2 ESCAPE '\\')
              ORDER BY id ASC",
         )?;
 
@@ -1474,7 +1482,7 @@ impl Database {
         let like_pattern = subpath_like_pattern(dir_prefix);
         let mut stmt = self.conn.prepare(
             "SELECT id, task_id, file_path, change_type, old_hash, new_hash, diff_text, lines_added, lines_removed, attribution, old_file_path
-             FROM changes WHERE task_id = ?1 AND file_path LIKE ?2 ORDER BY id ASC LIMIT ?3",
+             FROM changes WHERE task_id = ?1 AND file_path LIKE ?2 ESCAPE '\\' ORDER BY id ASC LIMIT ?3",
         )?;
 
         let mut changes = Vec::new();
@@ -1504,7 +1512,7 @@ impl Database {
     pub fn has_changes_under_dir_prefix(&self, dir_prefix: &str) -> RewResult<bool> {
         let like_pattern = subpath_like_pattern(dir_prefix);
         let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM changes WHERE file_path LIKE ?1",
+            "SELECT COUNT(*) FROM changes WHERE file_path LIKE ?1 ESCAPE '\\'",
             params![like_pattern],
             |row| row.get(0),
         )?;
@@ -1517,7 +1525,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT file_path
              FROM file_index
-             WHERE exists_now = 1 AND file_path LIKE ?1
+             WHERE exists_now = 1 AND file_path LIKE ?1 ESCAPE '\\'
              ORDER BY file_path ASC",
         )?;
 
@@ -2321,7 +2329,7 @@ impl Database {
                  last_seen_at = ?2,
                  last_event_kind = 'scan_missing',
                  last_confirmed_by = 'scanner'
-             WHERE file_path LIKE ?1
+             WHERE file_path LIKE ?1 ESCAPE '\\'
                AND exists_now = 1
                AND COALESCE(last_scan_epoch, -1) != ?3",
             params![like_pattern, tombstoned_at, scan_epoch],

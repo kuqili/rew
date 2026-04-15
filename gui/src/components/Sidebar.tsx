@@ -131,7 +131,7 @@ export default function Sidebar({
           className="w-full flex items-center gap-2 h-[28px] px-3 mx-2 rounded text-[12px] text-t-3 hover:bg-bg-hover cursor-default transition-colors"
         >
           <Settings className="w-[14px] h-[14px]" />
-          管理保护目录
+          设置
         </button>
       </div>
     </aside>

@@ -4,6 +4,7 @@ import { useTasks } from "../hooks/useTasks";
 import type { TaskInfo } from "../lib/tauri";
 import { truncate } from "../lib/format";
 import { getToolMeta } from "../lib/tools";
+import { getToolBrandIcon } from "./ToolIcons";
 import type { ViewMode } from "./MainLayout";
 
 /** Date filter modes */
@@ -336,12 +337,7 @@ function TaskCard({
   }
 
   const toolLabel = isWindow ? "自动存档" : (toolMeta?.label ?? "AI");
-  const taskToolKey = task.tool?.toLowerCase().replace(/_/g, "-") ?? "";
-  const toolColorClass = isWindow
-    ? "text-t-3"
-    : taskToolKey.includes("cursor")
-      ? "text-tool-cursor"
-      : "text-tool-claude";
+  const toolColor = toolMeta?.color ?? null;
 
   const time = fmtTime(effectiveTs(task));
 
@@ -351,9 +347,17 @@ function TaskCard({
       className={`w-full text-left px-4 py-3 border-b border-border-light cursor-default transition-colors
         ${selected ? "bg-sys-blue text-white" : "hover:bg-bg-hover"}`}
     >
-      {/* Top row: tool label + status + time */}
+      {/* Top row: tool icon + label + status + time */}
       <div className="flex items-center gap-1 mb-0.5">
-        <span className={`text-[11px] font-semibold ${selected ? "text-white/85" : toolColorClass}`}>
+        {!isWindow && (
+          <span className={`flex-shrink-0 ${selected ? "opacity-90" : ""}`}>
+            {getToolBrandIcon(task.tool ?? "", 14)}
+          </span>
+        )}
+        <span
+          className={`text-[11px] font-semibold ${selected ? "text-white/85" : !toolColor ? "text-t-3" : ""}`}
+          style={!selected && toolColor ? { color: toolColor } : undefined}
+        >
           {toolLabel}
         </span>
 

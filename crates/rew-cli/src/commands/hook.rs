@@ -31,6 +31,7 @@ use rew_core::rew_home_dir;
 
 use chrono::Utc;
 use serde::Deserialize;
+use shell_words;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -305,7 +306,10 @@ fn extract_tool_path_and_command(
 /// sed -i, touch, mkdir -p, git checkout --, etc.
 fn predict_bash_file_paths(cmd: &str, cwd: Option<&str>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    let token_storage = shell_words::split(cmd).unwrap_or_else(|_| {
+        cmd.split_whitespace().map(|s| s.to_string()).collect()
+    });
+    let tokens: Vec<&str> = token_storage.iter().map(String::as_str).collect();
 
     let resolve = |p: &str| -> PathBuf {
         let path = PathBuf::from(p);
@@ -341,6 +345,29 @@ fn predict_bash_file_paths(cmd: &str, cwd: Option<&str>) -> Vec<PathBuf> {
             let last = tokens[tokens.len() - 1];
             if !last.starts_with('-') {
                 paths.push(resolve(last));
+            }
+            break;
+        }
+
+        // rm/rmdir/trash: all non-flag arguments are deletion targets
+        if t == "rm" || t == "rmdir" || t == "trash" {
+            let mut after_double_dash = false;
+            for arg in &tokens[i + 1..] {
+                if matches!(*arg, "&&" | "||" | "|" | ";") {
+                    break;
+                }
+                if after_double_dash {
+                    paths.push(resolve(arg));
+                    continue;
+                }
+                if *arg == "--" {
+                    after_double_dash = true;
+                    continue;
+                }
+                if arg.starts_with('-') {
+                    continue;
+                }
+                paths.push(resolve(arg));
             }
             break;
         }
@@ -1057,6 +1084,42 @@ mod tests {
     fn predicted_shell_paths_resolve_from_cwd() {
         let paths = predict_bash_file_paths("touch notes.txt", Some("/tmp/project"));
         assert_eq!(paths, vec![PathBuf::from("/tmp/project/notes.txt")]);
+    }
+
+    #[test]
+    fn predicted_shell_paths_handle_quoted_mv_destinations() {
+        let paths = predict_bash_file_paths(
+            r#"mv "/Users/kuqili/Desktop/modified.txt" "/Users/kuqili/Desktop/renamed_file.txt""#,
+            Some("/"),
+        );
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/Users/kuqili/Desktop/renamed_file.txt")]
+        );
+    }
+
+    #[test]
+    fn predicted_shell_paths_handle_rm_recursive_targets() {
+        let paths = predict_bash_file_paths(
+            r#"rm -rf "/Users/kuqili/Desktop/project/rew/design_mockup""#,
+            Some("/"),
+        );
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/Users/kuqili/Desktop/project/rew/design_mockup")]
+        );
+    }
+
+    #[test]
+    fn predicted_shell_paths_handle_trash_targets() {
+        let paths = predict_bash_file_paths(
+            r#"trash "/Users/kuqili/Desktop/original.txt""#,
+            Some("/"),
+        );
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/Users/kuqili/Desktop/original.txt")]
+        );
     }
 
     #[test]

@@ -29,10 +29,10 @@ const WINDOW_OPTIONS: { label: string; secs: number }[] = [
 ];
 
 const TABS = [
-  { k: "dirs" as const,     label: "目录",   icon: <FolderOpen className="w-3.5 h-3.5" /> },
-  { k: "record" as const,   label: "存档",   icon: <Clock className="w-3.5 h-3.5" /> },
-  { k: "ai_tools" as const, label: "AI 工具", icon: <Cpu className="w-3.5 h-3.5" /> },
-  { k: "about" as const,    label: "关于",   icon: <HelpCircle className="w-3.5 h-3.5" /> },
+  { k: "dirs" as const,     label: "保护目录", icon: <FolderOpen className="w-4 h-4" /> },
+  { k: "record" as const,   label: "自动存档", icon: <Clock className="w-4 h-4" /> },
+  { k: "ai_tools" as const, label: "AI 工具",  icon: <Cpu className="w-4 h-4" /> },
+  { k: "about" as const,    label: "关于",     icon: <HelpCircle className="w-4 h-4" /> },
 ];
 
 export default function SettingsPanel({ onClose }: Props) {
@@ -124,34 +124,48 @@ export default function SettingsPanel({ onClose }: Props) {
     }
   };
 
+  const tabTitle = TABS.find((t) => t.k === tab)?.label ?? "设置";
+
   return (
-    <div className="h-full flex flex-col overflow-hidden">
-      {/* Header with drag region */}
-      <div data-tauri-drag-region className="flex-shrink-0 px-5 pt-4 pb-0">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-[15px] font-semibold text-t-1">设置</h2>
-          <button onClick={onClose} className="w-5 h-5 rounded-full bg-bg-active text-t-2 flex items-center justify-center text-[11px] hover:bg-border cursor-default">
+    <div className="h-full w-full flex overflow-hidden">
+      {/* Sidebar nav */}
+      <div className="w-[180px] flex-shrink-0 bg-bg-sidebar backdrop-blur-[40px] saturate-[180%] border-r border-border/60 flex flex-col py-4">
+        <div className="text-[13px] font-semibold text-t-1 px-4 pb-3 tracking-[-0.01em]">设置</div>
+        <div className="flex flex-col gap-[1px] px-2">
+          {TABS.map((t) => {
+            const active = tab === t.k;
+            return (
+              <button
+                key={t.k}
+                onClick={() => setTab(t.k)}
+                className={`flex items-center gap-2 px-2.5 py-[6px] rounded-md text-[12px] text-left w-full cursor-default transition-colors ${
+                  active
+                    ? "bg-sys-blue/8 text-sys-blue font-medium"
+                    : "text-t-2 hover:bg-bg-hover"
+                }`}
+              >
+                <span className={active ? "text-sys-blue" : "text-t-3"}>{t.icon}</span>
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Content area */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Content header */}
+        <div className="flex-shrink-0 flex items-center justify-between px-6 pt-4 pb-3 border-b border-border-light">
+          <h2 className="text-[15px] font-semibold text-t-1">{tabTitle}</h2>
+          <button onClick={onClose} className="w-[22px] h-[22px] rounded-full bg-bg-active text-t-2 flex items-center justify-center text-[11px] hover:bg-border cursor-default">
             <X className="w-3 h-3" />
           </button>
         </div>
 
-        {/* v4 icon tabs — System Preferences style */}
-        <div className="flex justify-center gap-5 py-3 border-b border-border">
-          {TABS.map((t) => (
-            <button key={t.k} onClick={() => setTab(t.k)}
-              className="flex flex-col items-center gap-[3px] p-1 rounded min-w-[56px] cursor-default hover:bg-bg-hover">
-              <div className={`w-6 h-6 rounded flex items-center justify-center ${tab === t.k ? 'bg-sys-blue text-white' : 'text-t-2'}`}>
-                {t.icon}
-              </div>
-              <span className={`text-[10px] ${tab === t.k ? 'text-sys-blue font-medium' : 'text-t-2'}`}>{t.label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-5 py-5">
+        {/* Scrollable content */}
+        <div className="flex-1 overflow-y-auto px-6 py-5">
         {tab === "record" ? (
-          <div className="max-w-[520px] space-y-6">
+          <div className="space-y-6">
             <div>
               <h3 className="text-[13px] font-semibold text-t-1 mb-1">自动存档频率</h3>
               <p className="text-[11px] text-t-3 leading-relaxed mb-3">
@@ -201,7 +215,7 @@ export default function SettingsPanel({ onClose }: Props) {
             </div>
           </div>
         ) : tab === "dirs" ? (
-          <div className="space-y-6 max-w-[680px]">
+          <div className="space-y-6">
             {/* Global overview */}
             <div className="bg-bg-grouped rounded-md px-5 py-4">
               {analyzing ? (
@@ -367,7 +381,7 @@ export default function SettingsPanel({ onClose }: Props) {
         ) : tab === "ai_tools" ? (
           <AiToolsTab />
         ) : (
-          <div className="space-y-4 max-w-[640px]">
+          <div className="space-y-4">
             <h3 className="text-[13px] font-semibold text-t-1">rew — AI 时代的文件安全网</h3>
             <p className="text-[11px] text-t-2 leading-relaxed">
               实时监控文件，AI 工具操作时自动备份。误删或改错，一键撤销。
@@ -375,6 +389,7 @@ export default function SettingsPanel({ onClose }: Props) {
             <div className="text-[11px] text-t-3 space-y-1">
               <div>版本: 0.1.0</div>
               <div>存储: APFS clonefile (CoW)</div>
+              <div>作者（联系人）: kuqili</div>
               {storage && <div>备份: {storage.object_count.toLocaleString()} 对象 · {fmt(storage.apparent_bytes)}</div>}
             </div>
             <div className="mt-4 pt-3 border-t border-border">
@@ -384,10 +399,12 @@ export default function SettingsPanel({ onClose }: Props) {
                 <div>• <b>安装包</b> — .dmg, .pkg, .iso, .msi, .exe</div>
                 <div>• <b>开发产物</b> — node_modules, .git, target, __pycache__</div>
                 <div>• <b>系统临时文件</b> — .DS_Store, Thumbs.db, .swp</div>
+                <div>• <b>大部分系统运行过程中会频繁产生变更的文件（非用户文件）</b> </div>
               </div>
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );
@@ -869,7 +886,7 @@ function AiToolsTab() {
   };
 
   return (
-    <div className="space-y-6 max-w-[580px]">
+    <div className="space-y-6">
       <div>
         <h3 className="text-[13px] font-semibold text-t-1 mb-1.5">AI 工具 Hook 管理</h3>
         <p className="text-[12px] text-t-3 leading-relaxed">
@@ -886,7 +903,7 @@ function AiToolsTab() {
         <div className="bg-bg-grouped rounded-md px-5 py-8 text-center">
           <div className="text-[15px] text-t-2 mb-1">未检测到 AI 工具</div>
           <p className="text-[12px] text-t-3 leading-relaxed">
-            安装 Claude Code 或 Cursor 后，在此处即可一键启用 hook。
+            目前支持 Cursor、Claude Code、Codebuddy、Workbuddy 等主流 AI 工具，在此处即可一键启用 hook。
           </p>
           <button
             onClick={refresh}

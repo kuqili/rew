@@ -732,6 +732,18 @@ fn active_task_rollup_from_changes(
     }
 }
 
+fn should_use_live_rollup(
+    task: &rew_core::types::Task,
+    finalization_status: Option<&str>,
+    stored_changes_count: u32,
+) -> bool {
+    matches!(task.status, rew_core::types::TaskStatus::Active)
+        || matches!(finalization_status, Some("pending") | Some("running") | Some("failed"))
+        || (task.tool.as_deref() == Some("文件监听")
+            && stored_changes_count == 0
+            && finalization_status.is_none())
+}
+
 #[tauri::command]
 pub async fn list_tasks(
     state: State<'_, AppState>,
@@ -771,11 +783,8 @@ pub async fn list_tasks(
         .into_iter()
         .map(|tw| {
             let finalization_status = db.get_task_finalization_status(&tw.task.id).ok().flatten();
-            let needs_live_rollup = matches!(tw.task.status, rew_core::types::TaskStatus::Active)
-                || matches!(
-                    finalization_status.as_deref(),
-                    Some("pending") | Some("running") | Some("failed")
-                );
+            let needs_live_rollup =
+                should_use_live_rollup(&tw.task, finalization_status.as_deref(), tw.changes_count);
             let (changes_count, total_lines_added, total_lines_removed) =
                 if use_active_fallback && needs_live_rollup {
                     active_task_rollup_from_changes(&db, &tw.task.id)
@@ -803,16 +812,12 @@ pub async fn get_task(state: State<'_, AppState>, task_id: String) -> Result<Tas
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task '{}' not found", task_id))?;
     let finalization_status = db.get_task_finalization_status(&task.id).map_err(|e| e.to_string())?;
+    let stored_rollup = db.get_task_rollup(&task.id).map_err(|e| e.to_string())?;
     let (changes_count, total_lines_added, total_lines_removed) =
-        if matches!(task.status, rew_core::types::TaskStatus::Active)
-            || matches!(
-                finalization_status.as_deref(),
-                Some("pending") | Some("running") | Some("failed")
-            )
-        {
+        if should_use_live_rollup(&task, finalization_status.as_deref(), stored_rollup.0) {
             active_task_rollup_from_changes(&db, &task.id)
         } else {
-            db.get_task_rollup(&task.id).map_err(|e| e.to_string())?
+            stored_rollup
         };
 
     Ok(task_info_from_parts(
@@ -1747,6 +1752,9 @@ pub async fn set_monitoring_window(state: State<'_, AppState>, secs: u64) -> Res
     if let Some(task_id) = sealed_id {
         if let Ok(db) = state.db.lock() {
             let _ = db.update_task_completed_at(&task_id, now);
+            let objs = rew_home_dir().join("objects");
+            let _ = rew_core::reconcile::reconcile_task(&db, &task_id, &objs);
+            let _ = db.refresh_task_rollup_from_changes(&task_id);
         }
     }
 
@@ -2440,6 +2448,9 @@ pub async fn create_manual_snapshot(
         if let Some(ref old_window) = *window_guard {
             if let Ok(db) = state.db.lock() {
                 let _ = db.update_task_completed_at(&old_window.task_id, now);
+                let objs = rew_home_dir().join("objects");
+                let _ = rew_core::reconcile::reconcile_task(&db, &old_window.task_id, &objs);
+                let _ = db.refresh_task_rollup_from_changes(&old_window.task_id);
                 tracing::info!(
                     "create_manual_snapshot: sealed monitoring window {}",
                     &old_window.task_id

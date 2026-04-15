@@ -3222,6 +3222,7 @@ dependencies = [
  "rew-core",
  "serde",
  "serde_json",
+ "shell-words",
  "tracing",
  "uuid",
 ]
