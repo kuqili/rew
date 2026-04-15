@@ -9,6 +9,7 @@ use tempfile::TempDir;
 use rew_core::baseline::{resolve_baseline_with_objects_root, Baseline};
 use rew_core::db::Database;
 use rew_core::objects::ObjectStore;
+use rew_core::pre_tool_store::{pre_tool_store_root_for_objects_root, set_pre_tool_hash_in};
 use rew_core::reconcile::{reconcile_task, ReconcileResult};
 use rew_core::types::{Change, ChangeType, Task, TaskStatus};
 
@@ -49,6 +50,12 @@ impl TestEnv {
     fn store_file(&self, path: &Path) -> String {
         let store = ObjectStore::new(self.objects_root.clone()).unwrap();
         store.store(path).unwrap()
+    }
+
+    fn seed_pre_tool_hash(&self, session_key: &str, path: &Path, hash: &str) {
+        let pre_tool_root = pre_tool_store_root_for_objects_root(&self.objects_root);
+        let path_str = path.to_string_lossy().to_string();
+        set_pre_tool_hash_in(&pre_tool_root, session_key, &path_str, hash).unwrap();
     }
 
     fn create_active_task(&self, id: &str) {
@@ -343,11 +350,7 @@ fn a8_baseline_pre_tool_hash() {
     let env = TestEnv::new();
     env.create_active_task("t1");
     let path = env.dir.path().join("pre_tool.txt");
-    let path_str = path.to_string_lossy().to_string();
-
-    env.db
-        .set_pre_tool_hash("session-abc", &path_str, "sha_pre_tool")
-        .unwrap();
+    env.seed_pre_tool_hash("session-abc", &path, "sha_pre_tool");
 
     let bl = env.baseline_with_session("t1", &path, "session-abc");
     assert!(bl.existed);

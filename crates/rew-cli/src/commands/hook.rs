@@ -23,6 +23,7 @@ use rew_core::hook_events::{
     TaskStopRequestedPayload,
 };
 use rew_core::objects::{sha256_file, ObjectStore};
+use rew_core::pre_tool_store::set_pre_tool_hash;
 use rew_core::scope::{ScopeEngine, ScopeResult};
 use rew_core::types::ChangeType;
 use rew_core::watcher::filter::PathFilter;
@@ -544,9 +545,7 @@ pub fn handle_pre_tool(source: Option<&str>) -> RewResult<i32> {
                         let tool_source = resolve_tool_source(source, &raw);
                         let session_key = extract_session_key(&raw, &tool_source);
                         let path_str = path.to_string_lossy().to_string();
-                        if let Ok(db) = open_db() {
-                            let _ = db.set_pre_tool_hash(&session_key, &path_str, &hash);
-                        }
+                        let _ = set_pre_tool_hash(&session_key, &path_str, &hash);
                     }
                 }
             }
@@ -810,9 +809,7 @@ fn canonicalize_path(path_str: &str) -> PathBuf {
 }
 
 fn open_db() -> RewResult<Database> {
-    let rew_dir = rew_home_dir();
-    let _ = std::fs::remove_file(rew_dir.join(".scan_manifest.json"));
-    let db_path = rew_dir.join("snapshots.db");
+    let db_path = rew_home_dir().join("snapshots.db");
     let db = Database::open(&db_path)?;
     db.initialize()?;
     Ok(db)

@@ -16,6 +16,7 @@ use rew_core::hook_events::{
 };
 use rew_core::objects::ObjectStore;
 use rew_core::pipeline;
+use rew_core::pre_tool_store::delete_all_pre_tool_hashes;
 use rew_core::scanner::ProgressCallback;
 use rew_core::snapshot::tmutil::TmutilWrapper;
 use rew_core::traits::AnomalyDetector;
@@ -1793,10 +1794,10 @@ pub fn recover_stale_ai_tasks_on_startup(app: &AppHandle) {
     let Ok(db) = state.db.lock() else { return };
     let now = chrono::Utc::now();
 
-    // Deactivate all sessions, stop guards, and pre-tool hashes in DB.
+    // Deactivate all sessions, stop guards, and pre-tool hashes.
     let _ = db.deactivate_all_sessions();
     let _ = db.delete_all_stop_guards();
-    let _ = db.delete_all_pre_tool_hashes();
+    let _ = delete_all_pre_tool_hashes();
 
     // Mark any lingering Active AI tasks as Completed in the DB.
     match db.recover_stale_ai_tasks(now) {

@@ -57,6 +57,17 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
     has_column
 }
 
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+        params![table],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|row| row.is_some())
+    .unwrap_or(false)
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -252,14 +263,6 @@ impl Database {
                 generation_id   TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS pre_tool_hashes (
-                session_id      TEXT NOT NULL,
-                file_path       TEXT NOT NULL,
-                content_hash    TEXT NOT NULL,
-                created_at      TEXT NOT NULL,
-                PRIMARY KEY (session_id, file_path)
-            );
-
             CREATE TABLE IF NOT EXISTS file_index (
                 file_path       TEXT PRIMARY KEY,
                 mtime_secs      INTEGER NOT NULL,
@@ -385,6 +388,10 @@ impl Database {
 
         if table_has_column(&self.conn, "changes", "restored_at") {
             self.rebuild_changes_table_without_restored_at()?;
+        }
+
+        if table_exists(&self.conn, "pre_tool_hashes") {
+            let _ = self.conn.execute("DROP TABLE pre_tool_hashes", []);
         }
 
         let _ = self.conn.execute(
@@ -2187,62 +2194,6 @@ impl Database {
     /// Remove all stop guards (used on startup recovery).
     pub fn delete_all_stop_guards(&self) -> RewResult<()> {
         self.conn.execute("DELETE FROM session_stop_guard", [])?;
-        Ok(())
-    }
-
-    // ================================================================
-    // Pre-tool Hashes (V7 — replaces .pre_tool/ files)
-    // ================================================================
-
-    /// Store the pre-tool content hash for a file in a session.
-    pub fn set_pre_tool_hash(
-        &self,
-        session_id: &str,
-        file_path: &str,
-        content_hash: &str,
-    ) -> RewResult<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO pre_tool_hashes (session_id, file_path, content_hash, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![session_id, file_path, content_hash, Utc::now().to_rfc3339()],
-        )?;
-        Ok(())
-    }
-
-    /// Get the pre-tool content hash for a file in a session.
-    pub fn get_pre_tool_hash(&self, session_id: &str, file_path: &str) -> RewResult<Option<String>> {
-        let result = self.conn.query_row(
-            "SELECT content_hash FROM pre_tool_hashes WHERE session_id = ?1 AND file_path = ?2",
-            params![session_id, file_path],
-            |row| row.get::<_, String>(0),
-        ).optional()?;
-        Ok(result)
-    }
-
-    /// Consume (read and delete) the pre-tool hash for a file.
-    pub fn consume_pre_tool_hash(&self, session_id: &str, file_path: &str) -> RewResult<Option<String>> {
-        let hash = self.get_pre_tool_hash(session_id, file_path)?;
-        if hash.is_some() {
-            self.conn.execute(
-                "DELETE FROM pre_tool_hashes WHERE session_id = ?1 AND file_path = ?2",
-                params![session_id, file_path],
-            )?;
-        }
-        Ok(hash)
-    }
-
-    /// Delete all pre-tool hashes for a session (cleanup on stop).
-    pub fn delete_pre_tool_hashes_for_session(&self, session_id: &str) -> RewResult<()> {
-        self.conn.execute(
-            "DELETE FROM pre_tool_hashes WHERE session_id = ?1",
-            params![session_id],
-        )?;
-        Ok(())
-    }
-
-    /// Delete all pre-tool hashes (used on startup recovery).
-    pub fn delete_all_pre_tool_hashes(&self) -> RewResult<()> {
-        self.conn.execute("DELETE FROM pre_tool_hashes", [])?;
         Ok(())
     }
 

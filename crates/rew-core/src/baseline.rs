@@ -7,6 +7,7 @@
 
 use crate::db::Database;
 use crate::objects::ObjectStore;
+use crate::pre_tool_store::{get_pre_tool_hash_in, pre_tool_store_root_for_objects_root};
 use crate::types::ChangeType;
 use std::path::{Path, PathBuf};
 
@@ -60,12 +61,12 @@ fn resolve_live_file_index_baseline_with_store(
 
 /// Resolve the baseline state for a file in the context of a task.
 ///
-/// Uses a 5-level fallback chain (all DB-backed, no file I/O):
+/// Uses a 5-level fallback chain:
 ///
 /// 1. Existing change record in this task → checks change_type:
 ///    - Created → file didn't exist before task → existed=false
 ///    - Modified/Renamed/Deleted → preserves original old_hash
-/// 2. pre_tool_hashes table → captured right before AI edit (hook only)
+/// 2. pre-tool file store → captured right before AI edit (hook only)
 /// 3. Latest change from a PREVIOUS task → checks change_type to detect deletions
 /// 4. file_index table → startup scan baseline (lazy SHA-256 upgrade from fast hash)
 /// 5. No record → file never seen by rew
@@ -94,6 +95,7 @@ pub fn resolve_baseline_with_objects_root(
     objects_root: PathBuf,
 ) -> Baseline {
     let path_str = file_path.to_string_lossy().to_string();
+    let pre_tool_root = pre_tool_store_root_for_objects_root(&objects_root);
     let store = ObjectStore::new(objects_root).ok();
 
     // 1. This task already has a record for this file → check change_type
@@ -114,7 +116,7 @@ pub fn resolve_baseline_with_objects_root(
 
     // 2. pre_tool backup captured a hash → file existed before edit (hook path only)
     if let Some(sk) = session_key {
-        if let Ok(Some(h)) = db.get_pre_tool_hash(sk, &path_str) {
+        if let Ok(Some(h)) = get_pre_tool_hash_in(&pre_tool_root, sk, &path_str) {
             return Baseline {
                 existed: true,
                 hash: Some(h),

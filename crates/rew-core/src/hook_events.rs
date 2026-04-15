@@ -3,6 +3,10 @@ use crate::db::Database;
 use crate::error::RewResult;
 use crate::file_index::sync_file_index_after_change;
 use crate::objects::ObjectStore;
+use crate::pre_tool_store::{
+    delete_pre_tool_hashes_for_session, delete_pre_tool_hashes_for_session_in,
+    pre_tool_store_root_for_objects_root,
+};
 use crate::types::{Change, ChangeType, Task, TaskStats, TaskStatus};
 use crate::rew_home_dir;
 use chrono::Utc;
@@ -263,7 +267,9 @@ where
         HookEventPayload::PostToolObserved(payload) => {
             process_post_tool_observed(db, payload, objects_root_override)
         }
-        HookEventPayload::TaskStopRequested(payload) => process_task_stop_requested(db, envelope, payload),
+        HookEventPayload::TaskStopRequested(payload) => {
+            process_task_stop_requested(db, envelope, payload, objects_root_override)
+        }
     }?;
 
     db.record_hook_event_receipt(&envelope.idempotency_key, envelope.payload.event_type_name())?;
@@ -394,6 +400,7 @@ fn process_task_stop_requested(
     db: &Database,
     envelope: &HookEventEnvelope,
     payload: &TaskStopRequestedPayload,
+    objects_root_override: Option<&Path>,
 ) -> RewResult<HookEventProcessOutcome> {
     let Some(task_id) = db.get_active_task_for_session(&payload.session_key)? else {
         return Ok(HookEventProcessOutcome { task_id: None });
@@ -416,7 +423,12 @@ fn process_task_stop_requested(
     db.update_task_status(&task_id, &TaskStatus::Completed, Some(completed_at))?;
     db.deactivate_sessions_for_task(&task_id)?;
     db.delete_stop_guard(&payload.session_key)?;
-    db.delete_pre_tool_hashes_for_session(&payload.session_key)?;
+    if let Some(objects_root) = objects_root_override {
+        let pre_tool_root = pre_tool_store_root_for_objects_root(objects_root);
+        delete_pre_tool_hashes_for_session_in(&pre_tool_root, &payload.session_key)?;
+    } else {
+        delete_pre_tool_hashes_for_session(&payload.session_key)?;
+    }
     db.enqueue_task_finalization(&task_id, Some(&envelope.event_id))?;
 
     Ok(HookEventProcessOutcome {
@@ -437,6 +449,7 @@ impl HookEventPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pre_tool_store::{get_pre_tool_hash_in, set_pre_tool_hash_in};
     use tempfile::{tempdir, TempDir};
     use std::collections::HashSet;
     use std::sync::{Arc, Barrier};
@@ -481,6 +494,10 @@ mod tests {
             self.fixtures_root.join("live").join(relative)
         }
 
+        fn pre_tool_root(&self) -> PathBuf {
+            pre_tool_store_root_for_objects_root(&self.objects_root)
+        }
+
         fn write_live_file(&self, relative: &str, content: &str) -> PathBuf {
             let path = self.live_path(relative);
             if let Some(parent) = path.parent() {
@@ -496,9 +513,7 @@ mod tests {
         }
 
         fn seed_pre_tool_hash(&self, session_key: &str, file_path: &str, hash: &str) {
-            self.db
-                .set_pre_tool_hash(session_key, file_path, hash)
-                .unwrap();
+            set_pre_tool_hash_in(&self.pre_tool_root(), session_key, file_path, hash).unwrap();
         }
 
         fn age_task_for_guard(&self, task_id: &str, seconds: i64) {
@@ -1275,6 +1290,220 @@ mod tests {
         assert_ne!(changes_a[0].task_id, changes_b[0].task_id);
         assert!(changes_a[0].new_hash.is_some());
         assert!(changes_b[0].new_hash.is_some());
+    }
+
+    #[test]
+    fn multi_tool_same_file_pre_tool_hashes_remain_isolated() {
+        let env = HookFlowEnv::new();
+        let live_path = env.write_live_file("shared/pretool.md", "base\n");
+        let file_path = live_path.to_string_lossy().to_string();
+        let base_hash = ObjectStore::new(env.objects_root.clone())
+            .unwrap()
+            .store(&live_path)
+            .unwrap();
+
+        let session_a = "cursor:pretool-a";
+        let session_b = "workbuddy:pretool-b";
+        let task_a = process_event_with_objects(
+            &env.db,
+            &prompt_envelope("cursor", session_a, "edit shared file A", Some("conv-a"), Some("gen-a")),
+            &env.objects_root,
+        )
+        .task_id
+        .expect("task a");
+        let task_b = process_event_with_objects(
+            &env.db,
+            &prompt_envelope("workbuddy", session_b, "edit shared file B", None, Some("gen-b")),
+            &env.objects_root,
+        )
+        .task_id
+        .expect("task b");
+
+        env.seed_pre_tool_hash(session_a, &file_path, &base_hash);
+        std::fs::write(&live_path, "from a\n").unwrap();
+        let hash_a = ObjectStore::new(env.objects_root.clone())
+            .unwrap()
+            .store(&live_path)
+            .unwrap();
+        process_event_with_objects(
+            &env.db,
+            &post_envelope(
+                "cursor",
+                session_a,
+                "write_to_file",
+                vec![ObservedPathChange {
+                    file_path: file_path.clone(),
+                    file_exists_after: true,
+                    new_hash: Some(hash_a.clone()),
+                }],
+            ),
+            &env.objects_root,
+        );
+
+        env.seed_pre_tool_hash(session_b, &file_path, &hash_a);
+        std::fs::write(&live_path, "from b\n").unwrap();
+        let hash_b = ObjectStore::new(env.objects_root.clone())
+            .unwrap()
+            .store(&live_path)
+            .unwrap();
+        process_event_with_objects(
+            &env.db,
+            &post_envelope(
+                "workbuddy",
+                session_b,
+                "write_to_file",
+                vec![ObservedPathChange {
+                    file_path: file_path.clone(),
+                    file_exists_after: true,
+                    new_hash: Some(hash_b.clone()),
+                }],
+            ),
+            &env.objects_root,
+        );
+
+        process_event_with_objects(
+            &env.db,
+            &stop_envelope("cursor", session_a, Some("gen-a")),
+            &env.objects_root,
+        );
+        process_event_with_objects(
+            &env.db,
+            &stop_envelope("workbuddy", session_b, Some("gen-b")),
+            &env.objects_root,
+        );
+        env.finalize_all_jobs();
+
+        let changes_a = env.db.get_changes_for_task(&task_a).unwrap();
+        let changes_b = env.db.get_changes_for_task(&task_b).unwrap();
+        assert_eq!(changes_a[0].old_hash.as_deref(), Some(base_hash.as_str()));
+        assert_eq!(changes_b[0].old_hash.as_deref(), Some(hash_a.as_str()));
+        assert!(changes_a[0].new_hash.is_some());
+        assert!(changes_b[0].new_hash.is_some());
+    }
+
+    #[test]
+    fn same_tool_same_file_pre_tool_hashes_remain_isolated() {
+        let env = HookFlowEnv::new();
+        let live_path = env.write_live_file("shared/cursor-pretool.md", "base\n");
+        let file_path = live_path.to_string_lossy().to_string();
+        let base_hash = ObjectStore::new(env.objects_root.clone())
+            .unwrap()
+            .store(&live_path)
+            .unwrap();
+
+        let session_a = "cursor:shared-a";
+        let session_b = "cursor:shared-b";
+        let task_a = process_event_with_objects(
+            &env.db,
+            &prompt_envelope("cursor", session_a, "cursor A", Some("conv-a"), Some("gen-a")),
+            &env.objects_root,
+        )
+        .task_id
+        .expect("task a");
+        let task_b = process_event_with_objects(
+            &env.db,
+            &prompt_envelope("cursor", session_b, "cursor B", Some("conv-b"), Some("gen-b")),
+            &env.objects_root,
+        )
+        .task_id
+        .expect("task b");
+
+        env.seed_pre_tool_hash(session_a, &file_path, &base_hash);
+        std::fs::write(&live_path, "cursor a\n").unwrap();
+        let hash_a = ObjectStore::new(env.objects_root.clone())
+            .unwrap()
+            .store(&live_path)
+            .unwrap();
+        process_event_with_objects(
+            &env.db,
+            &post_envelope(
+                "cursor",
+                session_a,
+                "write_to_file",
+                vec![ObservedPathChange {
+                    file_path: file_path.clone(),
+                    file_exists_after: true,
+                    new_hash: Some(hash_a.clone()),
+                }],
+            ),
+            &env.objects_root,
+        );
+
+        env.seed_pre_tool_hash(session_b, &file_path, &hash_a);
+        std::fs::write(&live_path, "cursor b\n").unwrap();
+        let hash_b = ObjectStore::new(env.objects_root.clone())
+            .unwrap()
+            .store(&live_path)
+            .unwrap();
+        process_event_with_objects(
+            &env.db,
+            &post_envelope(
+                "cursor",
+                session_b,
+                "write_to_file",
+                vec![ObservedPathChange {
+                    file_path: file_path.clone(),
+                    file_exists_after: true,
+                    new_hash: Some(hash_b.clone()),
+                }],
+            ),
+            &env.objects_root,
+        );
+
+        process_event_with_objects(
+            &env.db,
+            &stop_envelope("cursor", session_a, Some("gen-a")),
+            &env.objects_root,
+        );
+        process_event_with_objects(
+            &env.db,
+            &stop_envelope("cursor", session_b, Some("gen-b")),
+            &env.objects_root,
+        );
+        env.finalize_all_jobs();
+
+        let changes_a = env.db.get_changes_for_task(&task_a).unwrap();
+        let changes_b = env.db.get_changes_for_task(&task_b).unwrap();
+        assert_eq!(changes_a[0].old_hash.as_deref(), Some(base_hash.as_str()));
+        assert_eq!(changes_b[0].old_hash.as_deref(), Some(hash_a.as_str()));
+        assert!(changes_a[0].new_hash.is_some());
+        assert!(changes_b[0].new_hash.is_some());
+    }
+
+    #[test]
+    fn stop_cleans_session_pre_tool_store() {
+        let env = HookFlowEnv::new();
+        let live_path = env.write_live_file("shared/cleanup.md", "before\n");
+        let file_path = live_path.to_string_lossy().to_string();
+        let base_hash = ObjectStore::new(env.objects_root.clone())
+            .unwrap()
+            .store(&live_path)
+            .unwrap();
+        let session = "cursor:cleanup";
+        process_event_with_objects(
+            &env.db,
+            &prompt_envelope("cursor", session, "cleanup test", Some("conv-clean"), Some("gen-clean")),
+            &env.objects_root,
+        );
+        env.seed_pre_tool_hash(session, &file_path, &base_hash);
+        assert_eq!(
+            get_pre_tool_hash_in(&env.pre_tool_root(), session, &file_path)
+                .unwrap()
+                .as_deref(),
+            Some(base_hash.as_str())
+        );
+
+        process_event_with_objects(
+            &env.db,
+            &stop_envelope("cursor", session, Some("gen-clean")),
+            &env.objects_root,
+        );
+
+        assert!(
+            get_pre_tool_hash_in(&env.pre_tool_root(), session, &file_path)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

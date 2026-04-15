@@ -18,6 +18,7 @@ pub mod logging;
 pub mod notifier;
 pub mod objects;
 pub mod pipeline;
+pub mod pre_tool_store;
 pub mod processor;
 pub mod reconcile;
 pub mod restore;
