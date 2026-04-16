@@ -41,6 +41,13 @@ jobs:
         with:
           workspaces: '. -> target'
 
+      # Tauri build-script checks that bundled resources exist.
+      # Build the CLI binary so src-tauri/rew is present during cargo check/test.
+      - name: Build rew CLI (needed by Tauri build-script)
+        run: |
+          cargo build --release -p rew-cli
+          cp target/release/rew src-tauri/rew
+
       - name: Run test suite
         run: chmod +x ./scripts/test-all.sh && ./scripts/test-all.sh
 
