@@ -7,7 +7,7 @@
     "frontendDist": "../gui/dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "cd gui && pnpm dev",
-    "beforeBuildCommand": "./scripts/test-all.sh && cargo build --release -p rew-cli && cp \"${CARGO_TARGET_DIR:-target}/release/rew\" src-tauri/rew && cd gui && pnpm build"
+    "beforeBuildCommand": "if [ \"$CI\" = 'true' ]; then cd gui && pnpm build; else ./scripts/test-all.sh && cargo build --release -p rew-cli && cp \"${CARGO_TARGET_DIR:-target}/release/rew\" src-tauri/rew && cd gui && pnpm build; fi"
   },
   "app": {
     "windows": [

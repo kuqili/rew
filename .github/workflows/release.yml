@@ -5,13 +5,14 @@
 #   git tag v0.1.0 && git push origin v0.1.0
 #
 # What it does:
-#   1. Builds the Tauri app for macOS (arm64 + x86_64)
-#   2. Creates a GitHub Release with the tag name as title
-#   3. Uploads the .dmg as a release asset (direct download link)
+#   1. Runs full test suite (test-all.sh)
+#   2. Builds the Tauri app for macOS (arm64 + x86_64)
+#   3. Creates a GitHub Release with the tag name as title
+#   4. Uploads the .dmg as a release asset (direct download link)
 #
 # The download URL will be stable and predictable:
-#   https://github.com/OWNER/rew/releases/latest/download/rew_VERSION_aarch64.dmg
-#   https://github.com/OWNER/rew/releases/latest/download/rew_VERSION_x64.dmg
+#   https://github.com/kuqili/rew/releases/download/vX.Y.Z/rew_X.Y.Z_aarch64.dmg
+#   https://github.com/kuqili/rew/releases/download/vX.Y.Z/rew_X.Y.Z_x64.dmg
 # ─────────────────────────────────────────────────────────────────────────────
 name: Release
 
@@ -24,8 +25,29 @@ permissions:
   contents: write   # needed to create releases and upload assets
 
 jobs:
+  # ── Test gate: block release if tests fail ────────────────────
+  test:
+    name: Run Tests
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Run test suite
+        run: chmod +x ./scripts/test-all.sh && ./scripts/test-all.sh
+
+  # ── Build macOS DMG (arm64 + x64) ────────────────────────────
   build-macos:
-    name: Build macOS DMG
+    name: Build macOS DMG (${{ matrix.arch_label }})
+    needs: test
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -69,7 +91,16 @@ jobs:
         run: pnpm install
         working-directory: gui
 
-      # ── Build ────────────────────────────────────────────────────
+      # ── Build CLI binary for target architecture ─────────────────
+      # Must be done before tauri-action because the CLI binary is
+      # bundled as a resource inside the .app. Cross-compiling ensures
+      # the binary matches the target arch (arm64 or x64).
+      - name: Build rew CLI for ${{ matrix.target }}
+        run: |
+          cargo build --release -p rew-cli --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/rew src-tauri/rew
+
+      # ── Build Tauri app (.dmg) ──────────────────────────────────
       - name: Build Tauri app (.dmg)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -86,7 +117,7 @@ jobs:
             ## rew ${{ github.ref_name }}
 
             ### 下载
-            - **Apple Silicon (M1/M2/M3)**：下载 `rew_*_aarch64.dmg`
+            - **Apple Silicon (M1/M2/M3/M4)**：下载 `rew_*_aarch64.dmg`
             - **Intel Mac**：下载 `rew_*_x64.dmg`
 
             ### 首次打开说明（Gatekeeper）
@@ -95,18 +126,6 @@ jobs:
             2. 弹窗中点击「打开」即可永久允许
             3. 后续启动无需重复此操作
 
-            ### 更新日志
-            <!-- 在这里手动填写本版本的变更内容 -->
-
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}   # v1.0.0-beta → prerelease
           args: --target ${{ matrix.target }}
-
-  # ── (Optional) Notify website to refresh download link ──────────
-  # Uncomment if you add a webhook or Vercel deploy hook
-  # notify-website:
-  #   needs: build-macos
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Trigger website redeploy
-  #       run: curl -X POST ${{ secrets.VERCEL_DEPLOY_HOOK }}
