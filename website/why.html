@@ -10,100 +10,118 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="shared.css"/>
   <style>
-    /* ── Story section ── */
+    /* ── Story ── */
     .story-layout {
-      display: grid; grid-template-columns: 1fr 480px;
+      display: grid; grid-template-columns: 1fr 440px;
       gap: 80px; align-items: start;
     }
     @media (max-width: 860px) { .story-layout { grid-template-columns: 1fr; gap: 48px; } }
     .story-body { font-size: 17px; color: var(--text-2); line-height: 1.9; }
     .story-body p { margin-bottom: 22px; }
     .story-body strong { color: var(--text); font-weight: 700; }
-    .story-body em { font-style: italic; color: var(--text); }
     .story-quote {
       font-size: 20px; line-height: 1.7; font-weight: 700; color: var(--text);
-      border-left: 3px solid var(--orange); padding-left: 20px;
+      border-left: 2px solid var(--accent); padding-left: 20px;
       margin: 32px 0;
     }
     .story-card {
       position: sticky; top: 80px;
-      background: var(--bg-1); border: 1px solid var(--border);
-      border-radius: 18px; overflow: hidden;
+      background: rgba(255,255,255,.02); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); overflow: hidden;
     }
     .sc-header {
-      background: rgba(239,68,68,.06); border-bottom: 1px solid rgba(239,68,68,.12);
+      background: rgba(248,113,113,.04);
+      border-bottom: 1px solid rgba(248,113,113,.1);
       padding: 20px 24px;
     }
-    .sc-label { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: rgba(239,68,68,.7); margin-bottom: 4px; }
+    .sc-label { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: rgba(248,113,113,.6); margin-bottom: 4px; }
     .sc-title { font-size: 17px; font-weight: 800; color: var(--text); }
     .sc-body { padding: 24px; }
     .sc-timeline { display: flex; flex-direction: column; gap: 16px; }
-    .sc-event {
-      display: flex; gap: 14px; align-items: flex-start;
-    }
+    .sc-event { display: flex; gap: 14px; align-items: flex-start; }
     .sc-dot-wrap { display: flex; flex-direction: column; align-items: center; gap: 0; flex-shrink: 0; }
-    .sc-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; }
+    .sc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
     .sc-dot-line { width: 1px; flex: 1; min-height: 20px; background: var(--border); }
-    .sc-event-content {}
     .sc-event-time { font-size: 11px; color: var(--text-3); font-weight: 600; margin-bottom: 3px; }
     .sc-event-text { font-size: 13px; color: var(--text-2); line-height: 1.6; }
     .sc-event-text strong { color: var(--text); }
     .dot-normal { background: var(--border-hi); }
-    .dot-warn { background: #f97316; }
-    .dot-danger { background: #ef4444; }
+    .dot-warn { background: var(--accent); }
+    .dot-danger { background: var(--red); }
     .sc-result {
       margin-top: 20px; padding: 16px;
-      background: rgba(239,68,68,.06); border: 1px solid rgba(239,68,68,.15);
-      border-radius: 10px; font-size: 13px; color: rgba(239,68,68,.85);
+      background: rgba(248,113,113,.04); border: 1px solid rgba(248,113,113,.12);
+      border-radius: 10px; font-size: 13px; color: rgba(248,113,113,.8);
       line-height: 1.6;
     }
-    .sc-result strong { color: #ef4444; }
+    .sc-result strong { color: var(--red); }
 
-    /* ── Stats section ── */
-    .stats-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 24px; margin-top: 60px; }
+    /* ── Stats ── */
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(3,1fr);
+      gap: 1px; margin-top: 64px;
+      background: var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
     @media (max-width: 640px) { .stats-grid { grid-template-columns: 1fr; } }
-    .stat-card { padding: 40px 32px; text-align: center; }
+    .stat-card {
+      padding: 48px 32px; text-align: center;
+      background: var(--bg);
+    }
     .stat-num {
-      font-size: clamp(40px, 6vw, 64px);
+      font-size: clamp(40px, 6vw, 60px);
       font-weight: 900; letter-spacing: -.04em;
-      background: var(--grad-orange);
+      background: var(--grad-text);
       -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-      display: block; margin-bottom: 12px; line-height: 1;
+      display: block; margin-bottom: 16px; line-height: 1;
     }
     .stat-label { font-size: 14px; color: var(--text-2); line-height: 1.65; }
+    .stat-label strong { color: var(--text); }
 
     /* ── Tools Fail ── */
-    .tools-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 56px; }
+    .tools-grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 1px; margin-top: 56px;
+      background: var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
     @media (max-width: 640px) { .tools-grid { grid-template-columns: 1fr; } }
-    .tool-card { padding: 32px; }
-    .tool-name-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-    .tool-icon { font-size: 22px; }
+    .tool-card {
+      padding: 36px 32px;
+      background: var(--bg);
+      transition: background var(--transition);
+    }
+    .tool-card:hover { background: rgba(255,255,255,.015); }
+    .tool-name-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
     .tool-name { font-size: 16px; font-weight: 800; }
     .tool-gap { font-size: 13px; color: var(--text-2); line-height: 1.75; }
     .tool-gap-tag {
       display: inline-block;
-      margin-top: 14px; padding: 4px 10px; border-radius: 6px;
-      background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.15);
-      font-size: 11px; font-weight: 700; color: rgba(239,68,68,.8);
+      margin-top: 16px; padding: 3px 10px; border-radius: 5px;
+      background: rgba(248,113,113,.06); border: 1px solid rgba(248,113,113,.12);
+      font-size: 11px; font-weight: 600; color: rgba(248,113,113,.7);
     }
     .speed-box {
       margin-top: 56px; padding: 48px 40px;
-      background: var(--bg-1); border: 1px solid var(--border); border-radius: 20px;
+      background: rgba(255,255,255,.02); border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
       text-align: center;
     }
-    .speed-title { font-size: 26px; font-weight: 900; letter-spacing: -.03em; margin-bottom: 16px; }
-    .speed-desc { font-size: 16px; color: var(--text-2); line-height: 1.75; max-width: 560px; margin: 0 auto; }
+    .speed-title { font-size: 24px; font-weight: 900; letter-spacing: -.03em; margin-bottom: 16px; }
+    .speed-desc { font-size: 16px; color: var(--text-2); line-height: 1.75; max-width: 540px; margin: 0 auto; }
     .speed-compare {
       display: grid; grid-template-columns: 1fr auto 1fr; gap: 20px; align-items: center;
-      margin: 32px auto 0; max-width: 500px;
+      margin: 32px auto 0; max-width: 480px;
     }
     .speed-side { padding: 20px; border-radius: 12px; }
-    .speed-human { background: rgba(255,255,255,.04); border: 1px solid var(--border); }
-    .speed-ai { background: rgba(249,115,22,.06); border: 1px solid rgba(249,115,22,.2); }
-    .speed-side-label { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
-    .speed-side-value { font-size: 20px; font-weight: 900; }
+    .speed-human { background: rgba(255,255,255,.03); border: 1px solid var(--border); }
+    .speed-ai { background: var(--accent-soft); border: 1px solid var(--accent-border); }
+    .speed-side-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+    .speed-side-value { font-size: 18px; font-weight: 900; }
     .speed-human .speed-side-value { color: var(--text-2); }
-    .speed-ai .speed-side-value { color: var(--orange); }
+    .speed-ai .speed-side-value { color: var(--accent); }
     .speed-vs { font-size: 13px; color: var(--text-3); font-weight: 700; }
 
     /* ── Safety Belt ── */
@@ -114,33 +132,30 @@
     .belt-copy .title { font-size: clamp(28px, 4vw, 42px); }
     .belt-copy .sub { margin-top: 20px; font-size: 16px; }
     .belt-analogy {
-      background: var(--bg-1); border: 1px solid var(--border); border-radius: 18px;
-      padding: 36px;
+      background: rgba(255,255,255,.02); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); padding: 36px;
     }
-    .ba-icon { font-size: 40px; margin-bottom: 20px; }
-    .ba-title { font-size: 17px; font-weight: 800; margin-bottom: 14px; }
+    .ba-title { font-size: 17px; font-weight: 800; margin-bottom: 16px; }
     .ba-body { font-size: 14px; color: var(--text-2); line-height: 1.8; }
     .ba-body p { margin-bottom: 14px; }
     .ba-body p:last-child { margin-bottom: 0; }
     .ba-highlight {
       margin-top: 20px; padding: 14px 16px; border-radius: 10px;
-      background: rgba(249,115,22,.07); border: 1px solid rgba(249,115,22,.15);
-      font-size: 14px; font-weight: 700; color: var(--text);
+      background: var(--accent-soft); border: 1px solid var(--accent-border);
+      font-size: 14px; font-weight: 600; color: var(--text);
       line-height: 1.6;
     }
 
-    /* ── CTA section ── */
-    .cta-wrap {
-      text-align: center; padding: 120px 0;
-    }
-    .cta-title { font-size: clamp(32px, 5vw, 54px); font-weight: 900; letter-spacing: -.04em; margin-bottom: 20px; }
+    /* ── CTA ── */
+    .cta-wrap { text-align: center; padding: 120px 0; }
+    .cta-title { font-size: clamp(32px, 5vw, 52px); font-weight: 900; letter-spacing: -.04em; margin-bottom: 20px; }
     .cta-sub { font-size: 17px; color: var(--text-2); margin-bottom: 40px; }
-    .cta-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+    .cta-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
   </style>
 </head>
 <body>
 
-<!-- ─── Nav ───────────────────────────────────────────────────── -->
+<!-- ─── Nav ─── -->
 <nav id="nav">
   <div class="container">
     <div class="nav-inner">
@@ -154,115 +169,83 @@
         <li><a href="index.html#download">下载</a></li>
       </ul>
       <div class="nav-right">
-        <a href="index.html#download" class="btn btn-primary btn-sm nav-cta">免费下载</a>
+        <a href="index.html#download" class="btn btn-primary btn-sm nav-cta">下载</a>
       </div>
     </div>
   </div>
 </nav>
 
-<!-- ─── Page Hero ─────────────────────────────────────────────── -->
+<!-- ─── Page Hero ─── -->
 <div class="page-hero">
   <div class="page-hero-glow"></div>
   <div class="container">
     <span class="label">为什么需要 rew</span>
-    <h1 class="title reveal" style="font-size:clamp(40px,6vw,70px);letter-spacing:-.04em;">
-      AI 的善意，<br/><span class="grad-text">有时候会造成破坏</span>
+    <h1 class="title reveal" style="font-size:clamp(40px,6vw,64px);letter-spacing:-.04em;">
+      AI 的善意<br/><span class="grad-text">有时候会造成破坏</span>
     </h1>
     <p class="sub reveal d1">
-      AI 不是恶意的。它只是理解错了你的意思，然后以机器的速度执行了错误的操作。<br/>
-      这是一个只有 AI 时代才存在的问题。
+      AI 不是恶意的。它只是理解错了你的意思，然后以机器的速度执行了错误的操作。
     </p>
   </div>
 </div>
 
-<!-- ─── Story ─────────────────────────────────────────────────── -->
+<!-- ─── Story ─── -->
 <section class="section" id="story">
   <div class="container">
     <div class="story-layout">
-      <!-- Left: narrative -->
       <div>
         <span class="label">真实案例</span>
         <h2 class="title reveal" style="margin-bottom:40px;">十三年，归零</h2>
         <div class="story-body">
-          <p>
-            清明假期第一天，一位开发者在家远程连公司电脑，用 CodeBuddy 开发一个线下数据计算工具。
-            开发完了，想整理一下工程目录，就对 AI 说了一句：
-          </p>
-          <div class="story-quote">
-            「请清空所有测试数据，让工具处于初始化状态」
-          </div>
-          <p>
-            一句话。<strong>非常正常的一句话。</strong>
-          </p>
-          <p>
-            然后 AI 自行推导路径，生成清理脚本，<strong>不仅清空了工具的测试数据，还把他桌面和文档目录下的文件一并删除了</strong>。
-          </p>
-          <p>
-            而他的桌面，恰好映射在 D 盘。<br/>
-            那里存着他 <strong>2012 年入职至今，十三年，每一年的全部工作文件</strong>。
-          </p>
-          <p>
-            事后用专业工具扫描，文件名和目录结构还在，但固态硬盘 TRIM 已开启，恢复出来的文件没有一个能打开。
-          </p>
-          <p>
-            <strong>十三年，归零。</strong>
-          </p>
-          <p style="color:var(--text-2);">
-            这不是个例。类似的事情，每天都在发生，只是程度不同。
-          </p>
+          <p>清明假期第一天，一位开发者在家远程连公司电脑，用 CodeBuddy 开发一个线下数据计算工具。开发完了，想整理一下工程目录，就对 AI 说了一句：</p>
+          <div class="story-quote">「请清空所有测试数据，让工具处于初始化状态」</div>
+          <p>一句话。<strong>非常正常的一句话。</strong></p>
+          <p>然后 AI 自行推导路径，生成清理脚本，<strong>不仅清空了工具的测试数据，还把他桌面和文档目录下的文件一并删除了</strong>。</p>
+          <p>而他的桌面，恰好映射在 D 盘。那里存着他 <strong>2012 年入职至今，十三年，每一年的全部工作文件</strong>。</p>
+          <p>事后用专业工具扫描，文件名和目录结构还在，但固态硬盘 TRIM 已开启，恢复出来的文件没有一个能打开。</p>
+          <p><strong>十三年，归零。</strong></p>
+          <p style="color:var(--text-3);">这不是个例。类似的事情，每天都在发生。</p>
         </div>
       </div>
 
-      <!-- Right: incident card -->
-      <div class="story-card">
+      <div class="story-card reveal">
         <div class="sc-header">
-          <div class="sc-label">⚠ 事故还原</div>
+          <div class="sc-label">事故还原</div>
           <div class="sc-title">AI 越界删除事件</div>
         </div>
         <div class="sc-body">
           <div class="sc-timeline">
             <div class="sc-event">
-              <div class="sc-dot-wrap">
-                <div class="sc-dot dot-normal"></div>
-                <div class="sc-dot-line"></div>
-              </div>
-              <div class="sc-event-content">
+              <div class="sc-dot-wrap"><div class="sc-dot dot-normal"></div><div class="sc-dot-line"></div></div>
+              <div>
                 <div class="sc-event-time">14:23</div>
-                <div class="sc-event-text">开发者向 CodeBuddy 发出指令：<strong>「清空所有测试数据」</strong></div>
+                <div class="sc-event-text">开发者发出指令：<strong>「清空所有测试数据」</strong></div>
               </div>
             </div>
             <div class="sc-event">
-              <div class="sc-dot-wrap">
-                <div class="sc-dot dot-warn"></div>
-                <div class="sc-dot-line"></div>
-              </div>
-              <div class="sc-event-content">
+              <div class="sc-dot-wrap"><div class="sc-dot dot-warn"></div><div class="sc-dot-line"></div></div>
+              <div>
                 <div class="sc-event-time">14:23 +2s</div>
-                <div class="sc-event-text">AI 自行推导路径，生成清理脚本，执行范围<strong>超出工程目录</strong></div>
+                <div class="sc-event-text">AI 自行推导路径，执行范围<strong>超出工程目录</strong></div>
               </div>
             </div>
             <div class="sc-event">
-              <div class="sc-dot-wrap">
-                <div class="sc-dot dot-danger"></div>
-                <div class="sc-dot-line"></div>
-              </div>
-              <div class="sc-event-content">
+              <div class="sc-dot-wrap"><div class="sc-dot dot-danger"></div><div class="sc-dot-line"></div></div>
+              <div>
                 <div class="sc-event-time">14:23 +3s</div>
-                <div class="sc-event-text"><strong>桌面 + 文档目录</strong>共计 800+ 个文件被静默删除</div>
+                <div class="sc-event-text"><strong>桌面 + 文档目录</strong>共计 800+ 文件被静默删除</div>
               </div>
             </div>
             <div class="sc-event">
-              <div class="sc-dot-wrap">
-                <div class="sc-dot dot-danger"></div>
-              </div>
-              <div class="sc-event-content">
+              <div class="sc-dot-wrap"><div class="sc-dot dot-danger"></div></div>
+              <div>
                 <div class="sc-event-time">数分钟后</div>
                 <div class="sc-event-text">SSD TRIM 执行，<strong>物理层面不可恢复</strong></div>
               </div>
             </div>
           </div>
           <div class="sc-result">
-            <strong>结果：</strong>2012–2025 年，十三年工作文件全部永久丢失。文件名和目录结构可见，但内容无法打开。
+            <strong>结果：</strong>2012–2025 年，十三年工作文件全部永久丢失。
           </div>
         </div>
       </div>
@@ -272,26 +255,25 @@
 
 <hr class="divider container"/>
 
-<!-- ─── Stats ─────────────────────────────────────────────────── -->
+<!-- ─── Stats ─── -->
 <section class="section">
   <div class="container">
     <div class="section-center">
       <span class="label">背后的趋势</span>
       <h2 class="title reveal">这不是偶发事件</h2>
-      <p class="sub reveal d1">数字背后是一个正在蔓延的系统性问题。</p>
     </div>
     <div class="stats-grid">
-      <div class="card stat-card reveal d1">
+      <div class="stat-card reveal d1">
         <span class="stat-num">63%</span>
-        <div class="stat-label">使用 Cursor、Replit、Lovable 等 AI 开发工具的人<strong style="color:var(--text);">不是程序员</strong>。产品经理、运营、设计师、创业者——他们不会 Git。</div>
+        <div class="stat-label">使用 AI 开发工具的人<strong>不是程序员</strong>。他们不会 Git。</div>
       </div>
-      <div class="card stat-card reveal d2">
+      <div class="stat-card reveal d2">
         <span class="stat-num">520%</span>
-        <div class="stat-label">非技术用户使用 AI 编程工具的同比增速。数以百万计的人正在用 AI 改文件，却没有任何保护。</div>
+        <div class="stat-label">非技术用户使用 AI 编程工具的同比增速。数以百万计的人正在用 AI 改文件。</div>
       </div>
-      <div class="card stat-card reveal d3">
+      <div class="stat-card reveal d3">
         <span class="stat-num">4个月</span>
-        <div class="stat-label">Cursor 的代码静默回退 bug，导致有用户丢失了<strong style="color:var(--text);">整整四个月</strong>的工作。竞态条件，悄无声息。</div>
+        <div class="stat-label">Cursor 的代码静默回退 bug，导致用户丢失<strong>整整四个月</strong>的工作。</div>
       </div>
     </div>
   </div>
@@ -299,69 +281,39 @@
 
 <hr class="divider container"/>
 
-<!-- ─── Why Tools Fail ────────────────────────────────────────── -->
+<!-- ─── Why Tools Fail ─── -->
 <section class="section" id="tools">
   <div class="container">
     <div class="section-center">
       <span class="label">现有方案的缺口</span>
       <h2 class="title reveal">你以为有保护，其实没有</h2>
-      <p class="sub reveal d1">每一个现有工具都有一个明显的缺口，而这些缺口加在一起，就是一个巨大的真空地带。</p>
     </div>
     <div class="tools-grid">
-      <div class="card tool-card reveal d1">
-        <div class="tool-name-row">
-          <span class="tool-icon">🌿</span>
-          <span class="tool-name">Git</span>
-        </div>
-        <p class="tool-gap">
-          需要你主动 commit，需要学分支、暂存区、reflog 等概念。对非技术用户来说，这不是解决方案，这是另一个需要学的东西。
-          <br/><br/>
-          更可怕的是：Claude Code 被发现会静默执行 <code style="font-size:12px;color:var(--orange);">git reset --hard</code>，你的安全网本身就可能被 AI 操纵。
-        </p>
+      <div class="tool-card reveal d1">
+        <div class="tool-name-row"><span class="tool-name">Git</span></div>
+        <p class="tool-gap">需要主动 commit，需要学分支、暂存区。对非技术用户来说，这不是解决方案。更可怕的是：AI 会静默执行 <code style="font-size:12px;color:var(--accent);">git reset --hard</code>。</p>
         <span class="tool-gap-tag">需要手动 commit / 可被 AI 操控</span>
       </div>
-      <div class="card tool-card reveal d2">
-        <div class="tool-name-row">
-          <span class="tool-icon">⏰</span>
-          <span class="tool-name">Time Machine</span>
-        </div>
-        <p class="tool-gap">
-          macOS Time Machine 按小时备份。听起来不错——但 AI 交互是按秒的。一小时内 AI 可能帮你改了 50 次文件，Time Machine 只有一个快照。
-          <br/><br/>
-          你想回到第 30 次修改之后的状态？对不起，没有。
-        </p>
-        <span class="tool-gap-tag">时间粒度太粗，AI 速度 × 人类备份频率</span>
+      <div class="tool-card reveal d2">
+        <div class="tool-name-row"><span class="tool-name">Time Machine</span></div>
+        <p class="tool-gap">按小时备份。但 AI 交互是按秒的。一小时内 AI 可能改了 50 次文件，Time Machine 只有一个快照。</p>
+        <span class="tool-gap-tag">时间粒度太粗</span>
       </div>
-      <div class="card tool-card reveal d3">
-        <div class="tool-name-row">
-          <span class="tool-icon">☁</span>
-          <span class="tool-name">Dropbox / 云盘</span>
-        </div>
-        <p class="tool-gap">
-          有延迟，而且只管同步文件夹内的文件。AI 在终端里 <code style="font-size:12px;color:var(--orange);">rm</code> 掉的文件？<br/>
-          管不了。
-        </p>
-        <span class="tool-gap-tag">覆盖范围有限 / 延迟高</span>
+      <div class="tool-card reveal d3">
+        <div class="tool-name-row"><span class="tool-name">Dropbox / 云盘</span></div>
+        <p class="tool-gap">有延迟，只管同步文件夹内的文件。AI 在终端里 <code style="font-size:12px;color:var(--accent);">rm</code> 掉的文件？管不了。</p>
+        <span class="tool-gap-tag">覆盖范围有限</span>
       </div>
-      <div class="card tool-card reveal d4">
-        <div class="tool-name-row">
-          <span class="tool-icon">🗑</span>
-          <span class="tool-name">回收站</span>
-        </div>
-        <p class="tool-gap">
-          <code style="font-size:12px;color:var(--orange);">rm</code> 命令删除的文件不进回收站。覆盖写入的文件也不进回收站。VSCode 本地历史只管编辑器内的保存操作，AI agent 在终端里的操作一概管不了。
-        </p>
-        <span class="tool-gap-tag">Terminal 操作完全绕过回收站</span>
+      <div class="tool-card reveal d4">
+        <div class="tool-name-row"><span class="tool-name">回收站</span></div>
+        <p class="tool-gap"><code style="font-size:12px;color:var(--accent);">rm</code> 命令删除的文件不进回收站。覆盖写入也不进。AI agent 在终端里的操作一概管不了。</p>
+        <span class="tool-gap-tag">Terminal 操作完全绕过</span>
       </div>
     </div>
 
-    <!-- Speed gap -->
     <div class="speed-box reveal">
       <div class="speed-title">问题的本质：速度差</div>
-      <p class="speed-desc">
-        传统版本管理工具的设计假设是「人类以人类的速度修改文件」。<br/>
-        AI 打破了这个假设。
-      </p>
+      <p class="speed-desc">传统版本管理的设计假设是「人类以人类的速度修改文件」。AI 打破了这个假设。</p>
       <div class="speed-compare">
         <div class="speed-side speed-human">
           <div class="speed-side-label">人类节奏</div>
@@ -379,7 +331,7 @@
 
 <hr class="divider container"/>
 
-<!-- ─── Safety Belt ───────────────────────────────────────────── -->
+<!-- ─── Safety Belt ─── -->
 <section class="section">
   <div class="container">
     <div class="belt-layout">
@@ -391,28 +343,19 @@
         </h2>
         <p class="sub reveal d1">
           汽车变得更快，不是让我们放弃驾驶，而是配上安全带让我们敢开更快。<br/><br/>
-          AI 工具正在以令人咋舌的速度变强。rew 不想拖慢它，只想在它万一出错的时候，接住你。
+          rew 不想拖慢 AI，只想在它万一出错的时候，接住你。
         </p>
         <div style="margin-top:36px;" class="reveal d2">
-          <a href="index.html#download" class="btn btn-primary">下载 rew，免费使用 →</a>
+          <a href="index.html#download" class="btn btn-primary">下载 rew，免费使用</a>
         </div>
       </div>
       <div class="belt-analogy reveal">
-        <div class="ba-icon">🚗</div>
         <div class="ba-title">沃尔沃安全带的故事</div>
         <div class="ba-body">
-          <p>
-            最早的汽车没有安全带。大家觉得，能开就行了，谁还系个带子把自己绑在座位上。
-          </p>
-          <p>
-            后来事故多了。1959 年，沃尔沃发明了三点式安全带。然后做了一个在商业史上很牛逼的决定——把专利开放，免费给所有厂商用。
-          </p>
-          <p>
-            从此安全带成了每辆车的标配。不是因为它让车跑得更快，是因为它让人<strong>敢开更快</strong>。
-          </p>
+          <p>最早的汽车没有安全带。后来事故多了。1959 年，沃尔沃发明了三点式安全带，然后把专利开放，免费给所有厂商用。</p>
+          <p>从此安全带成了每辆车的标配。不是因为它让车跑得更快，是因为它让人<strong>敢开更快</strong>。</p>
           <div class="ba-highlight">
-            AI 行业现在也到了需要安全带的时候了。<br/>
-            不缺更强的模型，缺的是让人<span style="color:var(--orange);">敢用</span>的安全网。
+            AI 行业现在也到了需要安全带的时候了。不缺更强的模型，缺的是让人<span style="color:var(--accent);">敢用</span>的安全网。
           </div>
         </div>
       </div>
@@ -420,7 +363,7 @@
   </div>
 </section>
 
-<!-- ─── CTA ───────────────────────────────────────────────────── -->
+<!-- ─── CTA ─── -->
 <section class="cta-wrap">
   <div class="container">
     <h2 class="cta-title reveal">
@@ -428,13 +371,13 @@
     </h2>
     <p class="cta-sub reveal d1">rew 在你看不见的地方默默工作，直到你需要它的那一刻。</p>
     <div class="cta-actions reveal d2">
-      <a href="index.html#download" class="btn btn-primary">免费下载 macOS 版本 →</a>
-      <a href="features.html" class="btn btn-ghost">查看全部功能</a>
+      <a href="index.html#download" class="btn btn-primary">下载 macOS 版本</a>
+      <a href="features.html" class="btn btn-ghost">查看全部功能 →</a>
     </div>
   </div>
 </section>
 
-<!-- ─── Footer ────────────────────────────────────────────────── -->
+<!-- ─── Footer ─── -->
 <footer id="footer">
   <div class="container">
     <div class="footer-inner">
@@ -443,7 +386,7 @@
           <div class="nav-logo-mark">R</div>
           <span class="nav-logo-name">rew</span>
         </div>
-        <p class="footer-tagline">AI 时代的文件安全网<br/>让人敢用 AI，不只是 AI 更强</p>
+        <p class="footer-tagline">AI 时代的文件安全网</p>
       </div>
       <div>
         <div class="footer-col-title">产品</div>
@@ -458,19 +401,18 @@
         <ul class="footer-links">
           <li><a href="#story">十三年归零</a></li>
           <li><a href="#tools">工具的缺口</a></li>
-          <li><a href="index.html#download">下载 rew</a></li>
         </ul>
       </div>
       <div>
-        <div class="footer-col-title">关于</div>
+        <div class="footer-col-title">开源</div>
         <ul class="footer-links">
-          <li><a href="https://github.com/kuqili" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://github.com/kuqili/rew" target="_blank" rel="noopener">GitHub</a></li>
         </ul>
       </div>
     </div>
     <div class="footer-bottom">
-      <span class="footer-copy">© 2026 rew. 开源免费使用。</span>
-      <span class="footer-copy">数据只在你的设备上，我们看不到。</span>
+      <span class="footer-copy">© 2026 rew</span>
+      <span class="footer-copy">数据仅存储在你的设备上</span>
     </div>
   </div>
 </footer>
@@ -479,10 +421,9 @@
   const nav = document.getElementById('nav');
   window.addEventListener('scroll', () => nav.classList.toggle('scrolled', window.scrollY > 20), { passive: true });
   nav.classList.toggle('scrolled', window.scrollY > 20);
-
   const observer = new IntersectionObserver(
     entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); } }),
-    { threshold: 0.1, rootMargin: '0px 0px -60px 0px' }
+    { threshold: 0.08, rootMargin: '0px 0px -40px 0px' }
   );
   document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
 </script>

@@ -3,34 +3,47 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>功能详情 — rew 文件存档助手</title>
+  <title>功能详情 — rew</title>
   <meta name="description" content="rew 的 6 大核心功能：自动存档、AI 任务独立记录、文件级 diff 对比、一键读档、异常熔断告警、目录级精细配置。"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="shared.css"/>
   <style>
-    /* ── Features Grid ── */
+    /* ── Feature Cards ── */
     .features-full-grid {
       display: grid; grid-template-columns: 1fr 1fr;
-      gap: 24px; margin-top: 64px;
+      gap: 1px; margin-top: 64px;
+      background: var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
     }
     @media (max-width: 760px) { .features-full-grid { grid-template-columns: 1fr; } }
-    .ff-card { padding: 40px 36px; }
+    .ff-card {
+      padding: 44px 36px;
+      background: var(--bg);
+      transition: background var(--transition);
+    }
+    .ff-card:hover { background: rgba(255,255,255,.015); }
     .ff-tag {
       display: inline-block; margin-bottom: 20px;
-      padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 700;
-      letter-spacing: .06em; text-transform: uppercase;
+      padding: 3px 10px; border-radius: 5px; font-size: 11px; font-weight: 600;
+      letter-spacing: .04em; text-transform: uppercase;
     }
-    .tag-core { background: rgba(249,115,22,.1); color: var(--orange); }
-    .tag-smart { background: rgba(139,92,246,.1); color: #a78bfa; }
-    .tag-safe { background: rgba(239,68,68,.1); color: #f87171; }
-    .ff-icon { font-size: 36px; margin-bottom: 16px; display: block; }
+    .tag-core { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-border); }
+    .tag-smart { background: rgba(167,139,250,.08); color: var(--purple); border: 1px solid rgba(167,139,250,.2); }
+    .tag-safe { background: rgba(248,113,113,.08); color: var(--red); border: 1px solid rgba(248,113,113,.2); }
+    .ff-icon-wrap {
+      width: 40px; height: 40px; border-radius: 10px;
+      background: rgba(255,255,255,.04); border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 20px; font-size: 18px; color: var(--text-2);
+    }
     .ff-name { font-size: 20px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 14px; }
     .ff-desc { font-size: 14px; color: var(--text-2); line-height: 1.8; }
     .ff-detail {
-      margin-top: 20px; padding: 16px;
-      background: rgba(255,255,255,.03); border-radius: 10px;
+      margin-top: 24px; padding: 16px;
+      background: rgba(255,255,255,.02); border-radius: 10px;
       border: 1px solid var(--border);
     }
     .ff-detail-row {
@@ -38,71 +51,78 @@
       font-size: 13px; color: var(--text-2); margin-bottom: 8px; line-height: 1.6;
     }
     .ff-detail-row:last-child { margin-bottom: 0; }
-    .ff-detail-row::before { content: '✓'; color: var(--green); flex-shrink: 0; font-weight: 700; margin-top: 1px; }
+    .ff-detail-row::before {
+      content: '✓'; color: var(--green); flex-shrink: 0; font-weight: 700; margin-top: 1px;
+    }
 
     /* ── How-to ── */
-    .howto-steps {
-      display: grid; grid-template-columns: repeat(3, 1fr);
-      gap: 0; margin-top: 64px; position: relative;
-    }
-    @media (max-width: 640px) { .howto-steps { grid-template-columns: 1fr; } }
-    .step {
-      padding: 40px 36px; position: relative;
-      border-right: 1px solid var(--border);
-    }
-    .step:last-child { border-right: none; }
-    @media (max-width: 640px) { .step { border-right: none; border-bottom: 1px solid var(--border); } }
-    .step-num {
-      font-size: 48px; font-weight: 900; letter-spacing: -.04em;
-      line-height: 1;
-      background: var(--grad-orange);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-      margin-bottom: 20px; display: block;
-    }
-    .step-title { font-size: 18px; font-weight: 800; margin-bottom: 14px; }
-    .step-desc { font-size: 14px; color: var(--text-2); line-height: 1.75; }
-    .step-cmd {
-      margin-top: 16px;
-      display: inline-flex; align-items: center; gap: 8px;
-      padding: 8px 14px; border-radius: 8px;
-      background: var(--bg-2); border: 1px solid var(--border);
-      font-family: 'Monaco', 'Menlo', monospace; font-size: 12px; color: var(--orange);
-    }
     .howto-wrap {
-      background: var(--bg-1); border: 1px solid var(--border); border-radius: 20px; overflow: hidden;
+      background: rgba(255,255,255,.02);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg); overflow: hidden;
     }
     .howto-header {
-      padding: 28px 36px; border-bottom: 1px solid var(--border);
+      padding: 24px 32px; border-bottom: 1px solid var(--border);
       display: flex; justify-content: space-between; align-items: center;
       flex-wrap: wrap; gap: 12px;
     }
     .howto-header-title { font-size: 14px; font-weight: 700; color: var(--text-2); }
     .howto-badge {
-      padding: 4px 12px; border-radius: 100px; font-size: 12px; font-weight: 700;
-      background: rgba(34,197,94,.08); color: var(--green); border: 1px solid rgba(34,197,94,.2);
+      padding: 4px 12px; border-radius: 100px; font-size: 11px; font-weight: 600;
+      background: rgba(52,211,153,.06); color: var(--green);
+      border: 1px solid rgba(52,211,153,.2);
+    }
+    .howto-steps {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 0;
+    }
+    @media (max-width: 640px) { .howto-steps { grid-template-columns: 1fr; } }
+    .step {
+      padding: 40px 32px; position: relative;
+      border-right: 1px solid var(--border);
+    }
+    .step:last-child { border-right: none; }
+    @media (max-width: 640px) { .step { border-right: none; border-bottom: 1px solid var(--border); } .step:last-child { border-bottom: none; } }
+    .step-num {
+      font-size: 40px; font-weight: 900; letter-spacing: -.04em;
+      line-height: 1;
+      background: var(--grad-text);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+      margin-bottom: 20px; display: block;
+    }
+    .step-title { font-size: 17px; font-weight: 800; margin-bottom: 14px; }
+    .step-desc { font-size: 14px; color: var(--text-2); line-height: 1.75; }
+    .step-cmd {
+      margin-top: 16px;
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 8px 14px; border-radius: 8px;
+      background: rgba(255,255,255,.03); border: 1px solid var(--border);
+      font-family: 'SF Mono','Menlo',monospace; font-size: 12px; color: var(--accent);
     }
 
-    /* ── Integration mini ── */
+    /* ── Compat ── */
     .compat-grid {
-      display: flex; flex-wrap: wrap; gap: 12px; margin-top: 40px; justify-content: center;
+      display: flex; flex-wrap: wrap; gap: 10px; margin-top: 40px; justify-content: center;
     }
     .compat-item {
       display: flex; align-items: center; gap: 8px;
-      padding: 8px 16px; border-radius: 10px;
-      background: var(--bg-1); border: 1px solid var(--border);
+      padding: 8px 16px; border-radius: 8px;
+      background: rgba(255,255,255,.02); border: 1px solid var(--border);
       font-size: 13px; color: var(--text-2);
+      transition: border-color var(--transition);
     }
+    .compat-item:hover { border-color: var(--border-hi); }
 
     /* ── CTA ── */
     .cta-wrap { text-align: center; padding: 120px 0; }
     .cta-title { font-size: clamp(32px, 5vw, 52px); font-weight: 900; letter-spacing: -.04em; margin-bottom: 20px; }
     .cta-sub { font-size: 17px; color: var(--text-2); margin-bottom: 40px; }
-    .cta-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+    .cta-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
   </style>
 </head>
 <body>
 
-<!-- ─── Nav ───────────────────────────────────────────────────── -->
+<!-- ─── Nav ─── -->
 <nav id="nav">
   <div class="container">
     <div class="nav-inner">
@@ -116,28 +136,28 @@
         <li><a href="index.html#download">下载</a></li>
       </ul>
       <div class="nav-right">
-        <a href="index.html#download" class="btn btn-primary btn-sm nav-cta">免费下载</a>
+        <a href="index.html#download" class="btn btn-primary btn-sm nav-cta">下载</a>
       </div>
     </div>
   </div>
 </nav>
 
-<!-- ─── Page Hero ─────────────────────────────────────────────── -->
+<!-- ─── Page Hero ─── -->
 <div class="page-hero">
   <div class="page-hero-glow"></div>
   <div class="container">
     <span class="label">核心能力</span>
-    <h1 class="title reveal" style="font-size:clamp(40px,6vw,68px);letter-spacing:-.04em;">
-      你看不见它，<br/><span class="grad-text">直到你需要它</span>
+    <h1 class="title reveal" style="font-size:clamp(40px,6vw,64px);letter-spacing:-.04em;">
+      你看不见它<br/><span class="grad-text">直到你需要它</span>
     </h1>
     <p class="sub reveal d1">
       rew 在后台静默运行，捕捉每一次文件变更，为你构建完整的历史档案。<br/>
-      从自动存档到一键读档，一切都是为了那个「万一」的时刻。
+      一切都是为了那个「万一」的时刻。
     </p>
   </div>
 </div>
 
-<!-- ─── 6 Features ────────────────────────────────────────────── -->
+<!-- ─── 6 Features ─── -->
 <section class="section" id="monitor">
   <div class="container">
     <div class="section-center">
@@ -145,100 +165,80 @@
       <h2 class="title reveal">从监控到还原，全程覆盖</h2>
     </div>
     <div class="features-full-grid">
-
-      <!-- 1: 自动存档 -->
-      <div class="card ff-card reveal d1">
+      <div class="ff-card reveal d1">
         <span class="ff-tag tag-core">核心</span>
-        <span class="ff-icon">⚡</span>
+        <div class="ff-icon-wrap">⚡</div>
         <div class="ff-name">毫秒级文件追踪 · 自动存档</div>
-        <p class="ff-desc">
-          基于 macOS FSEvents 系统级监控，在你完全无感知的情况下，捕捉每一次文件的创建、修改、删除。内容未实际变更则不记录，零噪音。
-        </p>
+        <p class="ff-desc">基于 macOS FSEvents 系统级监控，在完全无感知的情况下，捕捉每一次文件的创建、修改、删除。内容未实际变更则不记录。</p>
         <div class="ff-detail">
           <div class="ff-detail-row">使用 APFS clonefile 技术，备份极速，几乎不占额外磁盘空间</div>
-          <div class="ff-detail-row">文件内容哈希比对，打开文件但未修改不会产生记录</div>
+          <div class="ff-detail-row">文件内容哈希比对，打开但未修改不会产生记录</div>
           <div class="ff-detail-row">存档元数据存入本地 SQLite，内容通过内容寻址存储</div>
           <div class="ff-detail-row">可按目录配置监控范围，支持多层子目录过滤</div>
         </div>
       </div>
 
-      <!-- 2: AI 任务存档 -->
-      <div class="card ff-card reveal d2" id="ai-archive">
+      <div class="ff-card reveal d2" id="ai-archive">
         <span class="ff-tag tag-smart">智能</span>
-        <span class="ff-icon">🤖</span>
+        <div class="ff-icon-wrap">◎</div>
         <div class="ff-name">AI 任务独立记录</div>
-        <p class="ff-desc">
-          当 Cursor、Claude Code、Codebuddy 等 AI 工具正在运行时，该时段的文件变更自动归入 AI 任务记录，与定时存档分开展示，不重叠，不混淆。
-        </p>
+        <p class="ff-desc">当 Cursor、Claude Code 等 AI 工具运行时，该时段的文件变更自动归入 AI 任务记录，与定时存档分开展示。</p>
         <div class="ff-detail">
           <div class="ff-detail-row">每次 AI 任务完成后生成独立存档条目</div>
-          <div class="ff-detail-row">AI 任务期间定时存档自动暂停，避免重复记录</div>
-          <div class="ff-detail-row">支持 Cursor / Claude Code / Codebuddy / Windsurf 等主流工具</div>
+          <div class="ff-detail-row">AI 任务期间定时存档自动暂停，避免重复</div>
+          <div class="ff-detail-row">支持 Cursor / Claude Code / Codebuddy / Windsurf 等工具</div>
           <div class="ff-detail-row">任务名称、工具来源、文件数量一目了然</div>
         </div>
       </div>
 
-      <!-- 3: Diff 对比 -->
-      <div class="card ff-card reveal d3" id="diff">
+      <div class="ff-card reveal d3" id="diff">
         <span class="ff-tag tag-core">核心</span>
-        <span class="ff-icon">🔍</span>
+        <div class="ff-icon-wrap">⇄</div>
         <div class="ff-name">文件级 diff 对比</div>
-        <p class="ff-desc">
-          点击任意存档记录，即可在三栏布局中查看该时间段内每个文件的前后变更。清晰展示新增、删除、修改，精确知道 AI 改了什么。
-        </p>
+        <p class="ff-desc">点击任意存档记录，即可在三栏布局中查看每个文件的前后变更。新增、删除、修改，一目了然。</p>
         <div class="ff-detail">
           <div class="ff-detail-row">三栏布局：时间线 / 文件列表 / diff 详情</div>
-          <div class="ff-detail-row">高亮显示新增（绿）、删除（红）、修改行</div>
+          <div class="ff-detail-row">高亮显示新增、删除、修改行</div>
           <div class="ff-detail-row">支持大文件快速 diff，性能经过优化</div>
-          <div class="ff-detail-row">从 diff 视图直接发起单文件读档操作</div>
+          <div class="ff-detail-row">从 diff 视图直接发起单文件读档</div>
         </div>
       </div>
 
-      <!-- 4: 一键读档 -->
-      <div class="card ff-card reveal d4" id="restore">
+      <div class="ff-card reveal d4" id="restore">
         <span class="ff-tag tag-core">核心</span>
-        <span class="ff-icon">🎮</span>
+        <div class="ff-icon-wrap">↩</div>
         <div class="ff-name">一键读档 · 任意历史节点</div>
-        <p class="ff-desc">
-          像游戏读档一样回到任意历史状态。支持整个存档点整体还原，也支持精确到单个文件的还原。操作可反复执行，不限次数。
-        </p>
+        <p class="ff-desc">像游戏读档一样回到任意历史状态。支持整个存档点整体还原，也支持精确到单个文件。</p>
         <div class="ff-detail">
           <div class="ff-detail-row">整体读档：将存档点内所有文件回到历史状态</div>
-          <div class="ff-detail-row">单文件读档：只还原选中的一个文件，其余不动</div>
+          <div class="ff-detail-row">单文件读档：只还原选中的一个文件</div>
           <div class="ff-detail-row">读档状态持久化存储，刷新后仍可感知</div>
-          <div class="ff-detail-row">读档操作本身不产生新的存档记录</div>
           <div class="ff-detail-row">两步确认机制防止误操作</div>
         </div>
       </div>
 
-      <!-- 5: 熔断告警 -->
-      <div class="card ff-card reveal d5" id="guard">
+      <div class="ff-card reveal d5" id="guard">
         <span class="ff-tag tag-safe">安全</span>
-        <span class="ff-icon">🛑</span>
+        <div class="ff-icon-wrap">⊘</div>
         <div class="ff-name">异常熔断告警</div>
-        <p class="ff-desc">
-          当检测到短时间内大量文件被删除或修改（例如 3 秒内 800+ 文件），立即发出告警通知，让你在 SSD TRIM 执行前介入确认。
-        </p>
+        <p class="ff-desc">检测到短时间内大量文件被删除或修改时，立即发出告警通知，让你在 SSD TRIM 执行前介入。</p>
         <div class="ff-detail">
           <div class="ff-detail-row">可配置熔断阈值（文件数量 / 时间窗口）</div>
           <div class="ff-detail-row">macOS 原生通知，第一时间告知异常</div>
           <div class="ff-detail-row">AI 越界操作场景下的最后一道防线</div>
-          <div class="ff-detail-row">告警不误触：正常 AI 任务不会触发</div>
+          <div class="ff-detail-row">正常 AI 任务不会误触发</div>
         </div>
       </div>
 
-      <!-- 6: 精细配置 -->
-      <div class="card ff-card reveal d1">
+      <div class="ff-card reveal d1">
         <span class="ff-tag tag-smart">配置</span>
-        <span class="ff-icon">⚙</span>
+        <div class="ff-icon-wrap">⚙</div>
         <div class="ff-name">目录级精细配置</div>
-        <p class="ff-desc">
-          每个监控目录独立配置忽略规则：按子目录名称、文件扩展名、完整路径排除。存档时间周期可调，从 1 分钟到 2 小时。
-        </p>
+        <p class="ff-desc">每个监控目录独立配置忽略规则。存档时间周期可调，从 1 分钟到 2 小时。</p>
         <div class="ff-detail">
           <div class="ff-detail-row">支持任意层级子目录和单文件排除</div>
-          <div class="ff-detail-row">更改存档周期后，当前存档立即封存，新周期即时生效</div>
-          <div class="ff-detail-row">可手动触发重新扫描，更新保护范围统计</div>
+          <div class="ff-detail-row">更改存档周期后，当前存档立即封存</div>
+          <div class="ff-detail-row">可手动触发重新扫描</div>
           <div class="ff-detail-row">所有配置本地存储，重启后自动恢复</div>
         </div>
       </div>
@@ -248,15 +248,15 @@
 
 <hr class="divider container"/>
 
-<!-- ─── How It Works ──────────────────────────────────────────── -->
+<!-- ─── How It Works ─── -->
 <section class="section" id="howto">
   <div class="container">
     <div class="section-center">
       <span class="label">三步上手</span>
       <h2 class="title reveal">两分钟，开始保护你的文件</h2>
-      <p class="sub reveal d1">不需要任何命令行操作，打开 App 按步骤操作即可。</p>
+      <p class="sub reveal d1">不需要命令行，打开 App 按步骤操作即可。</p>
     </div>
-    <div style="margin-top: 64px;" class="reveal">
+    <div style="margin-top:64px;" class="reveal">
       <div class="howto-wrap">
         <div class="howto-header">
           <span class="howto-header-title">rew — 上手流程</span>
@@ -266,29 +266,18 @@
           <div class="step">
             <span class="step-num">01</span>
             <div class="step-title">选择要保护的目录</div>
-            <p class="step-desc">
-              打开 rew，在设置面板点击「添加目录」，选择你的工作目录（项目文件夹、桌面、文档等）。
-              <br/><br/>
-              rew 会立即开始扫描并建立初始存档基线。
-            </p>
+            <p class="step-desc">打开 rew，在设置面板点击「添加目录」，选择你的工作目录。rew 会立即开始扫描并建立初始存档基线。</p>
           </div>
           <div class="step">
             <span class="step-num">02</span>
             <div class="step-title">后台静默保护</div>
-            <p class="step-desc">
-              rew 在菜单栏静默运行，你完全感觉不到它在。每当 AI 工具或任何程序修改文件，都会自动记录快照。
-              <br/><br/>
-              存档按你设置的时间周期（默认 1 小时）或每次 AI 任务自动生成。
-            </p>
+            <p class="step-desc">rew 在菜单栏静默运行。每当 AI 工具或任何程序修改文件，都会自动记录快照。</p>
           </div>
           <div class="step">
             <span class="step-num">03</span>
             <div class="step-title">出问题？一键读档</div>
-            <p class="step-desc">
-              在时间线中找到目标存档点，点击「读档」回到历史状态。支持整体读档或精确到单个文件。
-            </p>
+            <p class="step-desc">在时间线中找到目标存档点，点击「读档」回到历史状态。</p>
             <div class="step-cmd">$ rew undo</div>
-            <p class="step-desc" style="margin-top:12px;">命令行用户也可以直接使用上面的命令。</p>
           </div>
         </div>
       </div>
@@ -298,43 +287,40 @@
 
 <hr class="divider container"/>
 
-<!-- ─── Compatibility ─────────────────────────────────────────── -->
+<!-- ─── Compatibility ─── -->
 <section class="section-sm">
   <div class="container section-center">
     <span class="label">兼容性</span>
-    <h2 class="title reveal" style="font-size: clamp(24px, 3vw, 36px);">适配你正在使用的每一个 AI 工具</h2>
-    <p class="sub reveal d1">rew 通过文件系统级别的监控工作，不依赖任何 AI 工具的插件或 API，所有工具均兼容。</p>
+    <h2 class="title reveal" style="font-size:clamp(24px,3vw,36px);">适配每一个 AI 工具</h2>
+    <p class="sub reveal d1">rew 通过文件系统级监控工作，不依赖任何插件或 API。</p>
     <div class="compat-grid reveal d2">
-      <div class="compat-item"><span>🖱</span> Cursor</div>
-      <div class="compat-item"><span>🤖</span> Claude Code</div>
-      <div class="compat-item"><span>💡</span> Codebuddy</div>
-      <div class="compat-item"><span>⚡</span> Windsurf</div>
-      <div class="compat-item"><span>🔮</span> GitHub Copilot</div>
-      <div class="compat-item"><span>🌐</span> Replit</div>
-      <div class="compat-item"><span>🛠</span> 任意 AI 工具</div>
+      <div class="compat-item">Cursor</div>
+      <div class="compat-item">Claude Code</div>
+      <div class="compat-item">Codebuddy</div>
+      <div class="compat-item">Windsurf</div>
+      <div class="compat-item">GitHub Copilot</div>
+      <div class="compat-item">Replit</div>
+      <div class="compat-item" style="border-style:dashed;">任意 AI 工具</div>
     </div>
-    <p class="reveal d3" style="margin-top:24px;font-size:13px;color:var(--text-3);">
-      rew 监控的是文件系统事件，与 AI 工具无关，因此即使你切换工具，rew 始终有效。
-    </p>
   </div>
 </section>
 
-<!-- ─── CTA ───────────────────────────────────────────────────── -->
+<!-- ─── CTA ─── -->
 <section class="cta-wrap">
   <div class="container">
     <h2 class="cta-title reveal">
       准备好了吗？<br/>
       <span class="grad-text">开始保护你的文件</span>
     </h2>
-    <p class="cta-sub reveal d1">免费下载，本地运行，无需注册。两分钟内开始保护。</p>
+    <p class="cta-sub reveal d1">免费下载，本地运行，无需注册。</p>
     <div class="cta-actions reveal d2">
-      <a href="index.html#download" class="btn btn-primary">下载 macOS 版本 →</a>
-      <a href="why.html" class="btn btn-ghost">了解背后的故事</a>
+      <a href="index.html#download" class="btn btn-primary">下载 macOS 版本</a>
+      <a href="why.html" class="btn btn-ghost">了解背后的故事 →</a>
     </div>
   </div>
 </section>
 
-<!-- ─── Footer ────────────────────────────────────────────────── -->
+<!-- ─── Footer ─── -->
 <footer id="footer">
   <div class="container">
     <div class="footer-inner">
@@ -343,7 +329,7 @@
           <div class="nav-logo-mark">R</div>
           <span class="nav-logo-name">rew</span>
         </div>
-        <p class="footer-tagline">AI 时代的文件安全网<br/>让人敢用 AI，不只是 AI 更强</p>
+        <p class="footer-tagline">AI 时代的文件安全网</p>
       </div>
       <div>
         <div class="footer-col-title">产品</div>
@@ -360,19 +346,18 @@
           <li><a href="#diff">diff 对比</a></li>
           <li><a href="#restore">一键读档</a></li>
           <li><a href="#guard">异常熔断</a></li>
-          <li><a href="#howto">三步上手</a></li>
         </ul>
       </div>
       <div>
-        <div class="footer-col-title">关于</div>
+        <div class="footer-col-title">开源</div>
         <ul class="footer-links">
-          <li><a href="https://github.com/kuqili" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://github.com/kuqili/rew" target="_blank" rel="noopener">GitHub</a></li>
         </ul>
       </div>
     </div>
     <div class="footer-bottom">
-      <span class="footer-copy">© 2026 rew. 开源免费使用。</span>
-      <span class="footer-copy">数据只在你的设备上，我们看不到。</span>
+      <span class="footer-copy">© 2026 rew</span>
+      <span class="footer-copy">数据仅存储在你的设备上</span>
     </div>
   </div>
 </footer>
@@ -381,13 +366,11 @@
   const nav = document.getElementById('nav');
   window.addEventListener('scroll', () => nav.classList.toggle('scrolled', window.scrollY > 20), { passive: true });
   nav.classList.toggle('scrolled', window.scrollY > 20);
-
   const observer = new IntersectionObserver(
     entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); } }),
-    { threshold: 0.08, rootMargin: '0px 0px -50px 0px' }
+    { threshold: 0.08, rootMargin: '0px 0px -40px 0px' }
   );
   document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
-
   document.querySelectorAll('a[href^="#"]').forEach(a => {
     a.addEventListener('click', e => {
       const target = document.querySelector(a.getAttribute('href'));
