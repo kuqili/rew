@@ -41,9 +41,25 @@ echo "  已清空 /etc/nginx/conf.d/ 下的旧配置"
 
 # 写入 rew 站点配置
 cat > /etc/nginx/conf.d/rew.conf << 'EOF'
+# HTTP → HTTPS redirect
 server {
-    listen 80 default_server;
+    listen 80;
     server_name rew-ai.woa.com;
+    return 301 https://$host$request_uri;
+}
+
+# HTTPS
+server {
+    listen 443 ssl;
+    server_name rew-ai.woa.com;
+
+    ssl_certificate /etc/nginx/ssl/rew-ai.woa.com.crt;
+    ssl_certificate_key /etc/nginx/ssl/rew-ai.woa.com.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
 
     root /var/www/rew;
     index index.html;
@@ -87,5 +103,5 @@ echo ""
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🎉 部署成功！"
-echo "   访问地址：http://21.214.197.124"
+echo "   访问地址：https://rew-ai.woa.com"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
