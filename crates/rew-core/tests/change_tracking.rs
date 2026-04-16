@@ -328,6 +328,76 @@ fn a6b_baseline_previous_task_deleted_but_live_file_index_wins() {
 }
 
 #[test]
+fn a6c_baseline_previous_task_created_but_tombstoned_file_index_wins() {
+    let env = TestEnv::new();
+    env.create_completed_task("t_prev");
+    env.create_active_task("t_cur");
+
+    let path = env.write_file("was_created_then_restored.txt", "content\n");
+    let sha = env.store_file(&path);
+    let path_str = path.to_string_lossy().to_string();
+
+    let created = env.make_change(
+        "t_prev", &path, ChangeType::Created,
+        None, Some(&sha), "hook",
+    );
+    env.insert_change(&created);
+
+    env.seed_file_index(&path_str, &sha, Some(&sha));
+    env.db
+        .mark_file_index_deleted(
+            &path_str,
+            Some(&sha),
+            "restore",
+            "restored_delete",
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap();
+
+    let bl = env.baseline("t_cur", &path);
+    assert!(
+        !bl.existed,
+        "Tombstoned file_index should override historical Created record (restore removed the file)"
+    );
+    assert!(bl.hash.is_none());
+}
+
+#[test]
+fn a6d_baseline_previous_task_modified_but_tombstoned_file_index_wins() {
+    let env = TestEnv::new();
+    env.create_completed_task("t_prev");
+    env.create_active_task("t_cur");
+
+    let path = env.write_file("was_modified_then_restored.txt", "modified\n");
+    let sha_new = env.store_file(&path);
+    let path_str = path.to_string_lossy().to_string();
+
+    let modified = env.make_change(
+        "t_prev", &path, ChangeType::Modified,
+        Some("sha_original"), Some(&sha_new), "hook",
+    );
+    env.insert_change(&modified);
+
+    env.seed_file_index(&path_str, &sha_new, Some(&sha_new));
+    env.db
+        .mark_file_index_deleted(
+            &path_str,
+            Some(&sha_new),
+            "restore",
+            "restored_delete",
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap();
+
+    let bl = env.baseline("t_cur", &path);
+    assert!(
+        !bl.existed,
+        "Tombstoned file_index should override historical Modified record (restore deleted the file)"
+    );
+    assert!(bl.hash.is_none());
+}
+
+#[test]
 fn a7_baseline_previous_task_modified() {
     let env = TestEnv::new();
     env.create_completed_task("t_prev");
@@ -580,6 +650,155 @@ fn b4b_ephemeral_delete_tombstones_live_file_index() {
         !file_index.exists_now,
         "Even ephemeral create-then-delete must leave file_index tombstoned"
     );
+}
+
+#[test]
+fn b4c_create_then_delete_upsert_must_not_promote_old_hash_from_none() {
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+
+    let path = env.write_file("tmp_test_file.txt", "temp content\n");
+    let sha = env.store_file(&path);
+
+    let created = env.make_change(
+        "t1",
+        &path,
+        ChangeType::Created,
+        None,
+        Some(&sha),
+        "fsevent_active",
+    );
+    env.upsert_change(&created);
+
+    env.delete_file(&path);
+    let deleted = env.make_change(
+        "t1",
+        &path,
+        ChangeType::Deleted,
+        Some(&sha),
+        None,
+        "fsevent_active",
+    );
+    env.upsert_change(&deleted);
+
+    let changes = env.changes("t1");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].change_type, ChangeType::Deleted);
+    assert!(
+        changes[0].old_hash.is_none(),
+        "Created -> Deleted within one task must preserve old_hash=None so reconcile can prune it as ephemeral"
+    );
+    assert!(changes[0].new_hash.is_none());
+}
+
+// ---- Robustness: baseline must not misidentify ephemeral deletes ----
+
+#[test]
+fn b4d_baseline_layer1_ephemeral_delete_must_return_existed_false() {
+    // After a Created→Deleted sequence in the same task, the slot contains
+    // Deleted(None, None). baseline layer 1 must recognize old_hash=None as
+    // "file didn't exist before task" and return existed=false.
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+    let path = env.write_file("ephemeral.txt", "temp\n");
+
+    // Simulate: hook wrote Created, then Deleted(None, None)
+    let del = env.make_change(
+        "t1", &path, ChangeType::Deleted, None, None, "bash_predicted",
+    );
+    env.upsert_change(&del);
+
+    let bl = env.baseline("t1", &path);
+    assert!(
+        !bl.existed,
+        "Deleted(None, None) in current task means file was ephemeral — \
+         baseline must return existed=false, not existed=true"
+    );
+    assert!(bl.hash.is_none());
+}
+
+#[test]
+fn b4e_upsert_non_hook_must_not_promote_old_hash_from_none() {
+    // Even without the hook/bash_predicted fix, upsert_change should never
+    // allow a non-hook-source write to promote old_hash from None to Some.
+    // This is the pure same-source scenario (fsevent_active → fsevent_active).
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+    let path = env.write_file("tmp.txt", "temp\n");
+    let sha = env.store_file(&path);
+
+    // Daemon Created(None, sha)
+    let created = env.make_change(
+        "t1", &path, ChangeType::Created, None, Some(&sha), "fsevent_active",
+    );
+    env.upsert_change(&created);
+
+    // Daemon Deleted(Some(sha), None) — daemon resolved baseline wrongly
+    env.delete_file(&path);
+    let deleted = env.make_change(
+        "t1", &path, ChangeType::Deleted, Some(&sha), None, "fsevent_active",
+    );
+    env.upsert_change(&deleted);
+
+    let changes = env.changes("t1");
+    assert_eq!(changes.len(), 1);
+    assert!(
+        changes[0].old_hash.is_none(),
+        "non-hook source must never promote old_hash from None to Some — \
+         once determined as 'file didnt exist before task', it must stay None"
+    );
+
+    // Must be pruned by reconcile
+    env.reconcile("t1");
+    assert_eq!(env.changes("t1").len(), 0, "ephemeral must be pruned");
+}
+
+#[test]
+fn b4f_dual_source_race_full_pipeline_robustness() {
+    // End-to-end: simulates the exact dual-source race between hook thread
+    // and daemon thread, using baseline resolution at each step (not just
+    // raw upsert). Even with arbitrary ordering, the result must be correct.
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+    let path = env.write_file("raced.txt", "content\n");
+    let sha = env.store_file(&path);
+
+    // --- Ordering A: hook first, daemon second ---
+    // 1. Hook: Created(None, sha) bash_predicted
+    let hook_create = env.make_change(
+        "t1", &path, ChangeType::Created, None, Some(&sha), "bash_predicted",
+    );
+    env.upsert_change(&hook_create);
+
+    // 2. Hook: resolve baseline → sees Created → existed=false → Deleted(None, None)
+    env.delete_file(&path);
+    let bl = env.baseline("t1", &path);
+    assert!(!bl.existed, "baseline after Created must be existed=false");
+    let hook_delete = env.make_change(
+        "t1", &path, ChangeType::Deleted, None, None, "bash_predicted",
+    );
+    env.upsert_change(&hook_delete);
+
+    // 3. Daemon: resolve baseline → sees Deleted(None, None) in slot
+    //    Must correctly return existed=false (ephemeral delete)
+    let bl_daemon = env.baseline("t1", &path);
+    assert!(
+        !bl_daemon.existed,
+        "baseline must recognize Deleted(None, None) as ephemeral — existed=false"
+    );
+    // Daemon would construct Deleted(None, None) since existed=false
+    let daemon_delete = env.make_change(
+        "t1", &path, ChangeType::Deleted,
+        bl_daemon.hash.as_deref(), None, "fsevent_active",
+    );
+    env.upsert_change(&daemon_delete);
+
+    let changes = env.changes("t1");
+    assert_eq!(changes.len(), 1);
+    assert!(changes[0].old_hash.is_none(), "old_hash must stay None");
+
+    env.reconcile("t1");
+    assert_eq!(env.changes("t1").len(), 0, "must be pruned as ephemeral");
 }
 
 #[test]
@@ -950,6 +1169,173 @@ fn d5_hook_modified_daemon_different_hash() {
         changes[0].new_hash.as_deref(),
         Some("sha_v1"),
         "hook attribution blocks daemon update"
+    );
+}
+
+// ============================================================
+// D-bash. bash_predicted must have same protection as hook
+// ============================================================
+
+#[test]
+fn d1b_bash_predicted_then_daemon_must_be_protected() {
+    // Mirror of d1: hook is protected from daemon overwrite.
+    // bash_predicted must have the same protection.
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+    let path = env.write_file("file.txt", "content\n");
+
+    // bash_predicted writes first (Bash echo)
+    let bash = env.make_change(
+        "t1", &path, ChangeType::Modified,
+        Some("sha_old_precise"), Some("sha_new_1"), "bash_predicted",
+    );
+    env.upsert_change(&bash);
+
+    // Daemon writes same file (fsevent_active)
+    let daemon = env.make_change(
+        "t1", &path, ChangeType::Modified,
+        Some("sha_old_daemon"), Some("sha_new_2"), "fsevent_active",
+    );
+    env.upsert_change(&daemon);
+
+    let changes = env.changes("t1");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(
+        changes[0].attribution.as_deref(),
+        Some("bash_predicted"),
+        "bash_predicted record must NOT be overwritten by daemon — same as hook"
+    );
+    assert_eq!(
+        changes[0].old_hash.as_deref(),
+        Some("sha_old_precise"),
+        "bash_predicted's old_hash must be preserved"
+    );
+}
+
+#[test]
+fn d2b_daemon_then_bash_predicted_old_hash_wins() {
+    // Mirror of d2: when hook arrives after daemon, hook's old_hash wins.
+    // bash_predicted must behave the same.
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+    let path = env.write_file("file.txt", "content\n");
+
+    // Daemon writes first
+    let daemon = env.make_change(
+        "t1", &path, ChangeType::Modified,
+        Some("sha_old_daemon"), Some("sha_new_1"), "fsevent_active",
+    );
+    env.upsert_change(&daemon);
+
+    // bash_predicted writes later
+    let bash = env.make_change(
+        "t1", &path, ChangeType::Modified,
+        Some("sha_old_bash"), Some("sha_new_2"), "bash_predicted",
+    );
+    env.upsert_change(&bash);
+
+    let changes = env.changes("t1");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(
+        changes[0].attribution.as_deref(),
+        Some("bash_predicted"),
+    );
+    assert_eq!(
+        changes[0].old_hash.as_deref(),
+        Some("sha_old_bash"),
+        "bash_predicted's old_hash should take priority over daemon's, same as hook"
+    );
+}
+
+#[test]
+fn d5b_bash_predicted_then_daemon_blocked() {
+    // Mirror of d5: once hook writes, later daemon with different hash is blocked.
+    // bash_predicted must have the same blocking behavior.
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+    let path = env.write_file("evolving.txt", "v1\n");
+
+    let bash = env.make_change(
+        "t1", &path, ChangeType::Modified,
+        Some("sha_old"), Some("sha_v1"), "bash_predicted",
+    );
+    env.upsert_change(&bash);
+
+    let daemon = env.make_change(
+        "t1", &path, ChangeType::Modified,
+        Some("sha_old"), Some("sha_v2"), "fsevent_active",
+    );
+    env.upsert_change(&daemon);
+
+    let changes = env.changes("t1");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(
+        changes[0].attribution.as_deref(),
+        Some("bash_predicted"),
+    );
+    assert_eq!(
+        changes[0].new_hash.as_deref(),
+        Some("sha_v1"),
+        "bash_predicted attribution must block daemon update — same as hook"
+    );
+}
+
+#[test]
+fn d6_bash_create_delete_must_stay_ephemeral() {
+    // The real-world scenario: claude-code creates a file via Bash echo,
+    // then deletes via Bash rm. Both hook and daemon write changes.
+    // The final record must be Deleted(None, None) so reconcile prunes it.
+    let env = TestEnv::new();
+    env.create_active_task("t1");
+    let path = env.write_file("tmp.txt", "temp\n");
+    let sha = env.store_file(&path);
+
+    // Step 1: hook writes Created(None, sha) via bash_predicted
+    let bash_create = env.make_change(
+        "t1", &path, ChangeType::Created,
+        None, Some(&sha), "bash_predicted",
+    );
+    env.upsert_change(&bash_create);
+
+    // Step 2: daemon FSEvent Created — is_change_already_recorded would catch
+    //         this in prod (same new_hash), but even if it doesn't, upsert
+    //         should not corrupt the record.
+
+    // Step 3: hook writes Deleted(None, None) via bash_predicted
+    //         (baseline sees Created in slot → existed=false → old_hash=None)
+    let bash_delete = env.make_change(
+        "t1", &path, ChangeType::Deleted,
+        None, None, "bash_predicted",
+    );
+    env.upsert_change(&bash_delete);
+
+    // Step 4: daemon FSEvent Deleted arrives AFTER hook already changed
+    //         the slot to Deleted. In broken code, daemon's resolve_baseline
+    //         sees "deleted" in slot → existed=true → constructs
+    //         Deleted(Some(real_sha), None), and upsert pollutes old_hash.
+    env.delete_file(&path);
+    let daemon_delete = env.make_change(
+        "t1", &path, ChangeType::Deleted,
+        Some(&sha), None, "fsevent_active",
+    );
+    env.upsert_change(&daemon_delete);
+
+    let changes = env.changes("t1");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].change_type, ChangeType::Deleted);
+    assert!(
+        changes[0].old_hash.is_none(),
+        "old_hash must stay None — bash_predicted wrote Deleted(None,None) \
+         and daemon must not be allowed to pollute it with a real hash"
+    );
+    assert!(changes[0].new_hash.is_none());
+
+    // After reconcile, this ephemeral record should be pruned
+    env.reconcile("t1");
+    let final_changes = env.changes("t1");
+    assert_eq!(
+        final_changes.len(), 0,
+        "ephemeral create-then-delete within one task must be pruned by reconcile"
     );
 }
 

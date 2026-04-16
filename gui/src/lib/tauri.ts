@@ -408,6 +408,10 @@ export async function uninstallToolHook(toolId: string): Promise<void> {
   return invoke("uninstall_tool_hook", { toolId });
 }
 
+export async function stopTask(taskId: string): Promise<void> {
+  return invoke("stop_task", { taskId });
+}
+
 // === Task Statistics ===
 
 export async function getTaskStats(taskId: string): Promise<TaskStatsInfo | null> {

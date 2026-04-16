@@ -11,8 +11,8 @@ use rew_core::config::RewConfig;
 use rew_core::detector::RuleEngine;
 use rew_core::file_index::sync_file_index_after_change;
 use rew_core::hook_events::{
-    claim_oldest_hook_event, mark_hook_event_done, mark_hook_event_failed, process_hook_event,
-    requeue_hook_spool_processing_files,
+    claim_oldest_hook_event, is_retryable_hook_spool_error, mark_hook_event_done,
+    mark_hook_event_failed, process_hook_event, requeue_hook_spool_processing_files,
 };
 use rew_core::objects::ObjectStore;
 use rew_core::pipeline;
@@ -24,11 +24,49 @@ use rew_core::types::{
     Change, ChangeType, FileEventKind, SnapshotTrigger, Task, TaskStatus,
 };
 use rew_core::rew_home_dir;
+use std::time::Duration as StdDuration;
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{error, info, warn};
 
 const SUPPRESSED_PATH_TTL_SECS: u64 = 90;
 const SUPPRESSED_RESTORE_TTL_SECS: u64 = 600;
+const HOOK_EVENT_RETRY_DELAYS_MS: &[u64] = &[250, 1000];
+
+fn process_hook_event_with_retry<T, F, S>(
+    event_id: &str,
+    mut process: F,
+    mut sleep: S,
+) -> rew_core::error::RewResult<T>
+where
+    F: FnMut() -> rew_core::error::RewResult<T>,
+    S: FnMut(StdDuration),
+{
+    let max_attempts = 1 + HOOK_EVENT_RETRY_DELAYS_MS.len();
+    for attempt in 0..max_attempts {
+        match process() {
+            Ok(outcome) => return Ok(outcome),
+            Err(err) => {
+                let err_text = err.to_string();
+                let Some(delay_ms) = HOOK_EVENT_RETRY_DELAYS_MS.get(attempt) else {
+                    return Err(err);
+                };
+                if !is_retryable_hook_spool_error(&err_text) {
+                    return Err(err);
+                }
+                warn!(
+                    "Retryable hook event failure for {} (attempt {}/{}): {}. Retrying in {}ms",
+                    event_id,
+                    attempt + 1,
+                    max_attempts,
+                    err_text,
+                    delay_ms
+                );
+                sleep(StdDuration::from_millis(*delay_ms));
+            }
+        }
+    }
+    unreachable!("hook event retry loop should always return before exhaustion")
+}
 
 fn build_task_summary(changes: &[Change]) -> Option<String> {
     if changes.is_empty() {
@@ -151,7 +189,11 @@ fn start_hook_event_writer(app: &AppHandle) {
         loop {
             match claim_oldest_hook_event() {
                 Ok(Some((processing_path, envelope))) => {
-                    match process_hook_event(&db, &envelope) {
+                    match process_hook_event_with_retry(
+                        &envelope.event_id,
+                        || process_hook_event(&db, &envelope),
+                        std::thread::sleep,
+                    ) {
                         Ok(outcome) => {
                             let _ = mark_hook_event_done(&processing_path);
                             if let Some(task_id) = outcome.task_id {
@@ -539,12 +581,13 @@ pub fn start_daemon(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        expand_deleted_directory_events, resolve_fsevent_task_route, should_suppress_restore_event,
-        sync_file_index_after_change,
+        expand_deleted_directory_events, process_hook_event_with_retry, resolve_fsevent_task_route,
+        should_suppress_restore_event, sync_file_index_after_change,
     };
     use crate::state::SuppressedRestorePath;
     use chrono::{Duration, Utc};
     use rew_core::db::Database;
+    use rew_core::error::RewError;
     use rew_core::objects::ObjectStore;
     use rew_core::restore::TaskRestoreEngine;
     use rew_core::types::{Change, ChangeType, FileEvent, FileEventKind, Task, TaskStatus};
@@ -702,6 +745,119 @@ mod tests {
         let (task_id, attribution) = resolve_fsevent_task_route(&db, 15);
         assert!(task_id.is_none());
         assert_eq!(attribution, "monitoring");
+    }
+
+    #[test]
+    fn active_followup_task_does_not_duplicate_change_from_recently_completed_task() {
+        let (_dir, db) = temp_db();
+        let now = Utc::now();
+
+        create_task(
+            &db,
+            "t_a",
+            now - Duration::seconds(20),
+            Some(now - Duration::seconds(5)),
+            TaskStatus::Completed,
+        );
+        create_task(
+            &db,
+            "t_b",
+            now - Duration::seconds(1),
+            None,
+            TaskStatus::Active,
+        );
+        db.insert_active_session("sess-b", "t_b", "test", now - Duration::seconds(1))
+            .unwrap();
+
+        let path = PathBuf::from("/tmp/late-event.txt");
+        let change = Change {
+            id: None,
+            task_id: "t_a".to_string(),
+            file_path: path.clone(),
+            change_type: ChangeType::Modified,
+            old_hash: Some("sha-old".to_string()),
+            new_hash: Some("sha-new".to_string()),
+            diff_text: None,
+            lines_added: 1,
+            lines_removed: 1,
+            attribution: Some("hook".to_string()),
+            old_file_path: None,
+        };
+        db.insert_change(&change).unwrap();
+
+        let (task_id, attribution) = resolve_fsevent_task_route(&db, 15);
+        assert_eq!(task_id.as_deref(), Some("t_b"));
+        assert_eq!(attribution, "fsevent_active");
+
+        assert!(
+            db.is_change_already_recorded(&path.to_string_lossy(), "sha-new")
+                .unwrap(),
+            "late event should be deduped against the recently completed task instead of duplicating into the followup task"
+        );
+    }
+
+    #[test]
+    fn retryable_hook_event_failure_eventually_succeeds_inline() {
+        let mut attempts = 0usize;
+        let mut slept = Vec::new();
+
+        let result = process_hook_event_with_retry(
+            "prompt_retry",
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(RewError::Snapshot("database is locked".into()))
+                } else {
+                    Ok("ok")
+                }
+            },
+            |delay| slept.push(delay.as_millis() as u64),
+        )
+        .unwrap();
+
+        assert_eq!(result, "ok");
+        assert_eq!(attempts, 3);
+        assert_eq!(slept, vec![250, 1000]);
+    }
+
+    #[test]
+    fn retryable_hook_event_failure_stops_after_retry_budget() {
+        let mut attempts = 0usize;
+        let mut slept = Vec::new();
+
+        let err = process_hook_event_with_retry(
+            "prompt_retry_fail",
+            || {
+                attempts += 1;
+                Err::<(), _>(RewError::Snapshot("database is locked".into()))
+            },
+            |delay| slept.push(delay.as_millis() as u64),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("database is locked"));
+        assert_eq!(attempts, 3);
+        assert_eq!(slept, vec![250, 1000]);
+    }
+
+    #[test]
+    fn non_retryable_hook_event_failure_does_not_retry() {
+        let mut attempts = 0usize;
+        let mut slept = Vec::new();
+
+        let err = process_hook_event_with_retry(
+            "prompt_non_retryable",
+            || {
+                attempts += 1;
+                Err::<(), _>(RewError::Snapshot("expected ident at line 1 column 2".into()))
+            },
+            |delay| slept.push(delay.as_millis() as u64),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("expected ident"));
+        assert_eq!(attempts, 1);
+        assert!(slept.is_empty());
     }
 
     #[test]

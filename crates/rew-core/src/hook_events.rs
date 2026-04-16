@@ -136,6 +136,15 @@ pub fn requeue_hook_spool_processing_files() -> RewResult<usize> {
     requeue_hook_spool_processing_files_in(&rew_home_dir())
 }
 
+pub fn is_retryable_hook_spool_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("database is locked")
+        || normalized.contains("database table is locked")
+        || normalized.contains("database is busy")
+        || normalized.contains("sqlite_busy")
+        || normalized.contains("busy timeout")
+}
+
 fn claim_oldest_hook_event_in(rew_home: &Path) -> RewResult<Option<(PathBuf, HookEventEnvelope)>> {
     ensure_hook_spool_dirs_in(rew_home)?;
     let mut files = fs::read_dir(hook_spool_state_dir_in(rew_home, "pending"))?
@@ -205,6 +214,12 @@ pub fn deterministic_event_id(seed: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+fn envelope_created_at_or_now(envelope: &HookEventEnvelope) -> chrono::DateTime<Utc> {
+    chrono::DateTime::parse_from_rfc3339(&envelope.created_at)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now())
+}
+
 fn generate_task_id(seed: &str) -> String {
     let ts = Utc::now().format("%m%d%H%M").to_string();
     let suffix = deterministic_event_id(seed);
@@ -247,6 +262,18 @@ pub fn process_hook_event(
     process_hook_event_internal(db, envelope, &mut next_task_id, None)
 }
 
+/// Variant with explicit `objects_root` for integration tests that use
+/// isolated temp directories instead of `~/.rew/objects`.
+pub fn process_hook_event_with_objects_root(
+    db: &Database,
+    envelope: &HookEventEnvelope,
+    objects_root: &Path,
+) -> RewResult<HookEventProcessOutcome> {
+    let seed = envelope.event_id.clone();
+    let mut next_task_id = move || generate_task_id(&seed);
+    process_hook_event_internal(db, envelope, &mut next_task_id, Some(objects_root))
+}
+
 fn process_hook_event_internal<F>(
     db: &Database,
     envelope: &HookEventEnvelope,
@@ -278,16 +305,21 @@ where
 
 fn process_prompt_started<F>(
     db: &Database,
-    _envelope: &HookEventEnvelope,
+    envelope: &HookEventEnvelope,
     payload: &PromptStartedPayload,
     next_task_id: &mut F,
 ) -> RewResult<HookEventProcessOutcome>
 where
     F: FnMut() -> String,
 {
+    let event_time = envelope_created_at_or_now(envelope);
+
     if let Ok(Some(old_tid)) = db.get_active_task_for_session(&payload.session_key) {
-        let _ = db.update_task_status(&old_tid, &TaskStatus::Completed, Some(Utc::now()));
+        let _ = db.update_task_status(&old_tid, &TaskStatus::Completed, Some(event_time));
         let _ = db.deactivate_session(&payload.session_key);
+        if db.count_changes_for_task(&old_tid).unwrap_or(0) > 0 {
+            let _ = db.enqueue_task_finalization(&old_tid, None);
+        }
     }
 
     let task_id = next_task_id();
@@ -295,7 +327,7 @@ where
         id: task_id.clone(),
         prompt: payload.prompt.clone().filter(|s| !s.is_empty()),
         tool: Some(payload.tool_source.clone()),
-        started_at: Utc::now(),
+        started_at: event_time,
         completed_at: None,
         status: TaskStatus::Active,
         risk_level: None,
@@ -707,6 +739,103 @@ mod tests {
 
         assert_eq!(retry_outcome.task_id.as_deref(), Some("retry-task"));
         assert!(db.get_task("retry-task").unwrap().is_some());
+    }
+
+    #[test]
+    fn retried_prompt_keeps_original_envelope_timestamp() {
+        let db = test_db();
+        let mut envelope = prompt_envelope(
+            "claude-code",
+            "claude-code:session-retry-time",
+            "retry prompt",
+            None,
+            None,
+        );
+        envelope.created_at = "2026-04-16T03:37:33.654538+00:00".to_string();
+
+        db.create_task(&Task {
+            id: "fixed-task".to_string(),
+            prompt: Some("existing".to_string()),
+            tool: Some("claude-code".to_string()),
+            started_at: Utc::now(),
+            completed_at: None,
+            status: TaskStatus::Active,
+            risk_level: None,
+            summary: None,
+            cwd: None,
+        }).unwrap();
+
+        let mut fixed_generator = || "fixed-task".to_string();
+        assert!(process_hook_event_internal(&db, &envelope, &mut fixed_generator, None).is_err());
+
+        let mut retry_generator = || "retry-task".to_string();
+        process_hook_event_internal(&db, &envelope, &mut retry_generator, None)
+            .expect("retry should still be processed after a failed first attempt");
+
+        let task = db
+            .get_task("retry-task")
+            .unwrap()
+            .expect("retried task should exist");
+        assert_eq!(task.started_at.to_rfc3339(), "2026-04-16T03:37:33.654538+00:00");
+    }
+
+    #[test]
+    fn prompt_rollover_should_enqueue_previous_task_finalization_when_raw_changes_exist() {
+        let env = HookFlowEnv::new();
+        let session_key = "claude-code:rollover-session";
+
+        let first_prompt = prompt_envelope(
+            "claude-code",
+            session_key,
+            "first prompt",
+            None,
+            Some("gen-a"),
+        );
+        let first_task = process_event_with_objects(&env.db, &first_prompt, &env.objects_root)
+            .task_id
+            .expect("first task");
+
+        let live_path = env.write_live_file("tmp_test_file.txt", "temp content\n");
+        let file_path = live_path.to_string_lossy().to_string();
+        let sha = ObjectStore::new(env.objects_root.clone())
+            .unwrap()
+            .store(&live_path)
+            .unwrap();
+        env.delete_live_file("tmp_test_file.txt");
+
+        env.db
+            .upsert_change(&Change {
+                id: None,
+                task_id: first_task.clone(),
+                file_path: PathBuf::from(&file_path),
+                change_type: ChangeType::Deleted,
+                old_hash: Some(sha),
+                new_hash: None,
+                diff_text: None,
+                lines_added: 0,
+                lines_removed: 1,
+                attribution: Some("fsevent_active".to_string()),
+                old_file_path: None,
+            })
+            .unwrap();
+
+        let second_prompt = prompt_envelope(
+            "claude-code",
+            session_key,
+            "second prompt",
+            None,
+            Some("gen-b"),
+        );
+        let second_task = process_event_with_objects(&env.db, &second_prompt, &env.objects_root)
+            .task_id
+            .expect("second task");
+
+        assert_ne!(first_task, second_task);
+        assert_eq!(
+            env.db.get_task_finalization_status(&first_task).unwrap().as_deref(),
+            Some("pending"),
+            "rolling a session over to a new prompt should enqueue finalization for the previous task when raw changes already exist"
+        );
     }
 
     #[test]

@@ -108,6 +108,14 @@ pub fn resolve_baseline_with_objects_root(
                 hash: None,
             };
         }
+        // Ephemeral delete: old_hash=None means the file was created and
+        // deleted within this task (never existed before the task started).
+        if change_type_str == "deleted" && old_hash.is_none() {
+            return Baseline {
+                existed: false,
+                hash: None,
+            };
+        }
         return Baseline {
             existed: true,
             hash: old_hash,
@@ -127,10 +135,13 @@ pub fn resolve_baseline_with_objects_root(
     // 3. Latest change from a PREVIOUS task (excludes current task_id to avoid
     //    circular reference — reading our own Created record as "baseline").
     //
-    //    Important edge case: a previous task may have deleted the file, but a
-    //    later restore could already have brought it back. In that case the
-    //    live file_index is the fresher truth and must override the historical
-    //    tombstone-like Deleted record.
+    //    Both branches cross-check against file_index because restore
+    //    operations (undo_task / undo_file / undo_directory) tombstone
+    //    file_index but do NOT delete change records:
+    //    - Deleted branch: file_index live row means a restore brought
+    //      the file back → existed=true.
+    //    - Non-Deleted branch: file_index tombstone means a restore
+    //      removed the file since this change was recorded → existed=false.
     if let Ok(Some(prev)) = db.get_latest_change_for_file_excluding_task(file_path, task_id) {
         return match prev.change_type {
             ChangeType::Deleted => resolve_live_file_index_baseline_with_store(
@@ -142,10 +153,17 @@ pub fn resolve_baseline_with_objects_root(
                     existed: false,
                     hash: None,
                 }),
-            _ => Baseline {
-                existed: true,
-                hash: prev.new_hash.or(prev.old_hash),
-            },
+            _ => {
+                if let Ok(Some(entry)) = db.get_file_index_entry(&path_str) {
+                    if !entry.exists_now {
+                        return Baseline { existed: false, hash: None };
+                    }
+                }
+                Baseline {
+                    existed: true,
+                    hash: prev.new_hash.or(prev.old_hash),
+                }
+            }
         };
     }
 

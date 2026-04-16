@@ -2548,6 +2548,70 @@ pub async fn uninstall_tool_hook(tool_id: String) -> Result<(), String> {
     rew_core::hooks::uninstall_hook(&tool_id, &rew_bin)
 }
 
+/// Manually stop an active AI task from the frontend.
+///
+/// Performs the exact same sequence as `hook stop`:
+/// 1. Mark task as Completed
+/// 2. Deactivate all sessions for this task
+/// 3. Delete stop guards for each session
+/// 4. Delete pre-tool hash directories for each session
+/// 5. Enqueue task finalization (reconcile + summary + stats)
+#[tauri::command]
+pub async fn stop_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    // Verify task exists and is active
+    let task = db
+        .get_task(&task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Task {} not found", task_id))?;
+
+    if !matches!(task.status, rew_core::types::TaskStatus::Active) {
+        return Err(format!("Task {} is not active (status: {:?})", task_id, task.status));
+    }
+
+    // Get all session keys associated with this task (for cleanup)
+    let session_keys = db
+        .get_session_ids_for_task(&task_id)
+        .map_err(|e| e.to_string())?;
+
+    // 1. Mark task as Completed
+    let now = chrono::Utc::now();
+    db.update_task_status(&task_id, &rew_core::types::TaskStatus::Completed, Some(now))
+        .map_err(|e| e.to_string())?;
+
+    // 2. Deactivate all sessions
+    db.deactivate_sessions_for_task(&task_id)
+        .map_err(|e| e.to_string())?;
+
+    // 3 & 4. Clean up stop guards and pre-tool hashes for each session
+    for key in &session_keys {
+        let _ = db.delete_stop_guard(key);
+        let _ = rew_core::pre_tool_store::delete_pre_tool_hashes_for_session(key);
+    }
+
+    // 5. Enqueue finalization
+    let event_id = format!("manual-stop:{}", task_id);
+    db.enqueue_task_finalization(&task_id, Some(&event_id))
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend
+    let _ = app.emit(
+        "task-updated",
+        serde_json::json!({
+            "task_id": task_id,
+            "status": "completed",
+            "stopped_by": "user",
+        }),
+    );
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

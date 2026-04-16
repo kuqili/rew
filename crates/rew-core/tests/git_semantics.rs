@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,10 +29,11 @@ struct GitRepoEnv {
 
 impl GitRepoEnv {
     fn new() -> Self {
-        // Use the OS temp directory instead of a workspace-local path because
-        // some sandboxed environments reject git's writes under nested repo
-        // paths inside the workspace target directory.
-        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = std::env::current_dir().unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("rew-git-semantics-")
+            .tempdir_in(workspace_root)
+            .unwrap();
         let repo_root = dir.path().join("repo");
         let empty_template = dir.path().join("empty-git-template");
         fs::create_dir_all(&repo_root).unwrap();
@@ -150,6 +152,24 @@ impl GitRepoEnv {
         );
     }
 
+    fn git_rev_parse(&self, rev: &str) -> String {
+        self.git_stdout(&["rev-parse", rev]).trim().to_string()
+    }
+
+    fn git_current_branch(&self) -> String {
+        self.git_stdout(&["rev-parse", "--abbrev-ref", "HEAD"])
+            .trim()
+            .to_string()
+    }
+
+    fn git_checkout(&self, target: &str) {
+        self.git_stdout(&["checkout", "-q", target]);
+    }
+
+    fn git_checkout_new_branch(&self, branch: &str) {
+        self.git_stdout(&["checkout", "-q", "-b", branch]);
+    }
+
     fn git_tracked_files(&self) -> Vec<String> {
         self.git_stdout(&["ls-files"])
             .lines()
@@ -178,12 +198,60 @@ impl GitRepoEnv {
         }
     }
 
-    fn setup_baseline(&self, files: &[(&str, &str)]) {
+    fn setup_baseline(&self, files: &[(&str, &str)]) -> String {
         for (rel, content) in files {
             self.write(rel, content);
         }
         self.git_commit_all("baseline");
         self.seed_baseline_from_git();
+        self.git_rev_parse("HEAD")
+    }
+
+    fn snapshot_tracked_files(&self) -> BTreeMap<String, Vec<u8>> {
+        let mut snapshot = BTreeMap::new();
+        for rel in self.git_tracked_files() {
+            let path = self.path(&rel);
+            if let Ok(bytes) = fs::read(&path) {
+                snapshot.insert(rel, bytes);
+            }
+        }
+        snapshot
+    }
+
+    fn checkout_branch_events(&self, target: &str) -> Vec<(String, FileEventKind)> {
+        let before = self.snapshot_tracked_files();
+        self.git_checkout(target);
+        let after = self.snapshot_tracked_files();
+
+        let all_paths: BTreeSet<String> = before
+            .keys()
+            .chain(after.keys())
+            .cloned()
+            .collect();
+
+        let mut events = Vec::new();
+        for rel in all_paths {
+            match (before.get(&rel), after.get(&rel)) {
+                (Some(old), Some(new)) if old != new => {
+                    events.push((rel, FileEventKind::Modified));
+                }
+                (Some(_), None) => {
+                    events.push((rel, FileEventKind::Deleted));
+                }
+                (None, Some(_)) => {
+                    events.push((rel, FileEventKind::Created));
+                }
+                _ => {}
+            }
+        }
+
+        events
+    }
+
+    fn checkout_branch_and_simulate(&self, target: &str) {
+        for (rel, kind) in self.checkout_branch_events(target) {
+            self.simulate_event(&rel, kind);
+        }
     }
 
     fn simulate_event(&self, rel: &str, event_kind: FileEventKind) {
@@ -338,6 +406,45 @@ impl GitRepoEnv {
         (added, removed)
     }
 
+    fn git_name_status_from_rev(&self, rev: &str) -> Vec<NormChange> {
+        self.git_stdout(&["diff", "--name-status", "-M", rev])
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|line| {
+                let parts: Vec<_> = line.split('\t').collect();
+                let code = parts[0];
+                let kind = code.chars().next().unwrap();
+                if kind == 'R' {
+                    NormChange {
+                        kind: 'R',
+                        old_path: Some(parts[1].to_string()),
+                        path: parts[2].to_string(),
+                    }
+                } else {
+                    NormChange {
+                        kind,
+                        old_path: None,
+                        path: parts[1].to_string(),
+                    }
+                }
+            })
+            .collect()
+    }
+
+    fn git_numstat_totals_from_rev(&self, rev: &str) -> (u32, u32) {
+        let mut added = 0u32;
+        let mut removed = 0u32;
+        for line in self.git_stdout(&["diff", "--numstat", "-M", rev]).lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let parts: Vec<_> = line.split('\t').collect();
+            added += parts[0].parse::<u32>().unwrap_or(0);
+            removed += parts[1].parse::<u32>().unwrap_or(0);
+        }
+        (added, removed)
+    }
+
     fn rew_norm_changes(&self, changes: &[Change]) -> Vec<NormChange> {
         changes
             .iter()
@@ -390,6 +497,18 @@ fn assert_git_aligned(env: &GitRepoEnv, rew_changes: &[Change]) {
         env.rew_numstat_totals(rew_changes),
         env.git_numstat_totals(),
         "rew line totals diverged from git numstat"
+    );
+}
+
+fn assert_git_aligned_to_rev(env: &GitRepoEnv, base_rev: &str, rew_changes: &[Change]) {
+    let git_name_status = sorted(env.git_name_status_from_rev(base_rev));
+    let rew_norm = sorted(env.rew_norm_changes(rew_changes));
+
+    assert_eq!(rew_norm, git_name_status, "rew final semantics diverged from git baseline diff");
+    assert_eq!(
+        env.rew_numstat_totals(rew_changes),
+        env.git_numstat_totals_from_rev(base_rev),
+        "rew line totals diverged from git baseline numstat"
     );
 }
 
@@ -589,4 +708,78 @@ fn git_copy_rename_then_delete() {
 
     let changes = env.finalize_rew();
     assert_git_aligned(&env, &changes);
+}
+
+#[test]
+fn git_checkout_branch_a_to_b_matches_baseline_diff() {
+    let env = GitRepoEnv::new();
+    let baseline_rev = env.setup_baseline(&[
+        ("shared.txt", "base\n"),
+        ("only-a.txt", "alpha-only\n"),
+    ]);
+    let base_branch = env.git_current_branch();
+
+    env.git_checkout_new_branch("branch-b");
+    env.write("shared.txt", "branch-b\n");
+    env.remove("only-a.txt");
+    env.write("only-b.txt", "branch-b-only\n");
+    env.git_commit_all("branch-b");
+    env.git_checkout(&base_branch);
+
+    env.checkout_branch_and_simulate("branch-b");
+
+    let changes = env.finalize_rew();
+    assert_git_aligned_to_rev(&env, &baseline_rev, &changes);
+}
+
+#[test]
+fn git_checkout_branch_a_to_b_to_a_is_net_zero() {
+    let env = GitRepoEnv::new();
+    env.setup_baseline(&[
+        ("shared.txt", "base\n"),
+        ("only-a.txt", "alpha-only\n"),
+    ]);
+    let base_branch = env.git_current_branch();
+
+    env.git_checkout_new_branch("branch-b");
+    env.write("shared.txt", "branch-b\n");
+    env.remove("only-a.txt");
+    env.write("only-b.txt", "branch-b-only\n");
+    env.git_commit_all("branch-b");
+    env.git_checkout(&base_branch);
+
+    env.checkout_branch_and_simulate("branch-b");
+    env.checkout_branch_and_simulate(&base_branch);
+
+    let changes = env.finalize_rew();
+    assert!(changes.is_empty(), "switching A -> B -> A should settle to net zero");
+}
+
+#[test]
+fn git_checkout_branch_a_to_b_to_c_matches_baseline_diff() {
+    let env = GitRepoEnv::new();
+    let baseline_rev = env.setup_baseline(&[
+        ("shared.txt", "base\n"),
+        ("only-a.txt", "alpha-only\n"),
+    ]);
+    let base_branch = env.git_current_branch();
+
+    env.git_checkout_new_branch("branch-b");
+    env.write("shared.txt", "branch-b\n");
+    env.remove("only-a.txt");
+    env.write("only-b.txt", "branch-b-only\n");
+    env.git_commit_all("branch-b");
+
+    env.git_checkout_new_branch("branch-c");
+    env.write("shared.txt", "branch-c\n");
+    env.remove("only-b.txt");
+    env.write("only-c.txt", "branch-c-only\n");
+    env.git_commit_all("branch-c");
+    env.git_checkout(&base_branch);
+
+    env.checkout_branch_and_simulate("branch-b");
+    env.checkout_branch_and_simulate("branch-c");
+
+    let changes = env.finalize_rew();
+    assert_git_aligned_to_rev(&env, &baseline_rev, &changes);
 }

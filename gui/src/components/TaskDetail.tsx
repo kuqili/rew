@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { RotateCcw, ChevronDown, ChevronRight, Clock } from "lucide-react";
+import { RotateCcw, ChevronDown, ChevronRight, Clock, StopCircle } from "lucide-react";
 import { useTaskChanges } from "../hooks/useTasks";
 import {
   type TaskInfo,
@@ -15,6 +15,7 @@ import {
   restoreFile,
   restoreDirectory,
   getChangeDiff,
+  stopTask,
 } from "../lib/tauri";
 import { timeAgo, fileName, dirName } from "../lib/format";
 import { getToolMeta } from "../lib/tools";
@@ -112,6 +113,8 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
   const [restoreProgress, setRestoreProgress] = useState<RestoreProgressInfo | null>(null);
   const [restoreOperations, setRestoreOperations] = useState<RestoreOperationInfo[]>([]);
   const [showRestoreHistory, setShowRestoreHistory] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
 
   // Which file is expanded to show diff (null = none)
   const [expandedFilePath, setExpandedFilePath] = useState<string | null>(null);
@@ -130,6 +133,8 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
     setDirRestoreError(null);
     setRestoreProgress(null);
     setRestoreOperations([]);
+    setConfirmStop(false);
+    setStopping(false);
   }, [taskId]);
 
   useEffect(() => {
@@ -152,6 +157,7 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
 
   const isWindow = isMonitoringWindow(task);
   const isRolledBack = task.status === "rolled-back";
+  const isActive = task.status === "active";
   const loadedAdded = changes.reduce((s, c) => s + c.lines_added, 0);
   const loadedRemoved = changes.reduce((s, c) => s + c.lines_removed, 0);
   const displayChangeCount = dirFilter ? totalCount : task.changes_count;
@@ -220,16 +226,78 @@ export default function TaskDetail({ taskId, dirFilter, onTaskUpdated, onBack }:
             )}
           </div>
 
-          {/* Restore button */}
-          {totalCount > 0 && (
-            <button
-              onClick={() => setShowRollback(true)}
-              className="flex items-center gap-2 px-4 py-1.5 bg-sys-blue text-white rounded-md text-[13px] font-medium hover:bg-sys-blue-hover transition-colors"
-            >
-              <RotateCcw className="w-[13px] h-[13px]" />
-              回到这一刻
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {(() => {
+              // Active task: no restore; show stop only after 20 min
+              if (isActive) {
+                const elapsed = Date.now() - new Date(task.started_at).getTime();
+                if (elapsed <= 20 * 60 * 1000) return null;
+
+                if (confirmStop) {
+                  return (
+                    <div className="flex flex-col items-end gap-1.5">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setConfirmStop(false)}
+                          className="px-3 py-1.5 rounded-md text-[13px] font-medium bg-[rgba(0,0,0,0.06)] text-t-2 hover:bg-[rgba(0,0,0,0.1)] transition-colors"
+                        >
+                          取消
+                        </button>
+                        <button
+                          disabled={stopping}
+                          onClick={async () => {
+                            setStopping(true);
+                            try {
+                              await stopTask(taskId);
+                              onTaskUpdated();
+                              getTask(taskId).then(setTask);
+                            } catch (err) {
+                              console.error("stop task failed:", err);
+                            } finally {
+                              setStopping(false);
+                              setConfirmStop(false);
+                            }
+                          }}
+                          className="flex items-center gap-2 px-4 py-1.5 rounded-md text-[13px] font-medium transition-colors disabled:opacity-50 bg-sys-red text-white hover:bg-sys-red/90 active:bg-sys-red/80"
+                        >
+                          <StopCircle className="w-[13px] h-[13px]" />
+                          {stopping ? "终止中..." : "确认终止"}
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-t-3 leading-tight max-w-[260px] text-right">
+                        请确认 AI 工具已停止运行，强行终止可能导致部分变更未被记录
+                      </p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <button
+                    onClick={() => setConfirmStop(true)}
+                    className="flex items-center gap-2 px-4 py-1.5 rounded-md text-[13px] font-medium transition-colors bg-[rgba(0,0,0,0.06)] text-t-2 hover:bg-[rgba(0,0,0,0.1)] active:bg-[rgba(0,0,0,0.14)]"
+                  >
+                    <StopCircle className="w-[13px] h-[13px]" />
+                    终止任务
+                  </button>
+                );
+              }
+
+              // Completed task with changes: show restore button
+              if (totalCount > 0) {
+                return (
+                  <button
+                    onClick={() => setShowRollback(true)}
+                    className="flex items-center gap-2 px-4 py-1.5 bg-sys-blue text-white rounded-md text-[13px] font-medium hover:bg-sys-blue-hover transition-colors"
+                  >
+                    <RotateCcw className="w-[13px] h-[13px]" />
+                    回到这一刻
+                  </button>
+                );
+              }
+
+              return null;
+            })()}
+          </div>
         </div>
       </div>
 

@@ -76,6 +76,14 @@ fn table_exists(conn: &Connection, table: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// Returns true if the attribution originates from the AI hook pipeline.
+/// Both "hook" (native file tools like Write/Delete) and "bash_predicted"
+/// (shell/Bash tools) are hook-sourced and share the same protection semantics
+/// against daemon FSEvent overwrites.
+fn is_hook_source(attr: &str) -> bool {
+    attr == "hook" || attr == "bash_predicted"
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -1289,18 +1297,24 @@ impl Database {
             let incoming_attr = change.attribution.as_deref().unwrap_or("unknown");
             let existing_attr = existing_attribution.as_deref().unwrap_or("unknown");
 
-            // Priority: hook > fsevent_active > fsevent_grace > monitoring > unknown.
-            // If existing record was written by hook, daemon writes must not
-            // overwrite the diff/stats/attribution (hook data is more precise).
-            if existing_attr == "hook" && incoming_attr != "hook" {
+            // Priority: hook-source > fsevent_active > fsevent_grace > monitoring > unknown.
+            // Both "hook" (native file tools) and "bash_predicted" (shell tools)
+            // originate from AI hook pipeline and must be protected from daemon
+            // FSEvent overwrites — they carry more precise baseline/diff info.
+            if is_hook_source(existing_attr) && !is_hook_source(incoming_attr) {
                 return Ok(existing_id);
             }
 
-            let preserved_old_hash = if incoming_attr == "hook" {
-                // hook always provides the correct old_hash via get_task_file_old_hash
+            let preserved_old_hash = if is_hook_source(incoming_attr) {
+                // Hook/bash_predicted has authoritative baseline info;
+                // its old_hash wins, falling back to existing if absent.
                 change.old_hash.clone().or(existing_old_hash)
             } else {
-                existing_old_hash.or(change.old_hash.clone())
+                // Non-hook (daemon FSEvent): existing old_hash is
+                // authoritative. Never promote from None → Some, because
+                // None means "file didn't exist before this task" and no
+                // daemon event should change that determination.
+                existing_old_hash
             };
 
             self.conn.execute(
@@ -2147,6 +2161,19 @@ impl Database {
             params![session_id],
             |row| row.get::<_, String>(0),
         ).optional()?;
+        Ok(result)
+    }
+
+    /// Get all session_ids associated with a task (including already deactivated ones).
+    pub fn get_session_ids_for_task(&self, task_id: &str) -> RewResult<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id FROM active_sessions WHERE task_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![task_id], |row| row.get::<_, String>(0))?;
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r?);
+        }
         Ok(result)
     }
 

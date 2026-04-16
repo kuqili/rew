@@ -3,9 +3,8 @@
 //! The EventProcessor receives raw `FileEvent`s from the watcher and:
 //! 1. Deduplicates same-path, same-kind events within the window
 //! 2. Aggregates events into `EventBatch`es at configurable intervals (default 30s)
-//! 3. Implements dynamic filter pausing:
-//!    - `package.json`/`Cargo.toml` changes -> pause `node_modules`/`target` filtering for 60s
-//!    - `.git/HEAD` changes -> pause all filtering for 10s
+//! 3. Implements dynamic filter pausing for package-manager side effects
+//!    (`package.json`/`Cargo.toml` changes -> pause `node_modules`/`target`)
 //! 4. Computes batch statistics (files added/modified/deleted + sizes)
 
 use crate::types::{EventBatch, FileEvent, FileEventKind};
@@ -23,7 +22,10 @@ pub struct ProcessorConfig {
     pub window_duration: Duration,
     /// How long to pause node_modules/target filtering after package.json/Cargo.toml change
     pub package_pause_duration: Duration,
-    /// How long to pause all filtering after .git/HEAD change
+    /// Reserved for backward compatibility.
+    ///
+    /// Git worktree changes are no longer globally paused on `.git/HEAD`
+    /// updates; `.git/**` noise is filtered earlier by the path filter.
     pub git_pause_duration: Duration,
 }
 
@@ -85,23 +87,13 @@ fn path_contains(event: &FileEvent, component: &str) -> bool {
 struct PauseState {
     /// When package-related pause expires (node_modules/target ignored)
     package_pause_until: Option<Instant>,
-    /// When git-related pause expires (global pause)
-    git_pause_until: Option<Instant>,
 }
 
 impl PauseState {
     fn new() -> Self {
         Self {
             package_pause_until: None,
-            git_pause_until: None,
         }
-    }
-
-    /// Check if we're in a global pause (git HEAD change detected).
-    fn is_globally_paused(&self) -> bool {
-        self.git_pause_until
-            .map(|t| Instant::now() < t)
-            .unwrap_or(false)
     }
 
     /// Check if package-related directories should be paused.
@@ -117,16 +109,6 @@ impl PauseState {
         self.package_pause_until = Some(until);
         info!(
             "Dynamic pause activated: package dirs paused for {}s",
-            duration.as_secs()
-        );
-    }
-
-    /// Trigger global pause (.git/HEAD changed).
-    fn trigger_git_pause(&mut self, duration: Duration) {
-        let until = Instant::now() + duration;
-        self.git_pause_until = Some(until);
-        info!(
-            "Dynamic pause activated: global pause for {}s",
             duration.as_secs()
         );
     }
@@ -223,18 +205,16 @@ mod merge_logic_tests {
             },
             &mut pause,
             Duration::from_secs(60),
-            Duration::from_secs(10),
         );
 
         assert!(pause.is_package_paused());
-        assert!(!pause.is_globally_paused());
         assert!(processor.should_drop_during_pause(&event("/tmp/project/node_modules/a.js"), &pause));
         assert!(processor.should_drop_during_pause(&event("/tmp/project/target/a.o"), &pause));
         assert!(!processor.should_drop_during_pause(&event("/tmp/project/src/main.rs"), &pause));
     }
 
     #[test]
-    fn dynamic_pause_git_head_is_global() {
+    fn git_head_no_longer_triggers_global_pause() {
         let processor = EventProcessor::with_defaults();
         let mut pause = PauseState::new();
         processor.check_dynamic_triggers(
@@ -246,12 +226,10 @@ mod merge_logic_tests {
             },
             &mut pause,
             Duration::from_secs(60),
-            Duration::from_secs(10),
         );
 
-        assert!(pause.is_globally_paused());
-        assert!(processor.should_drop_during_pause(&event("/tmp/project/src/main.rs"), &pause));
-        assert!(processor.should_drop_during_pause(&event("/tmp/project/node_modules/a.js"), &pause));
+        assert!(!processor.should_drop_during_pause(&event("/tmp/project/src/main.rs"), &pause));
+        assert!(!processor.should_drop_during_pause(&event("/tmp/project/node_modules/a.js"), &pause));
     }
 }
 
@@ -324,7 +302,6 @@ impl EventProcessor {
     ) {
         let window = self.config.window_duration;
         let package_pause = self.config.package_pause_duration;
-        let git_pause = self.config.git_pause_duration;
 
         let mut event_map: HashMap<DeduplicationKey, FileEvent> = HashMap::new();
         let mut pause_state = PauseState::new();
@@ -344,7 +321,7 @@ impl EventProcessor {
                             let drop = self.should_drop_during_pause(&file_event, &pause_state);
 
                             // Check if this event triggers dynamic pauses (for future events)
-                            self.check_dynamic_triggers(&file_event, &mut pause_state, package_pause, git_pause);
+                            self.check_dynamic_triggers(&file_event, &mut pause_state, package_pause);
 
                             // Should we drop this event due to pause?
                             if drop {
@@ -414,7 +391,6 @@ impl EventProcessor {
         event: &FileEvent,
         pause_state: &mut PauseState,
         package_pause: Duration,
-        git_pause: Duration,
     ) {
         let file_name = event_file_name(event);
 
@@ -428,20 +404,10 @@ impl EventProcessor {
         {
             pause_state.trigger_package_pause(package_pause);
         }
-
-        // .git/HEAD changed -> global pause
-        if path_contains(event, ".git") && file_name == "HEAD" {
-            pause_state.trigger_git_pause(git_pause);
-        }
     }
 
     /// Check if an event should be dropped due to dynamic pause.
     fn should_drop_during_pause(&self, event: &FileEvent, pause_state: &PauseState) -> bool {
-        // Global pause drops everything
-        if pause_state.is_globally_paused() {
-            return true;
-        }
-
         // Package pause only drops node_modules and target
         if pause_state.is_package_paused()
             && (path_contains(event, "node_modules") || path_contains(event, "/target/"))
@@ -470,7 +436,11 @@ impl EventProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
+    use tempfile::TempDir;
     use tokio::time::timeout;
 
     fn make_event(path: &str, kind: FileEventKind) -> FileEvent {
@@ -479,6 +449,160 @@ mod tests {
             kind,
             timestamp: Utc::now(),
             size_bytes: Some(100),
+        }
+    }
+
+    struct GitSwitchEnv {
+        _dir: TempDir,
+        repo_root: PathBuf,
+    }
+
+    impl GitSwitchEnv {
+        fn new() -> Self {
+            let workspace_root = std::env::current_dir().unwrap();
+            let dir = tempfile::Builder::new()
+                .prefix("rew-git-processor-")
+                .tempdir_in(workspace_root)
+                .unwrap();
+            let repo_root = dir.path().join("repo");
+            let empty_template = dir.path().join("empty-git-template");
+            fs::create_dir_all(&repo_root).unwrap();
+            fs::create_dir_all(&empty_template).unwrap();
+
+            let status = Command::new("git")
+                .arg("init")
+                .arg("-q")
+                .arg(format!("--template={}", empty_template.to_string_lossy()))
+                .current_dir(&repo_root)
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            let _ = Command::new("git")
+                .args(["config", "user.email", "rew-tests@example.com"])
+                .current_dir(&repo_root)
+                .status();
+            let _ = Command::new("git")
+                .args(["config", "user.name", "rew tests"])
+                .current_dir(&repo_root)
+                .status();
+
+            Self { _dir: dir, repo_root }
+        }
+
+        fn path(&self, rel: &str) -> PathBuf {
+            self.repo_root.join(rel)
+        }
+
+        fn write(&self, rel: &str, content: &str) {
+            let path = self.path(rel);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, content).unwrap();
+        }
+
+        fn remove(&self, rel: &str) {
+            let _ = fs::remove_file(self.path(rel));
+        }
+
+        fn git_stdout(&self, args: &[&str]) -> String {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&self.repo_root)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        }
+
+        fn git_commit_all(&self, message: &str) {
+            self.git_stdout(&["add", "-A"]);
+            self.git_stdout(&["commit", "--allow-empty", "-qm", message]);
+        }
+
+        fn git_current_branch(&self) -> String {
+            self.git_stdout(&["rev-parse", "--abbrev-ref", "HEAD"])
+                .trim()
+                .to_string()
+        }
+
+        fn git_checkout(&self, target: &str) {
+            self.git_stdout(&["checkout", "-q", target]);
+        }
+
+        fn git_checkout_new_branch(&self, branch: &str) {
+            self.git_stdout(&["checkout", "-q", "-b", branch]);
+        }
+
+        fn tracked_snapshot(&self) -> BTreeMap<String, Vec<u8>> {
+            let mut snapshot = BTreeMap::new();
+            for rel in self
+                .git_stdout(&["ls-files"])
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+            {
+                snapshot.insert(rel.to_string(), fs::read(self.path(rel)).unwrap());
+            }
+            snapshot
+        }
+
+        fn checkout_events(&self, target: &str) -> Vec<FileEvent> {
+            let before = self.tracked_snapshot();
+            self.git_checkout(target);
+            let after = self.tracked_snapshot();
+
+            let all_paths: BTreeSet<String> = before
+                .keys()
+                .chain(after.keys())
+                .cloned()
+                .collect();
+
+            let mut events = Vec::new();
+            for rel in all_paths {
+                match (before.get(&rel), after.get(&rel)) {
+                    (Some(old), Some(new)) if old != new => {
+                        events.push(FileEvent {
+                            path: self.path(&rel),
+                            kind: FileEventKind::Modified,
+                            timestamp: Utc::now(),
+                            size_bytes: Some(new.len() as u64),
+                        });
+                    }
+                    (Some(old), None) => {
+                        events.push(FileEvent {
+                            path: self.path(&rel),
+                            kind: FileEventKind::Deleted,
+                            timestamp: Utc::now(),
+                            size_bytes: Some(old.len() as u64),
+                        });
+                    }
+                    (None, Some(new)) => {
+                        events.push(FileEvent {
+                            path: self.path(&rel),
+                            kind: FileEventKind::Created,
+                            timestamp: Utc::now(),
+                            size_bytes: Some(new.len() as u64),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+
+            events.push(FileEvent {
+                path: self.path(".git/HEAD"),
+                kind: FileEventKind::Modified,
+                timestamp: Utc::now(),
+                size_bytes: None,
+            });
+
+            events
         }
     }
 
@@ -675,7 +799,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dynamic_pause_git_head() {
+    async fn test_git_head_does_not_pause_worktree_events() {
         let config = ProcessorConfig {
             window_duration: Duration::from_millis(200),
             git_pause_duration: Duration::from_secs(2),
@@ -689,7 +813,7 @@ mod tests {
             processor.run(event_rx, batch_tx).await;
         });
 
-        // Trigger .git/HEAD change -> global pause
+        // `.git/HEAD` should no longer trigger a global pause.
         event_tx
             .send(make_event("/project/.git/HEAD", FileEventKind::Modified))
             .unwrap();
@@ -697,7 +821,7 @@ mod tests {
         // Small delay
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        // All events should be dropped during global pause
+        // Worktree events should continue to flow through.
         event_tx
             .send(make_event("/project/src/main.rs", FileEventKind::Modified))
             .unwrap();
@@ -705,18 +829,151 @@ mod tests {
             .send(make_event("/project/README.md", FileEventKind::Modified))
             .unwrap();
 
-        // First batch: only the .git/HEAD event
+        // First batch should include both `.git/HEAD` and worktree events.
         let result = timeout(Duration::from_secs(2), batch_rx.recv()).await;
         assert!(result.is_ok());
         let (batch, _stats) = result.unwrap().unwrap();
-        assert_eq!(batch.events.len(), 1);
-        assert!(batch.events[0]
-            .path
-            .to_string_lossy()
-            .contains(".git/HEAD"));
+        let paths: Vec<String> = batch
+            .events
+            .iter()
+            .map(|e| e.path.to_string_lossy().to_string())
+            .collect();
+        assert!(paths.iter().any(|p| p.contains(".git/HEAD")));
+        assert!(paths.iter().any(|p| p.contains("/project/src/main.rs")));
+        assert!(paths.iter().any(|p| p.contains("/project/README.md")));
 
         drop(event_tx);
         let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_git_branch_roundtrip_does_not_drop_second_switch_events() {
+        let env = GitSwitchEnv::new();
+        env.write("shared.txt", "base\n");
+        env.write("only-a.txt", "alpha-only\n");
+        env.git_commit_all("baseline");
+        let base_branch = env.git_current_branch();
+
+        env.git_checkout_new_branch("branch-b");
+        env.write("shared.txt", "branch-b\n");
+        env.remove("only-a.txt");
+        env.write("only-b.txt", "branch-b-only\n");
+        env.git_commit_all("branch-b");
+        env.git_checkout(&base_branch);
+
+        let first_switch_events = env.checkout_events("branch-b");
+        let second_switch_events = env.checkout_events(&base_branch);
+
+        let config = ProcessorConfig {
+            window_duration: Duration::from_millis(80),
+            git_pause_duration: Duration::from_secs(2),
+            ..Default::default()
+        };
+        let processor = EventProcessor::new(config);
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (batch_tx, mut batch_rx) = mpsc::channel(10);
+
+        let handle = tokio::spawn(async move {
+            processor.run(event_rx, batch_tx).await;
+        });
+
+        for event in first_switch_events {
+            event_tx.send(event).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(140)).await;
+
+        for event in second_switch_events {
+            event_tx.send(event).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(140)).await;
+        drop(event_tx);
+
+        let mut batches = Vec::new();
+        while let Ok(Some((batch, _))) = timeout(Duration::from_millis(250), batch_rx.recv()).await {
+            batches.push(batch);
+        }
+        let _ = handle.await;
+
+        let all_events: Vec<FileEvent> = batches
+            .iter()
+            .flat_map(|batch| batch.events.clone())
+            .collect();
+        let paths: Vec<String> = all_events
+            .iter()
+            .map(|e| e.path.to_string_lossy().to_string())
+            .collect();
+
+        assert!(
+            batches.len() >= 2,
+            "processor should emit a second batch for the switch back to A, got {:?}",
+            paths
+        );
+    }
+
+    #[tokio::test]
+    async fn test_git_branch_a_to_b_to_c_does_not_drop_second_switch_events() {
+        let env = GitSwitchEnv::new();
+        env.write("shared.txt", "base\n");
+        env.write("only-a.txt", "alpha-only\n");
+        env.git_commit_all("baseline");
+        let base_branch = env.git_current_branch();
+
+        env.git_checkout_new_branch("branch-b");
+        env.write("shared.txt", "branch-b\n");
+        env.remove("only-a.txt");
+        env.write("only-b.txt", "branch-b-only\n");
+        env.git_commit_all("branch-b");
+
+        env.git_checkout_new_branch("branch-c");
+        env.write("shared.txt", "branch-c\n");
+        env.remove("only-b.txt");
+        env.write("only-c.txt", "branch-c-only\n");
+        env.git_commit_all("branch-c");
+        env.git_checkout(&base_branch);
+
+        let first_switch_events = env.checkout_events("branch-b");
+        let second_switch_events = env.checkout_events("branch-c");
+
+        let config = ProcessorConfig {
+            window_duration: Duration::from_millis(80),
+            git_pause_duration: Duration::from_secs(2),
+            ..Default::default()
+        };
+        let processor = EventProcessor::new(config);
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (batch_tx, mut batch_rx) = mpsc::channel(10);
+
+        let handle = tokio::spawn(async move {
+            processor.run(event_rx, batch_tx).await;
+        });
+
+        for event in first_switch_events {
+            event_tx.send(event).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(140)).await;
+
+        for event in second_switch_events {
+            event_tx.send(event).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(140)).await;
+        drop(event_tx);
+
+        let mut all_events = Vec::new();
+        while let Ok(Some((batch, _))) = timeout(Duration::from_millis(250), batch_rx.recv()).await {
+            all_events.extend(batch.events);
+        }
+        let _ = handle.await;
+
+        let paths: Vec<String> = all_events
+            .iter()
+            .map(|e| e.path.to_string_lossy().to_string())
+            .collect();
+
+        assert!(
+            paths.iter().any(|p| p.ends_with("/only-c.txt")),
+            "processor should preserve second switch to branch C, got {:?}",
+            paths
+        );
     }
 
     #[tokio::test]

@@ -95,6 +95,7 @@ pub fn run() {
             commands::detect_ai_tools,
             commands::install_tool_hook,
             commands::uninstall_tool_hook,
+            commands::stop_task,
             // Task statistics
             commands::get_task_stats,
             commands::get_insights,
