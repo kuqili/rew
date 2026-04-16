@@ -300,6 +300,18 @@ fn extract_tool_path_and_command(
     (file_path, command)
 }
 
+fn is_shell_separator(token: &str) -> bool {
+    matches!(token, "&&" | "||" | "|" | ";")
+}
+
+fn segment_end(tokens: &[&str], start: usize) -> usize {
+    let mut idx = start;
+    while idx < tokens.len() && !is_shell_separator(tokens[idx]) {
+        idx += 1;
+    }
+    idx
+}
+
 /// Parse a shell command and predict which file paths it might write to.
 ///
 /// Recognizes common patterns: redirects (>/>>/tee), cp/mv targets,
@@ -325,6 +337,11 @@ fn predict_bash_file_paths(cmd: &str, cwd: Option<&str>) -> Vec<PathBuf> {
     let mut i = 0;
     while i < tokens.len() {
         let t = tokens[i];
+        if is_shell_separator(t) {
+            i += 1;
+            continue;
+        }
+        let seg_end = segment_end(&tokens, i);
 
         // Redirect: cmd > file  or  cmd >> file
         if (t == ">" || t == ">>") && i + 1 < tokens.len() {
@@ -333,7 +350,7 @@ fn predict_bash_file_paths(cmd: &str, cwd: Option<&str>) -> Vec<PathBuf> {
             continue;
         }
         // Inline redirect: >file or >>file
-        if (t.starts_with(">>") || t.starts_with('>')) && t.len() > 2 {
+        if (t.starts_with(">>") && t.len() > 2) || (t.starts_with('>') && t.len() > 1) {
             let file = t.trim_start_matches('>');
             if !file.is_empty() {
                 paths.push(resolve(file));
@@ -341,21 +358,24 @@ fn predict_bash_file_paths(cmd: &str, cwd: Option<&str>) -> Vec<PathBuf> {
         }
 
         // cp/mv: last argument is the destination
-        if (t == "cp" || t == "mv") && i + 2 < tokens.len() {
-            let last = tokens[tokens.len() - 1];
+        if (t == "cp" || t == "mv") && i + 2 < seg_end {
+            let last = tokens[i + 1..seg_end]
+                .iter()
+                .rev()
+                .find(|arg| !arg.starts_with('-'))
+                .copied()
+                .unwrap_or("");
             if !last.starts_with('-') {
                 paths.push(resolve(last));
             }
-            break;
+            i = seg_end;
+            continue;
         }
 
         // rm/rmdir/trash: all non-flag arguments are deletion targets
         if t == "rm" || t == "rmdir" || t == "trash" {
             let mut after_double_dash = false;
-            for arg in &tokens[i + 1..] {
-                if matches!(*arg, "&&" | "||" | "|" | ";") {
-                    break;
-                }
+            for arg in &tokens[i + 1..seg_end] {
                 if after_double_dash {
                     paths.push(resolve(arg));
                     continue;
@@ -369,50 +389,71 @@ fn predict_bash_file_paths(cmd: &str, cwd: Option<&str>) -> Vec<PathBuf> {
                 }
                 paths.push(resolve(arg));
             }
-            break;
+            i = seg_end;
+            continue;
         }
 
         // tee file
         if t == "tee" && i + 1 < tokens.len() {
-            for arg in &tokens[i + 1..] {
+            for arg in &tokens[i + 1..seg_end] {
                 if !arg.starts_with('-') {
                     paths.push(resolve(arg));
                 }
             }
-            break;
+            i = seg_end;
+            continue;
         }
 
         // sed -i
         if t == "sed" {
-            let has_inplace = tokens[i..].iter().any(|a| *a == "-i" || a.starts_with("-i'") || a.starts_with("-i\""));
+            let has_inplace = tokens[i..seg_end]
+                .iter()
+                .any(|a| *a == "-i" || a.starts_with("-i'") || a.starts_with("-i\""));
             if has_inplace {
-                if let Some(last) = tokens.last() {
+                if let Some(last) = tokens[i..seg_end].iter().rev().copied().find(|a| {
+                    !a.starts_with('-') && !a.starts_with('s')
+                }) {
                     if !last.starts_with('-') && !last.starts_with('s') {
                         paths.push(resolve(last));
                     }
                 }
             }
-            break;
+            i = seg_end;
+            continue;
         }
 
         // touch / mkdir
         if t == "touch" {
-            for arg in &tokens[i + 1..] {
+            let mut after_double_dash = false;
+            for arg in &tokens[i + 1..seg_end] {
+                if after_double_dash {
+                    paths.push(resolve(arg));
+                    continue;
+                }
+                if *arg == "--" {
+                    after_double_dash = true;
+                    continue;
+                }
                 if !arg.starts_with('-') {
                     paths.push(resolve(arg));
                 }
             }
-            break;
+            i = seg_end;
+            continue;
         }
 
         // git checkout -- file
         if t == "git" && tokens.get(i + 1) == Some(&"checkout") {
-            if let Some(dash_pos) = tokens[i..].iter().position(|a| *a == "--") {
+            if let Some(dash_pos) = tokens[i..seg_end].iter().position(|a| *a == "--") {
                 for arg in &tokens[i + dash_pos + 1..] {
+                    if is_shell_separator(arg) {
+                        break;
+                    }
                     paths.push(resolve(arg));
                 }
             }
-            break;
+            i = seg_end;
+            continue;
         }
 
         i += 1;
@@ -514,14 +555,35 @@ pub fn handle_prompt(source: Option<&str>) -> RewResult<()> {
         conversation_id: input.conversation_id,
         generation_id,
     };
-    let envelope = HookEventEnvelope {
-        event_id: format!("prompt_{}", deterministic_event_id(&format!("{}:{}", tool_source, raw))),
-        idempotency_key: format!("prompt:{}:{}", effective_sid, deterministic_event_id(&raw)),
-        created_at: Utc::now().to_rfc3339(),
-        payload_version: 1,
-        payload: HookEventPayload::PromptStarted(payload.clone()),
-    };
+    let envelope = build_prompt_envelope(&tool_source, &effective_sid, &raw, payload.clone());
     persist_hook_envelope(&envelope)
+}
+
+fn build_prompt_envelope(
+    tool_source: &str,
+    effective_sid: &str,
+    raw: &str,
+    payload: PromptStartedPayload,
+) -> HookEventEnvelope {
+    // Prompt text can legitimately repeat in one session. Include created_at in
+    // identity so each prompt submission gets a distinct event/task while
+    // spool replays of the same envelope remain idempotent.
+    let created_at = Utc::now().to_rfc3339();
+    let identity = format!("{}:{}:{}", effective_sid, raw, created_at);
+    HookEventEnvelope {
+        event_id: format!(
+            "prompt_{}",
+            deterministic_event_id(&format!("{}:{}", tool_source, identity))
+        ),
+        idempotency_key: format!(
+            "prompt:{}:{}",
+            effective_sid,
+            deterministic_event_id(&identity)
+        ),
+        created_at,
+        payload_version: 1,
+        payload: HookEventPayload::PromptStarted(payload),
+    }
 }
 
 /// Handle `rew hook pre-tool` — called before AI executes a tool.
@@ -1123,6 +1185,21 @@ mod tests {
     }
 
     #[test]
+    fn predicted_shell_paths_ignore_connectors_and_echo_literals() {
+        let paths = predict_bash_file_paths(
+            r#"touch /Users/kuqili/Desktop/project/rew/test_temp.txt && echo "文件已创建" && sleep 5 && rm /Users/kuqili/Desktop/project/rew/test_temp.txt && echo "5秒后文件已删除""#,
+            Some("/Users/kuqili/Desktop/project/rew"),
+        );
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/Users/kuqili/Desktop/project/rew/test_temp.txt"),
+                PathBuf::from("/Users/kuqili/Desktop/project/rew/test_temp.txt"),
+            ]
+        );
+    }
+
+    #[test]
     fn session_keys_have_tool_source_prefix() {
         let claude = r#"{"session_id":"abc-123","cwd":"/tmp"}"#;
         assert_eq!(
@@ -1222,6 +1299,37 @@ mod tests {
         let normalized = normalize_post_tool(raw).expect("should parse response path fallback");
         assert_eq!(normalized.file_path.as_deref(), Some("/tmp/project/output.md"));
         assert_eq!(normalized.success, Some(true));
+    }
+
+    #[test]
+    fn repeated_same_prompt_generates_distinct_prompt_event_identity() {
+        let payload = PromptStartedPayload {
+            tool_source: "claude-code".to_string(),
+            session_key: "claude-code:same-session".to_string(),
+            prompt: Some("先创建一个文件，然后删除文件".to_string()),
+            cwd: Some("/tmp/project".to_string()),
+            model: None,
+            conversation_id: None,
+            generation_id: None,
+        };
+        let raw = r#"{"session_id":"same-session","prompt":"先创建一个文件，然后删除文件"}"#;
+
+        let first = build_prompt_envelope(
+            "claude-code",
+            "claude-code:same-session",
+            raw,
+            payload.clone(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = build_prompt_envelope(
+            "claude-code",
+            "claude-code:same-session",
+            raw,
+            payload,
+        );
+
+        assert_ne!(first.event_id, second.event_id);
+        assert_ne!(first.idempotency_key, second.idempotency_key);
     }
 
     #[test]
