@@ -96,6 +96,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: gui/pnpm-lock.yaml
 
+      - name: Install root dependencies (tauri CLI)
+        run: pnpm install
+
       - name: Install frontend dependencies
         run: pnpm install
         working-directory: gui
