@@ -417,3 +417,16 @@ export async function stopTask(taskId: string): Promise<void> {
 export async function getTaskStats(taskId: string): Promise<TaskStatsInfo | null> {
   return invoke<TaskStatsInfo | null>("get_task_stats", { taskId });
 }
+
+// === Batch Processing Progress ===
+
+export interface BatchProcessingProgress {
+  is_running: boolean;
+  task_id: string | null;
+  total_files: number;
+  processed_files: number;
+}
+
+export async function getBatchProgress(): Promise<BatchProcessingProgress> {
+  return invoke<BatchProcessingProgress>("get_batch_progress");
+}

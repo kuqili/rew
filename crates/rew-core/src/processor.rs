@@ -348,6 +348,30 @@ impl EventProcessor {
                             } else {
                                 event_map.insert(key, file_event);
                             }
+
+                            // Overflow protection: flush early if unique path count exceeds
+                            // the per-window cap. This prevents unbounded HashMap growth
+                            // when millions of unique files are deleted/created at once
+                            // (e.g. rm -rf node_modules with 1M files).
+                            // Early flush is safe: events are not dropped, just emitted sooner.
+                            const MAX_EVENTS_PER_WINDOW: usize = 30_000;
+                            if event_map.len() >= MAX_EVENTS_PER_WINDOW {
+                                let batch = self.flush_events(&mut event_map, window_start);
+                                let stats = BatchStats::from_batch(&batch);
+                                info!(
+                                    "EventBatch (overflow flush): {} events (added={}, modified={}, deleted={}, renamed={})",
+                                    batch.events.len(),
+                                    stats.files_added,
+                                    stats.files_modified,
+                                    stats.files_deleted,
+                                    stats.files_renamed,
+                                );
+                                if batch_tx.send((batch, stats)).await.is_err() {
+                                    warn!("Batch channel closed during overflow flush, processor shutting down");
+                                    return;
+                                }
+                                window_start = Utc::now();
+                            }
                         }
                         None => {
                             // Channel closed, flush remaining events and exit

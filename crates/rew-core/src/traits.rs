@@ -4,6 +4,7 @@
 //! on both macOS (APFS/FSEvents) and Windows (VSS/ReadDirectoryChanges).
 
 use crate::error::RewResult;
+use crate::processor::BatchStats;
 use crate::types::{AnomalySignal, EventBatch, FileEvent, RestoreJob, Snapshot};
 use std::path::Path;
 
@@ -79,7 +80,9 @@ pub trait StorageBackend: Send + Sync {
 /// Detects anomalous file operation patterns from event batches.
 pub trait AnomalyDetector: Send + Sync {
     /// Analyze an event batch and return any detected anomalies.
-    fn analyze(&self, batch: &EventBatch) -> Vec<AnomalySignal>;
+    /// `stats` contains pre-aggregated counts that allow O(1) short-circuit
+    /// checks in rules before iterating over individual events.
+    fn analyze(&self, batch: &EventBatch, stats: &BatchStats) -> Vec<AnomalySignal>;
 }
 
 /// Sends notifications to the user.

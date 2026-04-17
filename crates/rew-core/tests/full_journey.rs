@@ -11,6 +11,7 @@ use rew_core::config::RewConfig;
 use rew_core::db::Database;
 use rew_core::detector::RuleEngine;
 use rew_core::lifecycle;
+use rew_core::processor::BatchStats;
 use rew_core::traits::AnomalyDetector;
 use rew_core::types::*;
 use chrono::Utc;
@@ -109,7 +110,8 @@ fn test_full_journey_create_detect_restore() {
     let create_batch = make_batch(create_events);
 
     let rule_engine = RuleEngine::new(config.anomaly_rules.clone(), config.watch_dirs.clone());
-    let alerts = rule_engine.analyze(&create_batch);
+    let create_stats = BatchStats::from_batch(&create_batch);
+    let alerts = rule_engine.analyze(&create_batch, &create_stats);
     assert!(
         alerts.is_empty(),
         "File creation should not trigger anomaly, got {} alerts",
@@ -158,7 +160,8 @@ fn test_full_journey_create_detect_restore() {
     let delete_batch = make_batch(delete_events);
 
     let rule_engine2 = RuleEngine::new(config.anomaly_rules.clone(), config.watch_dirs.clone());
-    let alerts = rule_engine2.analyze(&delete_batch);
+    let delete_stats = BatchStats::from_batch(&delete_batch);
+    let alerts = rule_engine2.analyze(&delete_batch, &delete_stats);
     assert!(
         !alerts.is_empty(),
         "Bulk delete of 30 files should trigger anomaly"
@@ -272,7 +275,8 @@ fn test_anomaly_detection_bulk_delete_triggers_alert() {
         .collect();
 
     let batch = make_batch(events);
-    let alerts = rule_engine.analyze(&batch);
+    let stats = BatchStats::from_batch(&batch);
+    let alerts = rule_engine.analyze(&batch, &stats);
 
     assert!(!alerts.is_empty(), "25 file deletions should trigger alert");
     assert!(
@@ -299,7 +303,8 @@ fn test_anomaly_detection_root_dir_delete_critical() {
     }];
 
     let batch = make_batch(events);
-    let alerts = rule_engine.analyze(&batch);
+    let stats = BatchStats::from_batch(&batch);
+    let alerts = rule_engine.analyze(&batch, &stats);
 
     assert!(!alerts.is_empty(), "Root dir deletion should trigger alert");
     assert!(
@@ -328,7 +333,8 @@ fn test_anomaly_detection_sensitive_config_modified() {
     }];
 
     let batch = make_batch(events);
-    let alerts = rule_engine.analyze(&batch);
+    let stats = BatchStats::from_batch(&batch);
+    let alerts = rule_engine.analyze(&batch, &stats);
 
     assert!(!alerts.is_empty(), ".env modification should trigger alert");
     assert!(

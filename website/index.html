@@ -1,703 +1,987 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>rew — AI 时代的文件安全网</title>
-  <meta name="description" content="AI 每次改动你的文件，rew 自动存档。出错了？一键读档回到任意历史状态。不需要 Git，不需要任何命令。"/>
-  <meta property="og:title" content="rew — AI 时代的文件安全网"/>
-  <meta property="og:description" content="自动存档每一次 AI 改动，出错后一键读档还原。支持 Cursor、Claude Code、Codebuddy 等所有 AI 工具。"/>
-  <meta property="og:type" content="website"/>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="shared.css"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    /* ── Hero ── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #000000;
+      --fg: #ffffff;
+      --text-muted: #8a8f98;
+      --border: rgba(255, 255, 255, 0.1);
+      --border-hover: rgba(255, 255, 255, 0.2);
+      --card-bg: rgba(255, 255, 255, 0.03);
+      --accent: #ff453a; /* Apple Red */
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background-color: var(--bg);
+      color: var(--fg);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      overflow-x: hidden;
+    }
+
+    /* --- Navigation --- */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 24px 40px;
+      z-index: 100;
+      background: rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid transparent;
+      transition: border-color 0.3s;
+    }
+
+    nav.scrolled {
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 600;
+      font-size: 16px;
+      color: var(--fg);
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+
+    .nav-logo {
+      width: 24px;
+      height: 24px;
+      background: var(--fg);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--bg);
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 32px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+      color: var(--fg);
+    }
+
+    .nav-actions {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .btn {
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-muted);
+    }
+    .btn-ghost:hover {
+      color: var(--fg);
+    }
+
+    .btn-primary {
+      background: #ffffff;
+      color: #000000;
+      border: none;
+    }
+    .btn-primary:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--fg);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    /* --- Hero Section --- */
     .hero {
-      min-height: 100vh;
-      display: flex; align-items: center; justify-content: center;
+      padding: 180px 24px 100px;
       text-align: center;
+      max-width: 1200px;
+      margin: 0 auto;
       position: relative;
+      z-index: 1;
+    }
+
+    /* --- THREE.JS WEBGL BACKGROUND --- */
+    #webgl-container {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1100px;
       overflow: hidden;
-      padding: 140px 0 80px;
+      z-index: 0;
+      pointer-events: none;
+      background-color: var(--bg); /* Pure black base */
     }
-    .hero-glow {
-      position: absolute; top: -200px; left: 50%; transform: translateX(-50%);
-      width: 1200px; height: 800px; pointer-events: none;
-      background:
-        radial-gradient(ellipse at 50% 30%, rgba(255,107,53,.07) 0%, transparent 50%),
-        radial-gradient(ellipse at 30% 60%, rgba(167,139,250,.04) 0%, transparent 50%),
-        radial-gradient(ellipse at 70% 60%, rgba(96,165,250,.04) 0%, transparent 50%);
+
+    /* Ambient glow removed to keep pure black void */
+
+    /* Mask to fade out into pure black seamlessly */
+    .fade-out-mask {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(to bottom, transparent 40%, var(--bg) 100%);
+      pointer-events: none;
+      z-index: 2;
     }
-    .hero-content { position: relative; z-index: 1; max-width: 760px; margin: 0 auto; }
-    .hero-badge {
-      display: inline-flex; align-items: center; gap: 8px;
-      font-size: 12px; font-weight: 600;
-      color: var(--text-2);
-      margin-bottom: 32px;
-      padding: 6px 16px; border-radius: 100px;
-      background: rgba(255,255,255,.04);
-      border: 1px solid var(--border);
-      transition: border-color var(--transition);
+
+    /* The crucial Raycast Grain overlay - applied to the WHOLE hero background */
+    .grain-overlay {
+      position: absolute;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+      opacity: 0.08; /* Subtle matte feel, preserving deep blacks */
+      mix-blend-mode: overlay;
+      pointer-events: none;
+      z-index: 3;
     }
-    .hero-badge:hover { border-color: var(--border-hi); }
-    .hero-badge-dot {
-      width: 6px; height: 6px; border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 8px rgba(255,107,53,.4);
-    }
+
     .hero-title {
-      font-size: clamp(48px, 7vw, 80px);
-      font-weight: 900;
-      line-height: 1.05;
-      letter-spacing: -.04em;
-      color: var(--text);
+      font-size: 88px;
+      font-weight: 700;
+      letter-spacing: -0.05em;
+      line-height: 1;
       margin-bottom: 24px;
+      color: var(--fg);
+      text-shadow: 0 4px 40px rgba(0,0,0,0.8);
     }
-    .hero-title .accent {
-      background: var(--grad-text);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+
+    .hero-subtitle {
+      font-size: 21px;
+      color: #8a8f98;
+      max-width: 600px;
+      margin: 0 auto 40px;
+      line-height: 1.5;
+      font-weight: 400;
+      text-shadow: 0 2px 20px rgba(0,0,0,0.8);
     }
-    .hero-sub {
-      font-size: 18px; color: var(--text-2); line-height: 1.7;
-      max-width: 520px; margin: 0 auto 40px;
-    }
+
     .hero-actions {
-      display: flex; align-items: center; justify-content: center;
-      gap: 12px; flex-wrap: wrap;
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      margin-bottom: 80px;
     }
-    .hero-meta {
-      margin-top: 24px;
-      font-size: 13px; color: var(--text-3);
-      display: flex; align-items: center; justify-content: center;
-      gap: 16px; flex-wrap: wrap;
-    }
-    .hero-meta span { display: flex; align-items: center; gap: 4px; }
 
-    /* ── App Preview ── */
-    .preview-section {
-      padding: 0 0 120px;
-      position: relative;
+    /* --- Raycast-style Window Mockup --- */
+    .mockup-container {
+      perspective: 1200px;
+      margin-top: 60px;
+      display: flex;
+      justify-content: center;
+      animation: container-float 8s infinite alternate ease-in-out;
     }
-    .preview-frame {
-      max-width: 900px; margin: 0 auto;
-      background: var(--bg-2);
+
+    @keyframes container-float {
+      0% { transform: rotateY(1.5deg) rotateX(1deg) translateY(0); }
+      100% { transform: rotateY(-2.5deg) rotateX(-1deg) translateY(-16px); }
+    }
+
+    .rc-window {
+      width: 100%;
+      max-width: 760px;
+      background: rgba(20, 20, 20, 0.7);
+      backdrop-filter: blur(40px) saturate(150%);
+      -webkit-backdrop-filter: blur(40px) saturate(150%);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 16px;
+      box-shadow: 
+        0 0 0 1px rgba(0,0,0,0.5),
+        0 40px 80px rgba(0,0,0,0.8),
+        0 0 120px rgba(255,255,255,0.03);
+      text-align: left;
+      overflow: hidden;
+      transform: translateY(0);
+      transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .rc-window:hover {
+      transform: translateY(-8px);
+    }
+
+    .rc-search {
+      display: flex;
+      align-items: center;
+      padding: 24px 28px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      gap: 16px;
+    }
+
+    .rc-search-icon {
+      color: var(--text-muted);
+    }
+
+    .rc-input {
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--fg);
+      font-family: 'Inter', sans-serif;
+      font-size: 24px;
+      font-weight: 400;
+      width: 100%;
+      letter-spacing: -0.02em;
+    }
+    .rc-input::placeholder { color: var(--text-muted); }
+    
+    .typewriter-effect::after {
+      content: '|';
+      animation: blink 1s step-end infinite;
+      color: var(--accent);
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    .rc-list {
+      padding: 12px;
+    }
+
+    .rc-list-header {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      padding: 8px 16px;
+      margin-bottom: 4px;
+    }
+
+    /* Animation for the tasks inside to make them feel like rewinding */
+    .rc-list-items {
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .rc-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-radius: 10px;
+      margin-bottom: 4px;
+      transition: background 0.1s;
+      animation: rewind-item 4s infinite alternate ease-in-out;
+    }
+
+    .rc-item:nth-child(2) { animation-delay: 0.5s; }
+    .rc-item:nth-child(3) { animation-delay: 1s; }
+
+    @keyframes rewind-item {
+      0% { transform: translateY(0); opacity: 1; filter: blur(0); }
+      90% { transform: translateY(0); opacity: 1; filter: blur(0); }
+      100% { transform: translateY(4px) scale(0.99); opacity: 0.8; filter: blur(1px); }
+    }
+
+    .rc-item.active {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .rc-item-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .rc-icon-box {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .rc-icon-box.red { background: var(--accent); }
+    .rc-icon-box.gray { background: rgba(255, 255, 255, 0.1); }
+
+    .rc-item-content {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .rc-item-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--fg);
+    }
+
+    .rc-item.active .rc-item-title { color: var(--fg); }
+    .rc-item:not(.active) .rc-item-title { color: #cccccc; }
+
+    .rc-item-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .rc-shortcut {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+
+    .kbd {
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      padding: 3px 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+      box-shadow: 0 1px 1px rgba(0,0,0,0.2);
+    }
+
+    .rc-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 24px;
+      background: rgba(0, 0, 0, 0.3);
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .rc-footer-left {
+      display: flex;
+      gap: 16px;
+    }
+
+    .rc-action-hint {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* --- Bento Grid / Features --- */
+    .section {
+      padding: 120px 24px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .section-header {
+      text-align: left;
+      margin-bottom: 64px;
+    }
+
+    .section-title {
+      font-size: 40px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 16px;
+    }
+
+    .bento-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+    }
+
+    .bento-card {
+      background: var(--card-bg);
       border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      overflow: hidden;
-      box-shadow: 0 0 0 1px rgba(255,255,255,.03), var(--shadow-lg);
+      border-radius: 24px;
+      padding: 48px;
+      transition: border-color 0.3s, background 0.3s;
     }
-    .preview-titlebar {
-      height: 40px; background: rgba(255,255,255,.02);
-      border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; padding: 0 16px; gap: 8px;
+
+    .bento-card:hover {
+      border-color: var(--border-hover);
+      background: rgba(255, 255, 255, 0.04);
     }
-    .tb-dot { width: 12px; height: 12px; border-radius: 50%; }
-    .tb-close { background: #ff5f57; }
-    .tb-min { background: #febc2e; }
-    .tb-max { background: #28c840; }
-    .preview-title-text {
-      flex: 1; text-align: center;
-      font-size: 12px; color: var(--text-3); font-weight: 500;
+
+    .bento-icon {
+      margin-bottom: 24px;
+      color: var(--text-muted);
     }
-    .preview-body { display: grid; grid-template-columns: 48px 220px 1fr; min-height: 400px; }
-    @media (max-width: 700px) {
-      .preview-body { grid-template-columns: 40px 170px 1fr; min-height: 300px; }
+
+    .bento-title {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      letter-spacing: -0.01em;
     }
-    /* Rail */
-    .mock-rail {
-      background: rgba(255,255,255,.01);
-      border-right: 1px solid var(--border);
-      display: flex; flex-direction: column; align-items: center;
-      padding: 14px 0; gap: 4px;
+
+    .bento-desc {
+      font-size: 15px;
+      color: var(--text-muted);
+      line-height: 1.6;
     }
-    .rail-icon {
-      width: 32px; height: 32px; border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 14px; color: var(--text-3);
-      cursor: pointer; transition: all var(--transition);
+
+    .bento-card.full {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 64px;
     }
-    .rail-icon.active { background: var(--accent-soft); color: var(--accent); }
-    .rail-icon:hover:not(.active) { background: rgba(255,255,255,.04); }
-    /* Sidebar */
-    .mock-sidebar {
-      border-right: 1px solid var(--border);
-      background: rgba(255,255,255,.01);
-      display: flex; flex-direction: column;
-      overflow: hidden;
+
+    .bento-card.full .bento-content {
+      max-width: 480px;
     }
-    .ms-header { padding: 12px 12px 8px; border-bottom: 1px solid var(--border); }
-    .ms-title { font-size: 11px; font-weight: 700; color: var(--text-3); letter-spacing: .05em; text-transform: uppercase; margin-bottom: 8px; }
-    .ms-tab-row { display: flex; gap: 4px; }
-    .ms-tab {
-      padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
-      color: var(--text-3); cursor: pointer; transition: all var(--transition);
+
+    .stats-row {
+      display: flex;
+      gap: 48px;
+      margin-top: 32px;
     }
-    .ms-tab.active { background: var(--accent-soft); color: var(--accent); }
-    .ms-list { flex: 1; overflow: hidden; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
-    .ms-item {
-      padding: 8px 10px; border-radius: 8px; cursor: pointer;
-      display: flex; justify-content: space-between; align-items: center;
-      transition: background var(--transition);
+
+    .stat-item h4 {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--fg);
+      letter-spacing: -0.03em;
+      margin-bottom: 4px;
     }
-    .ms-item:hover { background: rgba(255,255,255,.03); }
-    .ms-item.active { background: var(--accent-soft); }
-    .ms-item-label { font-size: 11px; color: var(--text-2); }
-    .ms-item.active .ms-item-label { color: var(--accent); }
-    .ms-item-time { font-size: 10px; color: var(--text-3); }
-    .ms-item-badge {
-      font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
-      background: var(--accent-soft); color: var(--accent);
+
+    .stat-item p {
+      font-size: 14px;
+      color: var(--text-muted);
     }
-    /* Detail pane */
-    .mock-detail { background: transparent; display: flex; flex-direction: column; overflow: hidden; }
-    .md-header {
-      padding: 12px 14px; border-bottom: 1px solid var(--border);
-      display: flex; justify-content: space-between; align-items: center;
-    }
-    .md-task-name { font-size: 11px; font-weight: 700; color: var(--text-2); }
-    .md-actions { display: flex; gap: 4px; }
-    .md-action-btn {
-      padding: 4px 8px; border-radius: 6px; font-size: 10px; font-weight: 700;
-      background: var(--accent-soft); color: var(--accent); border: none; cursor: pointer;
-    }
-    .md-list { flex: 1; overflow: hidden; padding: 10px; display: flex; flex-direction: column; gap: 4px; }
-    .md-file {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 6px 10px; border-radius: 6px; background: rgba(255,255,255,.02);
+
+    /* --- CLI Install Section --- */
+    .cli-box {
+      background: #0a0a0a;
       border: 1px solid var(--border);
-    }
-    .md-file-name { font-size: 11px; color: var(--text-2); font-family: 'SF Mono','Menlo',monospace; }
-    .md-file-tag { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
-    .tag-mod { background: rgba(255,107,53,.08); color: var(--accent); }
-    .tag-add { background: rgba(52,211,153,.08); color: var(--green); }
-    .tag-del { background: rgba(248,113,113,.08); color: var(--red); }
-    .md-restore-row {
-      margin: 8px 10px 10px; padding: 8px 12px; border-radius: 8px;
-      background: var(--accent-soft); border: 1px solid var(--accent-border);
-      display: flex; align-items: center; justify-content: space-between;
-    }
-    .md-restore-label { font-size: 10px; color: var(--text-2); }
-    .md-restore-btn {
-      font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 6px;
-      background: var(--accent); color: #fff; border: none; cursor: pointer;
-    }
-
-    /* ── Three Pillars ── */
-    .pillars-grid {
-      display: grid; grid-template-columns: repeat(3, 1fr);
-      gap: 1px; margin-top: 64px;
-      background: var(--border);
-      border-radius: var(--radius-lg);
-      overflow: hidden;
-    }
-    @media (max-width: 768px) { .pillars-grid { grid-template-columns: 1fr; } }
-    .pillar {
-      padding: 48px 36px;
-      background: var(--bg);
-      transition: background var(--transition);
-    }
-    .pillar:hover { background: rgba(255,255,255,.02); }
-    .pillar-num {
-      font-size: 11px; font-weight: 700; color: var(--accent);
-      letter-spacing: .08em; text-transform: uppercase;
-      margin-bottom: 20px;
-    }
-    .pillar-title { font-size: 22px; font-weight: 800; margin-bottom: 14px; letter-spacing: -.02em; }
-    .pillar-desc { font-size: 14px; color: var(--text-2); line-height: 1.8; }
-    .pillar-link {
-      display: inline-flex; align-items: center; gap: 4px;
+      border-radius: 12px;
+      padding: 20px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 14px;
+      color: #e2e8f0;
       margin-top: 24px;
-      font-size: 13px; font-weight: 600;
-      color: var(--text-3);
-      transition: color var(--transition);
     }
-    .pillar-link:hover { color: var(--text); }
 
-    /* ── Features ── */
-    .features-grid {
-      display: grid; grid-template-columns: repeat(3, 1fr);
-      gap: 1px; margin-top: 64px;
-      background: var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-    }
-    @media (max-width: 768px) { .features-grid { grid-template-columns: 1fr; } }
-    .feat-cell {
-      padding: 36px 32px;
-      background: var(--bg);
-      transition: background var(--transition);
-    }
-    .feat-cell:hover { background: rgba(255,255,255,.02); }
-    .feat-icon-wrap {
-      width: 36px; height: 36px; border-radius: 8px;
-      background: rgba(255,255,255,.04); border: 1px solid var(--border);
-      display: flex; align-items: center; justify-content: center;
-      margin-bottom: 20px;
-      font-size: 16px; color: var(--text-2);
-    }
-    .feat-name { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
-    .feat-desc { font-size: 13px; color: var(--text-2); line-height: 1.7; }
-    .features-more {
-      text-align: center; margin-top: 40px;
-    }
-    .features-more a {
-      font-size: 13px; font-weight: 600; color: var(--text-3);
-      padding-bottom: 2px;
-      border-bottom: 1px solid var(--border);
-      transition: color var(--transition), border-color var(--transition);
-    }
-    .features-more a:hover { color: var(--text); border-color: var(--border-hi); }
+    .cli-box span { color: var(--text-muted); user-select: none; margin-right: 12px; }
 
-    /* ── Download Section ── */
-    .dl-section { text-align: center; }
-    .dl-section .sub { margin: 16px auto 56px; }
+    .copy-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.2s;
+    }
+    .copy-btn:hover { color: var(--fg); }
+
+    /* --- Footer --- */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 64px 40px;
+      margin-top: 80px;
+    }
+
+    .footer-content {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 24px;
+    }
+
+    .footer-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+      color: var(--text-muted);
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 24px;
+    }
+
+    .footer-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 14px;
+      transition: color 0.2s;
+    }
+    .footer-links a:hover { color: var(--fg); }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .hero-title { font-size: 40px; }
+      .bento-grid { grid-template-columns: 1fr; }
+      .bento-card.full { flex-direction: column; align-items: flex-start; padding: 40px; gap: 40px; }
+      .nav-links { display: none; }
+      .rc-search { padding: 16px 20px; }
+      .rc-input { font-size: 18px; }
+    }
   </style>
 </head>
 <body>
 
-<!-- ─── Nav ───────────────────────────────────────────────────── -->
-<nav id="nav">
-  <div class="container">
-    <div class="nav-inner">
-      <a href="index.html" class="nav-logo">
-        <div class="nav-logo-mark">R</div>
-        <span class="nav-logo-name">rew</span>
+  <nav id="navbar">
+    <a href="#" class="nav-brand">
+      <div class="nav-logo">r</div>
+      rew
+    </a>
+    <ul class="nav-links">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#how-it-works">How it works</a></li>
+      <li><a href="#performance">Performance</a></li>
+    </ul>
+    <div class="nav-actions">
+      <a href="https://github.com/rew-ai/rew" class="btn btn-ghost" target="_blank">GitHub</a>
+      <a href="#download" class="btn btn-primary">Download</a>
+    </div>
+  </nav>
+
+  <div id="webgl-container">
+    <div class="fade-out-mask"></div>
+    <div class="grain-overlay"></div>
+  </div>
+
+  <section class="hero">
+    <h1 class="hero-title">Your safety net for AI.</h1>
+    <p class="hero-subtitle">rew silently monitors your files and creates snapshots when AI tools modify them. Undo any mistake instantly. Fast, local, and reliable.</p>
+    
+    <div class="hero-actions">
+      <a href="#download" class="btn btn-primary" style="padding: 12px 24px; font-size: 15px; font-weight: 500; border-radius: 8px;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download for Mac
       </a>
-      <ul class="nav-links">
-        <li><a href="why.html">为什么需要</a></li>
-        <li><a href="features.html">功能详情</a></li>
-        <li><a href="#download">下载</a></li>
-      </ul>
-      <div class="nav-right">
-        <a href="https://github.com/kuqili/rew" class="nav-links" style="padding:6px 12px;font-size:13px;font-weight:500;color:var(--text-3);">GitHub</a>
-        <a href="#download" class="btn btn-primary btn-sm nav-cta">下载</a>
-      </div>
+      <a href="https://github.com/rew-ai/rew" class="btn btn-secondary" style="padding: 12px 24px; font-size: 15px; font-weight: 500; border-radius: 8px;" target="_blank">View Source</a>
     </div>
-  </div>
-</nav>
 
-<!-- ─── Hero ──────────────────────────────────────────────────── -->
-<section class="hero">
-  <div class="hero-glow"></div>
-  <div class="container">
-    <div class="hero-content">
-      <div class="hero-badge">
-        <span class="hero-badge-dot"></span>
-        macOS 免费下载
-      </div>
-      <h1 class="hero-title">
-        AI 改文件<br/>
-        <span class="accent">rew 守着</span>
-      </h1>
-      <p class="hero-sub">
-        自动存档每一次文件变更，出错后一键读档还原。<br/>
-        不需要 Git，不需要命令行。
-      </p>
-      <div class="hero-actions">
-        <a href="#download" class="btn btn-primary">下载 macOS 版本</a>
-        <a href="why.html" class="btn btn-ghost">了解背后的故事 →</a>
-      </div>
-      <div class="hero-meta">
-        <span>免费 · 开源</span>
-        <span>数据仅存本地</span>
-        <span>macOS 11+</span>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ─── App Preview ──────────────────────────────────────────── -->
-<section class="preview-section reveal">
-  <div class="container">
-    <div class="preview-frame">
-      <div class="preview-titlebar">
-        <div class="tb-dot tb-close"></div>
-        <div class="tb-dot tb-min"></div>
-        <div class="tb-dot tb-max"></div>
-        <div class="preview-title-text">rew</div>
-        <div style="width:36px;"></div>
-      </div>
-      <div class="preview-body">
-        <!-- Rail -->
-        <div class="mock-rail">
-          <div class="rail-icon active">⏱</div>
-          <div class="rail-icon">⚙</div>
+    <!-- The Raycast-style Window -->
+    <div class="mockup-container">
+      <div class="rc-window">
+        <div class="rc-search">
+          <svg class="rc-search-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" class="rc-input" id="typer" value="" readonly>
         </div>
-        <!-- Sidebar -->
-        <div class="mock-sidebar">
-          <div class="ms-header">
-            <div class="ms-title">存档记录</div>
-            <div class="ms-tab-row">
-              <div class="ms-tab active">定时存档</div>
-              <div class="ms-tab">AI 任务</div>
+        
+        <div class="rc-list">
+          <div class="rc-list-header">Recent Tasks</div>
+          
+          <div class="rc-item active">
+            <div class="rc-item-left">
+              <div class="rc-icon-box red">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/></svg>
+              </div>
+              <div class="rc-item-content">
+                <div class="rc-item-title">Revert 47 deleted files</div>
+                <div class="rc-item-sub">Claude Code • 21:16</div>
+              </div>
+            </div>
+            <div class="rc-shortcut">
+              <span class="kbd">↵</span>
             </div>
           </div>
-          <div class="ms-list">
-            <div class="ms-item active">
-              <span class="ms-item-label">16:30 存档</span>
-              <span class="ms-item-badge">7 文件</span>
+
+          <div class="rc-item">
+            <div class="rc-item-left">
+              <div class="rc-icon-box gray">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+              </div>
+              <div class="rc-item-content">
+                <div class="rc-item-title">Cursor code generation</div>
+                <div class="rc-item-sub">Cursor • 21:11</div>
+              </div>
             </div>
-            <div class="ms-item">
-              <span class="ms-item-label">15:30 存档</span>
-              <span class="ms-item-time">2 文件</span>
+            <div class="rc-shortcut">
+              <span class="kbd" style="background: transparent; border: none; box-shadow: none;">3 files</span>
             </div>
-            <div class="ms-item">
-              <span class="ms-item-label">14:30 存档</span>
-              <span class="ms-item-time">12 文件</span>
+          </div>
+
+          <div class="rc-item">
+            <div class="rc-item-left">
+              <div class="rc-icon-box gray">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+              </div>
+              <div class="rc-item-content">
+                <div class="rc-item-title">Refactor storage.rs</div>
+                <div class="rc-item-sub">Claude Code • 21:06</div>
+              </div>
             </div>
-            <div class="ms-item">
-              <span class="ms-item-label">13:30 存档</span>
-              <span class="ms-item-time">5 文件</span>
-            </div>
-            <div class="ms-item">
-              <span class="ms-item-label">12:30 存档</span>
-              <span class="ms-item-time">3 文件</span>
+            <div class="rc-shortcut">
+              <span class="kbd" style="background: transparent; border: none; box-shadow: none;">12 files</span>
             </div>
           </div>
         </div>
-        <!-- Detail -->
-        <div class="mock-detail">
-          <div class="md-header">
-            <span class="md-task-name">16:30 存档 · 7 个文件</span>
-            <div class="md-actions">
-              <div class="md-action-btn">↩ 整体读档</div>
+
+        <div class="rc-footer">
+          <div class="rc-footer-left">
+            <div class="rc-action-hint">
+              <span class="kbd">↵</span> Restore Files
+            </div>
+            <div class="rc-action-hint">
+              <span class="kbd">⌘</span><span class="kbd">K</span> Actions
             </div>
           </div>
-          <div class="md-list">
-            <div class="md-file">
-              <span class="md-file-name">src/components/App.tsx</span>
-              <span class="md-file-tag tag-mod">修改</span>
+          <div>rew CLI & Daemon</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features (Bento Grid) -->
+  <section class="section" id="features">
+    <div class="section-header">
+      <h2 class="section-title">Designed for focus.</h2>
+      <p class="hero-subtitle" style="margin: 0; text-align: left;">Let AI write the code. We'll make sure you never lose it.</p>
+    </div>
+
+    <div class="bento-grid">
+      <div class="bento-card">
+        <svg class="bento-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/><line x1="18" y1="2" x2="22" y2="6"/><line x1="22" y1="2" x2="18" y2="6"/></svg>
+        <h3 class="bento-title">Automatic Snapshots</h3>
+        <p class="bento-desc">Zero configuration required. rew leverages APFS clonefile technology to instantly backup your files the moment an AI tool touches them, with practically zero storage overhead.</p>
+      </div>
+
+      <div class="bento-card">
+        <svg class="bento-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <h3 class="bento-title">Anomaly Detection</h3>
+        <p class="bento-desc">If Claude or Cursor goes rogue and deletes or modifies dozens of files in seconds, rew immediately alerts you and locks the last safe snapshot.</p>
+      </div>
+
+      <div class="bento-card full" id="performance">
+        <div class="bento-content">
+          <h3 class="bento-title">Native Performance</h3>
+          <p class="bento-desc">Written in Rust. Fully local. rew uses macOS FSEvents to monitor changes without polling, ensuring your CPU and battery remain completely untouched.</p>
+          <div class="stats-row">
+            <div class="stat-item">
+              <h4>&lt;1%</h4>
+              <p>CPU Usage</p>
             </div>
-            <div class="md-file">
-              <span class="md-file-name">src/utils/api.ts</span>
-              <span class="md-file-tag tag-mod">修改</span>
+            <div class="stat-item">
+              <h4>&lt;2s</h4>
+              <p>Snapshot Speed</p>
             </div>
-            <div class="md-file">
-              <span class="md-file-name">src/types.ts</span>
-              <span class="md-file-tag tag-add">新建</span>
-            </div>
-            <div class="md-file">
-              <span class="md-file-name">docs/report.md</span>
-              <span class="md-file-tag tag-del">删除</span>
-            </div>
-            <div class="md-file">
-              <span class="md-file-name">package.json</span>
-              <span class="md-file-tag tag-mod">修改</span>
+            <div class="stat-item">
+              <h4>&lt;50MB</h4>
+              <p>Memory Footprint</p>
             </div>
           </div>
-          <div class="md-restore-row">
-            <span class="md-restore-label">回到此存档点</span>
-            <button class="md-restore-btn">↩ 读档</button>
-          </div>
+        </div>
+        <div style="flex-shrink: 0; width: 240px; height: 240px; background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%); display: flex; align-items: center; justify-content: center; border-radius: 50%;">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         </div>
       </div>
     </div>
-  </div>
-</section>
+  </section>
 
-<!-- ─── Integration Strip ─────────────────────────────────────── -->
-<div class="integration-strip">
-  <div class="container">
-    <p class="integration-label">适配你正在使用的 AI 工具</p>
-    <div class="integration-logos">
-      <div class="tool-chip">
-        <div class="tool-chip-icon" style="background:rgba(255,255,255,.04);">⌨</div>
-        Cursor
-      </div>
-      <div class="tool-chip">
-        <div class="tool-chip-icon" style="background:rgba(255,255,255,.04);">⬡</div>
-        Claude Code
-      </div>
-      <div class="tool-chip">
-        <div class="tool-chip-icon" style="background:rgba(255,255,255,.04);">◆</div>
-        Codebuddy
-      </div>
-      <div class="tool-chip">
-        <div class="tool-chip-icon" style="background:rgba(255,255,255,.04);">▲</div>
-        Windsurf
-      </div>
-      <div class="tool-chip">
-        <div class="tool-chip-icon" style="background:rgba(255,255,255,.04);">◉</div>
-        GitHub Copilot
-      </div>
-      <div class="tool-chip" style="border-style:dashed;color:var(--text-3);">
-        通用文件监控，任意工具均支持
-      </div>
+  <!-- CLI section -->
+  <section class="section" id="download" style="padding-top: 40px;">
+    <div class="section-header" style="margin-bottom: 40px;">
+      <h2 class="section-title">Install via Terminal</h2>
+      <p class="bento-desc">For developers. Run this command to install the daemon and CLI.</p>
     </div>
-  </div>
-</div>
-
-<!-- ─── Three Pillars ────────────────────────────────────────── -->
-<section class="section">
-  <div class="container">
-    <div class="section-center">
-      <span class="label">核心理念</span>
-      <h2 class="title reveal">三件事，守护每一次 AI 协作</h2>
-      <p class="sub reveal d1">看着、拦着、兜底。简单到不需要解释。</p>
-    </div>
-    <div class="pillars-grid">
-      <div class="pillar reveal d1">
-        <div class="pillar-num">01 · 监控</div>
-        <div class="pillar-title">看着</div>
-        <p class="pillar-desc">
-          AI 每次改动文件，rew 在后台自动存档快照。完全无感知，直到你需要它。
-        </p>
-        <a href="features.html#monitor" class="pillar-link">了解自动存档 →</a>
-      </div>
-      <div class="pillar reveal d2">
-        <div class="pillar-num">02 · 防护</div>
-        <div class="pillar-title">拦着</div>
-        <p class="pillar-desc">
-          短时间内大量文件被删除或修改？立即告警。三秒内 800 个文件被删？先暂停。
-        </p>
-        <a href="features.html#guard" class="pillar-link">了解异常熔断 →</a>
-      </div>
-      <div class="pillar reveal d3">
-        <div class="pillar-num">03 · 恢复</div>
-        <div class="pillar-title">兜底</div>
-        <p class="pillar-desc">
-          像游戏读档一样回到任意历史节点。不需要 git checkout，一键还原。
-        </p>
-        <a href="features.html#restore" class="pillar-link">了解一键读档 →</a>
-      </div>
-    </div>
-  </div>
-</section>
-
-<hr class="divider container"/>
-
-<!-- ─── Feature Highlights ────────────────────────────────────── -->
-<section class="section">
-  <div class="container">
-    <div class="section-center">
-      <span class="label">核心能力</span>
-      <h2 class="title reveal">你需要的，都在这里</h2>
-      <p class="sub reveal d1">从自动存档到异常熔断，rew 在看不见的地方持续工作。</p>
-    </div>
-    <div class="features-grid">
-      <div class="feat-cell reveal d1">
-        <div class="feat-icon-wrap">⚡</div>
-        <div class="feat-name">毫秒级文件追踪</div>
-        <p class="feat-desc">基于 macOS FSEvents，捕捉每一次文件创建、修改、删除。内容未变则不记录。</p>
-      </div>
-      <div class="feat-cell reveal d2">
-        <div class="feat-icon-wrap">◎</div>
-        <div class="feat-name">AI 任务独立存档</div>
-        <p class="feat-desc">AI 工具完成任务后，自动生成独立存档记录，与定时存档分开展示。</p>
-      </div>
-      <div class="feat-cell reveal d3">
-        <div class="feat-icon-wrap">⇄</div>
-        <div class="feat-name">文件级 diff 对比</div>
-        <p class="feat-desc">点击任意存档，查看每个文件的前后变更，精确定位 AI 改了什么。</p>
-      </div>
-    </div>
-    <div class="features-more reveal">
-      <a href="features.html">查看全部 6 项核心功能 →</a>
-    </div>
-  </div>
-</section>
-
-<!-- ─── Download ──────────────────────────────────────────────── -->
-<section class="section dl-section" id="download">
-  <div class="container">
-    <span class="label" style="display:block;text-align:center;">立即开始</span>
-    <h2 class="title reveal" style="text-align:center;">免费下载，本地运行</h2>
-    <p class="sub reveal d1">数据完全存储在本地，无需注册，无需联网，无任何隐私顾虑。</p>
-    <div class="dl-grid" style="margin-top:56px;">
-      <!-- macOS arm64 -->
-      <div class="dl-card primary reveal d1">
-        <div class="dl-title">macOS · Apple Silicon</div>
-        <div class="dl-sub">M1 / M2 / M3 / M4 · macOS 11+<br/>基于 APFS clonefile，备份极速</div>
-        <div class="dl-btn-wrap">
-          <a id="dl-arm64"
-             href="https://github.com/kuqili/rew/releases/download/v0.1.0/rew_0.1.0_aarch64.dmg"
-             class="btn btn-accent"
-             onclick="trackDownload('arm64')">
-            下载 .dmg（Apple Silicon）
-          </a>
-        </div>
-        <div class="dl-meta">
-          免费使用 &nbsp;·&nbsp;
-          <a href="https://github.com/kuqili/rew/releases/latest" target="_blank" rel="noopener">查看所有版本 →</a>
-          &nbsp;·&nbsp; <a href="#gatekeeper">无法打开？</a>
-        </div>
-      </div>
-      <!-- macOS x64 -->
-      <div class="dl-card reveal d2">
-        <div class="dl-title">macOS · Intel</div>
-        <div class="dl-sub">x86_64 · macOS 11+<br/>适用于 Intel 芯片 Mac</div>
-        <div class="dl-btn-wrap">
-          <a id="dl-x64"
-             href="https://github.com/kuqili/rew/releases/download/v0.1.0/rew_0.1.0_x64.dmg"
-             class="btn btn-ghost"
-             style="width:100%;justify-content:center;"
-             onclick="trackDownload('x64')">
-            下载 .dmg（Intel）
-          </a>
-        </div>
-        <div class="dl-meta" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
-          <strong style="color:var(--text-2);">Windows — 即将上线</strong><br/>
-          留下邮箱，上线后第一时间通知你
-        </div>
-        <div class="win-form">
-          <input type="email" id="win-email" placeholder="your@email.com"/>
-          <button onclick="handleWinNotify()">通知我</button>
-        </div>
-        <p class="win-msg" id="win-msg"></p>
-      </div>
-    </div>
-
-    <!-- One-liner install -->
-    <div style="text-align:center;margin-top:40px;" class="reveal">
-      <p style="font-size:13px;color:var(--text-3);margin-bottom:12px;">或在终端一键安装（自动检测架构）</p>
-      <div style="display:inline-flex;align-items:center;gap:10px;padding:12px 20px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid var(--border);cursor:pointer;transition:border-color .2s;" onclick="copyInstallCmd(this)" onmouseover="this.style.borderColor='var(--border-hi)'" onmouseout="this.style.borderColor='var(--border)'">
-        <code style="font-size:13px;color:var(--text-2);font-family:'SF Mono','Menlo',monospace;">curl -sL http://21.214.197.124/install.sh | bash</code>
-        <span id="copy-hint" style="font-size:11px;color:var(--text-3);flex-shrink:0;">点击复制</span>
-      </div>
-    </div>
-
-    <!-- Version badge -->
-    <div style="text-align:center;margin-top:20px;" class="reveal">
-      <a href="https://github.com/kuqili/rew/releases/latest" target="_blank" rel="noopener"
-         style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-3);padding:6px 14px;border:1px solid var(--border);border-radius:100px;transition:color .15s,border-color .15s;"
-         onmouseover="this.style.color='var(--text-2)';this.style.borderColor='var(--border-hi)'"
-         onmouseout="this.style.color='var(--text-3)';this.style.borderColor='var(--border)'">
-        <span id="latest-version">查看最新版本 →</span>
-      </a>
-    </div>
-
-    <!-- Gatekeeper note -->
-    <div class="gk-note reveal" id="gatekeeper">
-      <strong>下载后提示「已损坏」或「无法验证开发者」？</strong><br/>
-      rew 暂未完成 Apple 公证（正在申请中），需要手动处理安全属性。<strong>推荐使用上方的一键安装命令</strong>，会自动处理。<br/><br/>
-      如果你已经手动下载了 DMG，在终端执行：
-      <div style="margin-top:8px;padding:8px 12px;border-radius:6px;background:rgba(255,255,255,.03);border:1px solid var(--border);">
-        <code style="font-size:12px;color:var(--accent);">xattr -cr ~/Downloads/rew_*.dmg</code><br/>
-        <span style="font-size:11px;color:var(--text-3);">然后打开 DMG，把 rew.app 拖到 Applications，再执行：</span><br/>
-        <code style="font-size:12px;color:var(--accent);">xattr -cr /Applications/rew.app && codesign --force --deep --sign - /Applications/rew.app</code>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ─── Footer ────────────────────────────────────────────────── -->
-<footer id="footer">
-  <div class="container">
-    <div class="footer-inner">
-      <div class="footer-brand">
-        <div class="nav-logo">
-          <div class="nav-logo-mark">R</div>
-          <span class="nav-logo-name">rew</span>
-        </div>
-        <p class="footer-tagline">AI 时代的文件安全网</p>
-      </div>
+    
+    <div class="cli-box">
       <div>
-        <div class="footer-col-title">产品</div>
-        <ul class="footer-links">
-          <li><a href="features.html">功能详情</a></li>
-          <li><a href="why.html">为什么需要</a></li>
-          <li><a href="#download">立即下载</a></li>
-        </ul>
+        <span>$</span> curl -fsSL https://raw.githubusercontent.com/rew-ai/rew/main/install.sh | sh
       </div>
-      <div>
-        <div class="footer-col-title">资源</div>
-        <ul class="footer-links">
-          <li><a href="why.html#story">真实案例</a></li>
-          <li><a href="why.html#tools">与 Git 的区别</a></li>
-          <li><a href="features.html#howto">三步上手</a></li>
-        </ul>
+      <button class="copy-btn" onclick="copyText('curl -fsSL https://raw.githubusercontent.com/rew-ai/rew/main/install.sh | sh', this)" aria-label="Copy to clipboard">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </button>
+    </div>
+  </section>
+
+  <footer>
+    <div class="footer-content">
+      <div class="footer-left">
+        <div class="nav-logo" style="width: 20px; height: 20px; font-size: 10px;">r</div>
+        <span>© 2026 rew. Open source and local-first.</span>
       </div>
-      <div>
-        <div class="footer-col-title">开源</div>
-        <ul class="footer-links">
-          <li><a href="https://github.com/kuqili/rew" target="_blank" rel="noopener">GitHub</a></li>
-        </ul>
+      <div class="footer-links">
+        <a href="#features">Features</a>
+        <a href="https://github.com/rew-ai/rew/blob/main/docs/README.md" target="_blank">Documentation</a>
+        <a href="https://github.com/rew-ai/rew" target="_blank">GitHub</a>
       </div>
     </div>
-    <div class="footer-bottom">
-      <span class="footer-copy">© 2026 rew</span>
-      <span class="footer-copy">数据仅存储在你的设备上</span>
-    </div>
-  </div>
-</footer>
+  </footer>
 
-<script>
-  /* ─── Nav scroll ─── */
-  const nav = document.getElementById('nav');
-  const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 20);
-  window.addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
+  <script>
+    // Copy script
+    function copyText(text, btn) {
+      navigator.clipboard.writeText(text);
+      const originalSVG = btn.innerHTML;
+      btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+      setTimeout(() => { btn.innerHTML = originalSVG; }, 2000);
+    }
 
-  /* ─── Scroll reveal ─── */
-  const observer = new IntersectionObserver(
-    entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); } }),
-    { threshold: 0.08, rootMargin: '0px 0px -40px 0px' }
-  );
-  document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
-
-  /* ─── Smooth anchors ─── */
-  document.querySelectorAll('a[href^="#"]').forEach(a => {
-    a.addEventListener('click', e => {
-      const target = document.querySelector(a.getAttribute('href'));
-      if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    // Scroll blur effect
+    window.addEventListener('scroll', () => {
+      const nav = document.getElementById('navbar');
+      if (window.scrollY > 20) {
+        nav.classList.add('scrolled');
+      } else {
+        nav.classList.remove('scrolled');
+      }
     });
-  });
 
-  /* ─── Download tracking ─── */
-  function trackDownload(arch) {
-    const btn = document.getElementById('dl-' + arch);
-    if (!btn) return;
-    const original = btn.innerHTML;
-    btn.innerHTML = '✓ 开始下载';
-    btn.style.opacity = '.8';
-    setTimeout(() => { btn.innerHTML = original; btn.style.opacity = ''; }, 3000);
-  }
+    // Rewind Typer Effect
+    const text = "Undo Claude Code changes...";
+    const typer = document.getElementById('typer');
+    let index = text.length;
+    let isDeleting = true;
 
-  /* ─── Fetch latest release ─── */
-  (function() {
-    const REPO = 'kuqili/rew';
-    const el = document.getElementById('latest-version');
-    fetch('https://api.github.com/repos/' + REPO + '/releases/latest', {
-      headers: { 'Accept': 'application/vnd.github+json' }
-    })
-    .then(r => r.ok ? r.json() : null)
-    .then(data => {
-      if (!data || !data.tag_name) return;
-      const ver = data.tag_name;
-      el.textContent = ver + ' →';
-      const numVer = ver.replace(/^v/, '');
-      const arm64Url = 'https://github.com/' + REPO + '/releases/download/' + ver + '/rew_' + numVer + '_aarch64.dmg';
-      const x64Url   = 'https://github.com/' + REPO + '/releases/download/' + ver + '/rew_' + numVer + '_x64.dmg';
-      const arm64Btn = document.getElementById('dl-arm64');
-      const x64Btn   = document.getElementById('dl-x64');
-      if (arm64Btn) arm64Btn.href = arm64Url;
-      if (x64Btn)   x64Btn.href   = x64Url;
-    })
-    .catch(() => {});
-  })();
+    function typeEffect() {
+      if (!typer) return;
+      typer.value = text.substring(0, index);
+      typer.classList.add('typewriter-effect');
+      
+      let speed = 50;
 
-  /* ─── Copy install command ─── */
-  function copyInstallCmd(el) {
-    navigator.clipboard.writeText('curl -sL http://21.214.197.124/install.sh | bash').then(() => {
-      var hint = document.getElementById('copy-hint');
-      hint.textContent = '✓ 已复制';
-      hint.style.color = 'var(--green)';
-      setTimeout(() => { hint.textContent = '点击复制'; hint.style.color = 'var(--text-3)'; }, 2000);
+      if (isDeleting) {
+        speed = 30; // Rewind speed
+        index--;
+        if (index === 0) {
+          isDeleting = false;
+          speed = 800; // Pause before typing
+        }
+      } else {
+        speed = 80; // Type speed
+        index++;
+        if (index === text.length) {
+          isDeleting = true;
+          speed = 2000; // Pause before rewind
+        }
+      }
+
+      setTimeout(typeEffect, speed);
+    }
+    
+    // Start typing effect after a small delay
+    setTimeout(typeEffect, 1000);
+  </script>
+
+  <!-- Load Three.js from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    // --- IMPROVED THREE.JS WEBGL SHADER BACKGROUND ---
+    const container = document.getElementById('webgl-container');
+    const scene = new THREE.Scene();
+    
+    // We just need a 2D plane covering the entire clip space
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: false });
+    // Keep pixel ratio capped at 1.5 to ensure smooth 60fps even on retina screens
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    
+    // Size the renderer
+    function resize() {
+      const width = window.innerWidth;
+      const height = 1100; // Match the container height
+      renderer.setSize(width, height);
+      if(uniforms) {
+        uniforms.u_resolution.value.set(width, height);
+      }
+    }
+    window.addEventListener('resize', resize);
+    
+    container.insertBefore(renderer.domElement, container.firstChild);
+
+    // Setup GLSL Shader Uniforms
+    const uniforms = {
+      u_time: { value: 0.0 },
+      u_resolution: { value: new THREE.Vector2() },
+      u_mouse: { value: new THREE.Vector2(0.5, 0.5) }
+    };
+    resize();
+
+    // Track mouse for subtle parallax in the shader
+    document.addEventListener('mousemove', (e) => {
+      // Normalize mouse coordinates from 0.0 to 1.0
+      uniforms.u_mouse.value.set(e.clientX / window.innerWidth, 1.0 - (e.clientY / window.innerHeight));
     });
-  }
 
-  /* ─── Windows notify ─── */
-  function handleWinNotify() {
-    const email = document.getElementById('win-email').value.trim();
-    const msg = document.getElementById('win-msg');
-    if (!email || !email.includes('@')) { msg.textContent = '请输入有效邮箱'; return; }
-    msg.textContent = '✓ 已记录，上线后第一时间通知你！';
-    document.getElementById('win-email').value = '';
-  }
-</script>
+    const material = new THREE.ShaderMaterial({
+      uniforms: uniforms,
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float u_time;
+        uniform vec2 u_resolution;
+        uniform vec2 u_mouse;
+        varying vec2 vUv;
+
+        // Wave function to generate a 3D-like liquid heightmap
+        float wave(vec2 p, float t) {
+            float h = 0.0;
+            float a = 1.0;
+            p *= 0.8; // Scale to make the fluid thicker and more elegant
+            for (int i = 0; i < 4; i++) {
+                h += a * sin(p.x + t) * cos(p.y - t);
+                // Rotate and scale for the next octave
+                float c = cos(1.2), s = sin(1.2);
+                p = mat2(c, -s, s, c) * p * 1.6;
+                a *= 0.5;
+            }
+            return h;
+        }
+
+        void main() {
+            // Normalized pixel coordinates
+            vec2 uv = gl_FragCoord.xy / u_resolution.xy;
+            vec2 p = uv * 2.0 - 1.0;
+            p.x *= u_resolution.x / u_resolution.y;
+            
+            // Subtle mouse interaction
+            vec2 mouse = u_mouse * 2.0 - 1.0;
+            p -= mouse * 0.05;
+
+            // Slow time for deep, viscous liquid
+            float t = u_time * 0.15;
+            
+            // Shift the coordinates UP so the blob sits exactly behind the H1 title
+            p.y -= 0.55; 
+            p.x += 0.0; // Keep it centered horizontally
+            
+            // Generate a domain warping vector to create organic irregularity
+            float n1 = sin(p.x * 2.0 + t) + cos(p.y * 2.0 + t);
+            float n2 = cos(p.x * 3.0 - t) + sin(p.y * 1.5 + t);
+            vec2 warp = vec2(n1, n2) * 0.4;
+            
+            // Calculate a distance field to isolate a CENTERED, IRREGULAR blob
+            // The blob is positioned centrally and warped by the noise
+            // Scale x by 1.0 (wider) and y by 1.8 (squished) to create an oval shape behind text
+            float blobDist = length((p + warp) * vec2(1.0, 2.0));
+            
+            // Tight mask: 1.0 at center, fading out to 0.0 very sharply
+            // This creates the bounded "floating entity" in the void
+            float blobMask = smoothstep(1.8, 0.5, blobDist);
+            
+            // 1. Calculate height of the fluid surface ONLY inside the blob
+            // Scale up 'p' to get finer ripples inside the shape
+            float h = wave(p * 2.5 + warp, t * 1.5);
+            
+            // 2. Calculate Normal Vector
+            vec2 eps = vec2(0.02, 0.0);
+            float dx = wave((p + eps.xy)*2.5 + warp, t*1.5) - wave((p - eps.xy)*2.5 + warp, t*1.5);
+            float dy = wave((p + eps.yx)*2.5 + warp, t*1.5) - wave((p - eps.yx)*2.5 + warp, t*1.5);
+            
+            // Extremely sharp normals to catch the light slicing through
+            vec3 normal = normalize(vec3(dx * 2.5, dy * 2.5, 0.08)); 
+            
+            // 3. Setup Lighting
+            vec3 lightDir = normalize(vec3(0.3, 0.7, 0.5)); 
+            vec3 viewDir = vec3(0.0, 0.0, 1.0);
+            
+            // Diffuse
+            float diff = max(dot(normal, lightDir), 0.0);
+            
+            // Specular (Glossy highlights)
+            vec3 halfVector = normalize(lightDir + viewDir);
+            float spec = pow(max(dot(normal, halfVector), 0.0), 35.0);
+            
+            // Fresnel (Glaze/Rim lighting)
+            float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 4.0);
+            
+            // 4. Color Palette - Deep space with sharp red core
+            vec3 cBlack    = vec3(0.0, 0.0, 0.0);
+            vec3 cDarkRed  = vec3(0.15, 0.0, 0.01); // Barely perceptible blood red
+            vec3 cRed      = vec3(0.95, 0.15, 0.1); // Intense core red
+            vec3 cOrange   = vec3(1.0, 0.3, 0.05);  // Specular reflection color
+            
+            // Build color based on height 'h'
+            vec3 color = cBlack;
+            // Only the raised waves get the dark red
+            color = mix(cBlack, cDarkRed, smoothstep(-0.4, 0.2, h));
+            // Only the highest peaks get the intense red
+            color = mix(color, cRed, smoothstep(0.4, 1.2, h));
+            
+            // Apply Diffuse lighting
+            color += cRed * diff * 0.4;
+            
+            // Apply Specular lighting (this creates the sharp laser-like glints)
+            color += cOrange * spec * 0.7;
+            
+            // Apply Fresnel (the glass-like rim glow)
+            color += cRed * fresnel * 0.4;
+            
+            // MULTIPLY BY THE BLOB MASK:
+            // This forces everything outside the irregular center shape to remain pure black
+            color *= blobMask;
+            
+            // Add extremely fine film grain to kill banding inside the darkness
+            float grain = fract(sin(dot(gl_FragCoord.xy * (t+1.0), vec2(12.9898,78.233))) * 43758.5453);
+            color += vec3(grain * 0.06);
+
+            // Fade to black at bottom to blend seamlessly into the HTML
+            float fadeY = smoothstep(0.0, 0.5, uv.y);
+            color *= fadeY;
+
+            gl_FragColor = vec4(color, 1.0);
+        }
+      `
+    });
+
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+    scene.add(plane);
+
+    // Animation Loop
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      uniforms.u_time.value = clock.getElapsedTime();
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
 </body>
 </html>

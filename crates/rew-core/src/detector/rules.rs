@@ -3,6 +3,7 @@
 //! Each rule evaluates an EventBatch and optionally returns an AnomalySignal.
 
 use crate::config::AnomalyRulesConfig;
+use crate::processor::BatchStats;
 use crate::types::{AnomalyKind, AnomalySeverity, AnomalySignal, EventBatch, FileEventKind};
 use chrono::Utc;
 use std::path::PathBuf;
@@ -13,9 +14,13 @@ pub trait Rule: Send + Sync {
     fn id(&self) -> &str;
 
     /// Evaluate the batch. Returns Some(signal) if the rule fires.
+    ///
+    /// `stats` contains pre-aggregated counts (O(1) lookups) that can be used
+    /// for early short-circuit checks before iterating over individual events.
     fn evaluate(
         &self,
         batch: &EventBatch,
+        stats: &BatchStats,
         config: &AnomalyRulesConfig,
         watch_dirs: &[PathBuf],
     ) -> Option<AnomalySignal>;
@@ -32,9 +37,14 @@ impl Rule for Rule01BulkDeleteHigh {
     fn evaluate(
         &self,
         batch: &EventBatch,
+        stats: &BatchStats,
         config: &AnomalyRulesConfig,
         _watch_dirs: &[PathBuf],
     ) -> Option<AnomalySignal> {
+        // O(1) early exit: if deleted count doesn't exceed threshold, skip iteration
+        if (stats.files_deleted as u32) <= config.bulk_delete_high {
+            return None;
+        }
         let deleted: Vec<PathBuf> = batch
             .events
             .iter()
@@ -73,9 +83,15 @@ impl Rule for Rule02BulkDeleteMedium {
     fn evaluate(
         &self,
         batch: &EventBatch,
+        stats: &BatchStats,
         config: &AnomalyRulesConfig,
         _watch_dirs: &[PathBuf],
     ) -> Option<AnomalySignal> {
+        // O(1) early exit: RULE-02 only fires in the medium range
+        let quick_count = stats.files_deleted as u32;
+        if quick_count <= config.bulk_delete_medium || quick_count > config.bulk_delete_high {
+            return None;
+        }
         let deleted: Vec<PathBuf> = batch
             .events
             .iter()
@@ -116,10 +132,12 @@ impl Rule for Rule03LargeDeletion {
     fn evaluate(
         &self,
         batch: &EventBatch,
+        stats: &BatchStats,
         config: &AnomalyRulesConfig,
         _watch_dirs: &[PathBuf],
     ) -> Option<AnomalySignal> {
-        let total_size = batch.total_deleted_size();
+        // Use pre-aggregated total from stats (O(1)), fallback to batch method
+        let total_size = stats.total_deleted_size;
         if total_size > config.delete_size_high_bytes {
             let deleted: Vec<PathBuf> = batch
                 .events
@@ -157,9 +175,14 @@ impl Rule for Rule04BulkModify {
     fn evaluate(
         &self,
         batch: &EventBatch,
+        stats: &BatchStats,
         config: &AnomalyRulesConfig,
         _watch_dirs: &[PathBuf],
     ) -> Option<AnomalySignal> {
+        // O(1) early exit
+        if (stats.files_modified as u32) <= config.bulk_modify_medium {
+            return None;
+        }
         let modified: Vec<PathBuf> = batch
             .events
             .iter()
@@ -198,9 +221,14 @@ impl Rule for Rule05RootDirDeleted {
     fn evaluate(
         &self,
         batch: &EventBatch,
+        stats: &BatchStats,
         _config: &AnomalyRulesConfig,
         watch_dirs: &[PathBuf],
     ) -> Option<AnomalySignal> {
+        // O(1) early exit: no deleted events means root dir can't be deleted
+        if stats.files_deleted == 0 {
+            return None;
+        }
         for event in &batch.events {
             if event.kind == FileEventKind::Deleted {
                 for watch_dir in watch_dirs {
@@ -234,9 +262,14 @@ impl Rule for Rule06SensitiveConfig {
     fn evaluate(
         &self,
         batch: &EventBatch,
+        stats: &BatchStats,
         config: &AnomalyRulesConfig,
         _watch_dirs: &[PathBuf],
     ) -> Option<AnomalySignal> {
+        // O(1) early exit: only Modified and Deleted events can match sensitive files
+        if stats.files_modified == 0 && stats.files_deleted == 0 {
+            return None;
+        }
         let mut affected = Vec::new();
 
         for event in &batch.events {
@@ -291,9 +324,14 @@ impl Rule for Rule07NonPackageModify {
     fn evaluate(
         &self,
         batch: &EventBatch,
+        stats: &BatchStats,
         config: &AnomalyRulesConfig,
         _watch_dirs: &[PathBuf],
     ) -> Option<AnomalySignal> {
+        // O(1) early exit: if total modified count doesn't exceed threshold, skip
+        if (stats.files_modified as u32) <= config.non_package_modify_medium {
+            return None;
+        }
         let non_package_modified: Vec<PathBuf> = batch
             .events
             .iter()
@@ -357,6 +395,7 @@ impl Rule for Rule08OutOfScopeOperation {
     fn evaluate(
         &self,
         batch: &EventBatch,
+        _stats: &BatchStats,
         _config: &AnomalyRulesConfig,
         watch_dirs: &[PathBuf],
     ) -> Option<AnomalySignal> {
@@ -410,6 +449,7 @@ pub fn all_rules() -> Vec<Box<dyn Rule>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processor::BatchStats;
     use crate::types::FileEvent;
     use chrono::Utc;
 
@@ -430,6 +470,11 @@ mod tests {
         }
     }
 
+    fn eval<R: Rule>(rule: &R, batch: &EventBatch, config: &AnomalyRulesConfig, watch_dirs: &[PathBuf]) -> Option<AnomalySignal> {
+        let stats = BatchStats::from_batch(batch);
+        rule.evaluate(batch, &stats, config, watch_dirs)
+    }
+
     fn default_config() -> AnomalyRulesConfig {
         AnomalyRulesConfig::default()
     }
@@ -444,7 +489,7 @@ mod tests {
             .map(|i| make_event(&format!("/tmp/file_{}.txt", i), FileEventKind::Deleted, Some(100)))
             .collect();
         let batch = make_batch(events);
-        let signal = rule.evaluate(&batch, &config, &[]);
+        let signal = eval(&rule, &batch, &config, &[]);
         assert!(signal.is_some());
         let s = signal.unwrap();
         assert_eq!(s.severity, AnomalySeverity::High);
@@ -464,7 +509,7 @@ mod tests {
             .map(|i| make_event(&format!("/tmp/file_{}.txt", i), FileEventKind::Deleted, Some(100)))
             .collect();
         let batch = make_batch(events);
-        assert!(rule.evaluate(&batch, &config, &[]).is_none());
+        assert!(eval(&rule, &batch, &config, &[]).is_none());
     }
 
     #[test]
@@ -477,7 +522,7 @@ mod tests {
             .map(|i| make_event(&format!("/tmp/file_{}.txt", i), FileEventKind::Deleted, Some(100)))
             .collect();
         let batch = make_batch(events);
-        let signal = rule.evaluate(&batch, &config, &[]);
+        let signal = eval(&rule, &batch, &config, &[]);
         assert!(signal.is_some());
         assert_eq!(signal.unwrap().severity, AnomalySeverity::Medium);
     }
@@ -492,7 +537,7 @@ mod tests {
             .map(|i| make_event(&format!("/tmp/file_{}.txt", i), FileEventKind::Deleted, Some(100)))
             .collect();
         let batch = make_batch(events);
-        assert!(rule.evaluate(&batch, &config, &[]).is_none());
+        assert!(eval(&rule, &batch, &config, &[]).is_none());
     }
 
     #[test]
@@ -511,7 +556,7 @@ mod tests {
             })
             .collect();
         let batch = make_batch(events);
-        let signal = rule.evaluate(&batch, &config, &[]);
+        let signal = eval(&rule, &batch, &config, &[]);
         assert!(signal.is_some());
         let s = signal.unwrap();
         assert_eq!(s.severity, AnomalySeverity::High);
@@ -528,7 +573,7 @@ mod tests {
             .map(|i| make_event(&format!("/proj/src/mod_{}.rs", i), FileEventKind::Modified, Some(1000)))
             .collect();
         let batch = make_batch(events);
-        let signal = rule.evaluate(&batch, &config, &[]);
+        let signal = eval(&rule, &batch, &config, &[]);
         assert!(signal.is_some());
         assert_eq!(signal.unwrap().severity, AnomalySeverity::Medium);
     }
@@ -545,7 +590,7 @@ mod tests {
             None,
         )];
         let batch = make_batch(events);
-        let signal = rule.evaluate(&batch, &config, &watch_dirs);
+        let signal = eval(&rule, &batch, &config, &watch_dirs);
         assert!(signal.is_some());
         let s = signal.unwrap();
         assert_eq!(s.severity, AnomalySeverity::Critical);
@@ -565,7 +610,7 @@ mod tests {
             None,
         )];
         let batch = make_batch(events);
-        assert!(rule.evaluate(&batch, &config, &watch_dirs).is_none());
+        assert!(eval(&rule, &batch, &config, &watch_dirs).is_none());
     }
 
     #[test]
@@ -575,7 +620,7 @@ mod tests {
 
         let events = vec![make_event("/project/.env", FileEventKind::Modified, Some(256))];
         let batch = make_batch(events);
-        let signal = rule.evaluate(&batch, &config, &[]);
+        let signal = eval(&rule, &batch, &config, &[]);
         assert!(signal.is_some());
         let s = signal.unwrap();
         assert_eq!(s.severity, AnomalySeverity::High);
@@ -594,7 +639,7 @@ mod tests {
             Some(128),
         )];
         let batch = make_batch(events);
-        let signal = rule.evaluate(&batch, &config, &[]);
+        let signal = eval(&rule, &batch, &config, &[]);
         assert!(signal.is_some());
         assert!(signal.unwrap().description.contains(".env.local"));
     }
@@ -610,7 +655,7 @@ mod tests {
             Some(5000),
         )];
         let batch = make_batch(events);
-        assert!(rule.evaluate(&batch, &config, &[]).is_none());
+        assert!(eval(&rule, &batch, &config, &[]).is_none());
     }
 
     #[test]
@@ -623,7 +668,7 @@ mod tests {
             .map(|i| make_event(&format!("/proj/src/file_{}.rs", i), FileEventKind::Modified, Some(500)))
             .collect();
         let batch = make_batch(events);
-        let signal = rule.evaluate(&batch, &config, &[]);
+        let signal = eval(&rule, &batch, &config, &[]);
         assert!(signal.is_some());
         assert_eq!(signal.unwrap().severity, AnomalySeverity::Medium);
     }
@@ -651,7 +696,7 @@ mod tests {
             ));
         }
         let batch = make_batch(events);
-        assert!(rule.evaluate(&batch, &config, &[]).is_none());
+        assert!(eval(&rule, &batch, &config, &[]).is_none());
     }
 
     #[test]
@@ -682,7 +727,7 @@ mod tests {
             Some(1024),
         )];
         let batch = make_batch(events);
-        let signal = rule.evaluate(&batch, &config, &watch_dirs);
+        let signal = eval(&rule, &batch, &config, &watch_dirs);
         assert!(signal.is_some());
         let s = signal.unwrap();
         assert_eq!(s.severity, AnomalySeverity::High);
@@ -702,7 +747,7 @@ mod tests {
             Some(500),
         )];
         let batch = make_batch(events);
-        assert!(rule.evaluate(&batch, &config, &watch_dirs).is_none());
+        assert!(eval(&rule, &batch, &config, &watch_dirs).is_none());
     }
 
     #[test]

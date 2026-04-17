@@ -13,6 +13,7 @@ pub mod dedup;
 pub mod rules;
 
 use crate::config::AnomalyRulesConfig;
+use crate::processor::BatchStats;
 use crate::traits::AnomalyDetector;
 use crate::types::{AnomalySeverity, AnomalySignal, EventBatch};
 use dedup::AlertDeduplicator;
@@ -61,13 +62,13 @@ impl RuleEngine {
     ///
     /// Rules are evaluated in priority order (CRITICAL first), and the results
     /// are deduped so the same (directory, rule) pair only alerts once per cooldown.
-    fn evaluate_and_dedup(&self, batch: &EventBatch) -> Vec<AnomalySignal> {
+    fn evaluate_and_dedup(&self, batch: &EventBatch, stats: &BatchStats) -> Vec<AnomalySignal> {
         let rules = all_rules();
         let mut signals = Vec::new();
 
         // Evaluate all rules
         for rule in &rules {
-            if let Some(signal) = rule.evaluate(batch, &self.config, &self.watch_dirs) {
+            if let Some(signal) = rule.evaluate(batch, stats, &self.config, &self.watch_dirs) {
                 debug!(
                     "Rule {} fired: {} (severity: {})",
                     rule.id(),
@@ -123,8 +124,8 @@ impl RuleEngine {
 }
 
 impl AnomalyDetector for RuleEngine {
-    fn analyze(&self, batch: &EventBatch) -> Vec<AnomalySignal> {
-        self.evaluate_and_dedup(batch)
+    fn analyze(&self, batch: &EventBatch, stats: &BatchStats) -> Vec<AnomalySignal> {
+        self.evaluate_and_dedup(batch, stats)
     }
 }
 
@@ -156,6 +157,7 @@ impl AnomalySignal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processor::BatchStats;
     use crate::types::{AnomalyKind, FileEvent, FileEventKind};
     use chrono::Utc;
     use std::time::Duration;
@@ -177,6 +179,11 @@ mod tests {
         }
     }
 
+    fn analyze_batch(engine: &RuleEngine, batch: &EventBatch) -> Vec<AnomalySignal> {
+        let stats = BatchStats::from_batch(batch);
+        engine.analyze(batch, &stats)
+    }
+
     fn default_engine() -> RuleEngine {
         let config = AnomalyRulesConfig::default();
         let watch_dirs = vec![PathBuf::from("/home/user/Documents")];
@@ -191,7 +198,7 @@ mod tests {
             make_event("/home/user/Documents/main.rs", FileEventKind::Modified, Some(2000)),
         ];
         let batch = make_batch(events);
-        let signals = engine.analyze(&batch);
+        let signals = analyze_batch(&engine, &batch);
         assert!(signals.is_empty());
     }
 
@@ -208,7 +215,7 @@ mod tests {
             })
             .collect();
         let batch = make_batch(events);
-        let signals = engine.analyze(&batch);
+        let signals = analyze_batch(&engine, &batch);
 
         // Should have at least one HIGH signal
         assert!(!signals.is_empty());
@@ -233,7 +240,7 @@ mod tests {
             None,
         )];
         let batch = make_batch(events);
-        let signals = engine.analyze(&batch);
+        let signals = analyze_batch(&engine, &batch);
 
         assert!(!signals.is_empty());
         // CRITICAL should be first (highest priority)
@@ -250,7 +257,7 @@ mod tests {
             Some(256),
         )];
         let batch = make_batch(events);
-        let signals = engine.analyze(&batch);
+        let signals = analyze_batch(&engine, &batch);
 
         assert!(!signals.is_empty());
         let env_signal = signals
@@ -285,12 +292,12 @@ mod tests {
 
         // First batch: should fire
         let batch1 = make_batch(events.clone());
-        let signals1 = engine.analyze(&batch1);
+        let signals1 = analyze_batch(&engine, &batch1);
         assert!(!signals1.is_empty());
 
         // Second identical batch: should be suppressed by dedup
         let batch2 = make_batch(events);
-        let signals2 = engine.analyze(&batch2);
+        let signals2 = analyze_batch(&engine, &batch2);
         // All signals from the same dir+rule should be suppressed
         let bulk_delete_signals: Vec<_> = signals2
             .iter()
@@ -324,7 +331,7 @@ mod tests {
             .collect();
 
         let batch = make_batch(events.clone());
-        let signals1 = engine.analyze(&batch);
+        let signals1 = analyze_batch(&engine, &batch);
         assert!(!signals1.is_empty());
 
         // Wait for cooldown
@@ -332,7 +339,7 @@ mod tests {
 
         // Should fire again after cooldown
         let batch2 = make_batch(events);
-        let signals2 = engine.analyze(&batch2);
+        let signals2 = analyze_batch(&engine, &batch2);
         assert!(!signals2.is_empty());
     }
 
@@ -359,7 +366,7 @@ mod tests {
         ));
 
         let batch = make_batch(events);
-        let signals = engine.analyze(&batch);
+        let signals = analyze_batch(&engine, &batch);
         assert!(!signals.is_empty());
         // CRITICAL should come first
         assert_eq!(signals[0].severity, AnomalySeverity::Critical);
@@ -381,7 +388,7 @@ mod tests {
             })
             .collect();
         let batch = make_batch(events);
-        let signals = engine.analyze(&batch);
+        let signals = analyze_batch(&engine, &batch);
         // BulkModify may fire (50 > threshold), but LargeNonPackageModify should not
         let npm_signals: Vec<_> = signals
             .iter()

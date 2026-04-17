@@ -9,6 +9,7 @@
 use rew_core::config::RewConfig;
 use rew_core::db::Database;
 use rew_core::detector::RuleEngine;
+use rew_core::processor::BatchStats;
 use rew_core::traits::AnomalyDetector;
 use rew_core::types::*;
 use rew_core::watcher::filter::PathFilter;
@@ -59,8 +60,9 @@ fn test_perf_large_directory_event_processing() {
     let batch = make_batch(events);
 
     // Measure anomaly detection time
+    let stats = BatchStats::from_batch(&batch);
     let start = Instant::now();
-    let alerts = rule_engine.analyze(&batch);
+    let alerts = rule_engine.analyze(&batch, &stats);
     let detection_time = start.elapsed();
 
     println!(

@@ -25,19 +25,22 @@ pub fn run() {
     };
 
     // Initialize rew core
-    let (db, config) = match initialize_rew() {
+    let (db, read_db, config) = match initialize_rew() {
         Ok(result) => result,
         Err(e) => {
             eprintln!("Failed to initialize rew: {}", e);
             // Fallback to defaults
-            let db = Database::open(&rew_core::rew_home_dir().join("snapshots.db"))
+            let db_path = rew_core::rew_home_dir().join("snapshots.db");
+            let db = Database::open(&db_path)
                 .expect("Failed to open database");
             db.initialize().expect("Failed to initialize database");
-            (db, RewConfig::default())
+            let read_db = Database::open_readonly(&db_path)
+                .expect("Failed to open read database");
+            (db, read_db, RewConfig::default())
         }
     };
 
-    let app_state = AppState::new(db, config);
+    let app_state = AppState::new(db, read_db, config);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -96,6 +99,7 @@ pub fn run() {
             commands::install_tool_hook,
             commands::uninstall_tool_hook,
             commands::stop_task,
+            commands::get_batch_progress,
             // Task statistics
             commands::get_task_stats,
             commands::get_insights,
@@ -315,7 +319,7 @@ fn install_cli_binary(app: &tauri::AppHandle) {
 }
 
 
-fn initialize_rew() -> Result<(Database, RewConfig), rew_core::error::RewError> {
+fn initialize_rew() -> Result<(Database, Database, RewConfig), rew_core::error::RewError> {
     let rew_dir = rew_core::rew_home_dir();
     std::fs::create_dir_all(&rew_dir)?;
 
@@ -329,10 +333,16 @@ fn initialize_rew() -> Result<(Database, RewConfig), rew_core::error::RewError> 
         default_config
     };
 
-    // Initialize database
+    // Open write connection and initialize schema
     let db_path = rew_dir.join("snapshots.db");
     let db = Database::open(&db_path)?;
     db.initialize()?;
 
-    Ok((db, config))
+    // Open a second connection for UI queries in SQLite read-only mode.
+    // WAL mode allows concurrent reads while the daemon write connection holds
+    // a RESERVED lock during batch writes. The SQLITE_OPEN_READ_ONLY flag
+    // enforces this boundary at the SQLite level rather than by convention.
+    let read_db = Database::open_readonly(&db_path)?;
+
+    Ok((db, read_db, config))
 }

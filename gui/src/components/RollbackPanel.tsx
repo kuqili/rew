@@ -1,9 +1,10 @@
 /**
  * RollbackPanel — "读档"确认弹窗（居中 sheet modal）
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { RotateCcw, CheckCircle, AlertTriangle, Info, X } from "lucide-react";
-import { previewRollback, rollbackTask, type UndoPreviewInfo } from "../lib/tauri";
+import { listen } from "@tauri-apps/api/event";
+import { previewRollback, rollbackTask, type UndoPreviewInfo, type RestoreProgressInfo } from "../lib/tauri";
 import { fileName } from "../lib/format";
 
 interface Props {
@@ -24,8 +25,10 @@ export default function RollbackPanel({
   const [preview, setPreview] = useState<UndoPreviewInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [rolling, setRolling] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState<RestoreProgressInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const unlistenRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     previewRollback(taskId)
@@ -34,8 +37,26 @@ export default function RollbackPanel({
       .finally(() => setLoading(false));
   }, [taskId]);
 
+  // Subscribe to restore-progress events while the panel is mounted
+  useEffect(() => {
+    let active = true;
+    listen<RestoreProgressInfo>("restore-progress", (event) => {
+      if (!active) return;
+      if (event.payload.task_id === taskId) {
+        setRestoreProgress(event.payload);
+      }
+    }).then((unlisten) => {
+      unlistenRef.current = unlisten;
+    });
+    return () => {
+      active = false;
+      unlistenRef.current?.();
+    };
+  }, [taskId]);
+
   const handleRollback = async () => {
     setRolling(true);
+    setRestoreProgress(null);
     setError(null);
     try {
       const res = await rollbackTask(taskId);
@@ -121,6 +142,38 @@ export default function RollbackPanel({
             )}
           </div>
 
+          {/* Restore progress — shown while rolling is in progress */}
+          {rolling && restoreProgress && restoreProgress.is_running && (
+            <div className="mb-3 space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-t-3">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-sys-blue animate-pulse" />
+                  正在恢复文件…
+                </span>
+                <span className="tabular-nums">
+                  {restoreProgress.processed_files.toLocaleString()} /{" "}
+                  {restoreProgress.total_files.toLocaleString()}
+                </span>
+              </div>
+              <div className="h-1 bg-bg-active rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-sys-blue transition-all duration-200"
+                  style={{
+                    width:
+                      restoreProgress.total_files > 0
+                        ? `${Math.min(100, Math.round((restoreProgress.processed_files / restoreProgress.total_files) * 100))}%`
+                        : "0%",
+                  }}
+                />
+              </div>
+              {restoreProgress.current_path && (
+                <div className="text-[10px] text-t-4 font-mono truncate">
+                  {fileName(restoreProgress.current_path)}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Preview / Status */}
           {loading ? (
             <div className="py-2 text-[12px] text-t-3 flex items-center gap-2">
@@ -195,7 +248,11 @@ export default function RollbackPanel({
               disabled={rolling || !!error || (preview?.files_to_restore.length === 0 && preview?.files_to_delete.length === 0)}
               className="px-4 py-1.5 rounded-md bg-sys-red text-white text-[12px] font-medium hover:opacity-90 transition-opacity disabled:opacity-40"
             >
-              {rolling ? "读档中..." : "确认读档"}
+              {rolling
+                ? restoreProgress && restoreProgress.total_files > 0
+                  ? `读档中 ${Math.min(100, Math.round((restoreProgress.processed_files / restoreProgress.total_files) * 100))}%`
+                  : "读档中..."
+                : "确认读档"}
             </button>
           </div>
         )}

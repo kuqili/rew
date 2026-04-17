@@ -1456,19 +1456,19 @@ async fn run_pipeline(
             }
             batch_result = handle.recv_batch() => {
                 match batch_result {
-                    Some((event_batch, _stats)) => {
-                        let added = event_batch.count_by_kind(&FileEventKind::Created);
-                        let modified = event_batch.count_by_kind(&FileEventKind::Modified);
-                        let deleted = event_batch.count_by_kind(&FileEventKind::Deleted);
+                    Some((event_batch, batch_stats)) => {
                         let total = event_batch.events.len();
+                        let added = batch_stats.files_added;
+                        let modified = batch_stats.files_modified;
+                        let deleted = batch_stats.files_deleted;
 
                         info!(
                             "Batch received: {} events (added={}, modified={}, deleted={})",
                             total, added, modified, deleted
                         );
 
-                        // Run anomaly detection
-                        let alerts = rule_engine.analyze(&event_batch);
+                        // Run anomaly detection using pre-aggregated stats for O(1) rule short-circuits
+                        let alerts = rule_engine.analyze(&event_batch, &batch_stats);
                         let is_anomaly = !alerts.is_empty();
 
                         if is_anomaly {
@@ -1849,8 +1849,8 @@ async fn run_pipeline(
                                                         if file_size >= LARGE_FILE_BYTES
                                                             && is_av_file(&event.path)
                                                         {
-                                                            let old_hashes = if let Ok(db) = state.db.lock() {
-                                                                db.get_old_version_hashes(
+                                                            let old_hashes = if let Ok(rdb) = state.read_db.lock() {
+                                                                rdb.get_old_version_hashes(
                                                                     &event.path,
                                                                     LARGE_FILE_KEEP_VERSIONS,
                                                                 )
@@ -1859,8 +1859,8 @@ async fn run_pipeline(
                                                                 Vec::new()
                                                             };
                                                             for old_hash in old_hashes {
-                                                                let still_ref = if let Ok(db) = state.db.lock() {
-                                                                    db.is_hash_referenced(&old_hash).unwrap_or(true)
+                                                                let still_ref = if let Ok(rdb) = state.read_db.lock() {
+                                                                    rdb.is_hash_referenced(&old_hash).unwrap_or(true)
                                                                 } else {
                                                                     true
                                                                 };
@@ -1880,8 +1880,8 @@ async fn run_pipeline(
                                             if !event.path.exists() && !file_hashes.contains_key(&event.path) {
                                                 if let Some(h) = rew_core::pipeline::take_shadow_hash(&event.path) {
                                                     file_hashes.insert(event.path.clone(), h);
-                                                } else if let Ok(db) = state.db.lock() {
-                                                    if let Ok(Some(prev)) = db.get_latest_change_for_file(&event.path) {
+                                                } else if let Ok(rdb) = state.read_db.lock() {
+                                                    if let Ok(Some(prev)) = rdb.get_latest_change_for_file(&event.path) {
                                                         if let Some(h) = prev.new_hash.or(prev.old_hash) {
                                                             file_hashes.insert(event.path.clone(), h);
                                                         }
@@ -1895,11 +1895,46 @@ async fn run_pipeline(
                                         // exists for (task_id, file_path) — so AI hook's precise
                                         // old_hash (captured right before the write) wins when
                                         // both the hook and daemon write for the same file.
-                                        let mut changes_written: usize = 0;
-                                        for event in &effective_events {
-                                            let baseline = if let Ok(db) = state.db.lock() {
+                                        //
+                                        // Phase 3 is split into three stages to minimise DB lock
+                                        // hold time and reduce WAL fsync overhead:
+                                        //
+                                        //  Stage A — Compute (uses read_db, short per-file locks)
+                                        //  Stage B — Batch write (write_db, 500-file chunks, 1 fsync/chunk)
+                                        //  Stage C — Orphaned object cleanup (CPU-only)
+
+                                        // ── Stage A: Compute ────────────────────────────────────
+                                        struct PlannedChange {
+                                            change: Change,
+                                            prev_new_hash: Option<String>,
+                                        }
+                                        let mut planned: Vec<PlannedChange> = Vec::with_capacity(effective_events.len());
+
+                                        // Emit banner immediately at Stage A entry so the user sees
+                                        // feedback right away, before the (potentially slow) planning
+                                        // loop runs. We use effective_events.len() as the initial
+                                        // total; Stage B will emit a phase-switch event with the
+                                        // final planned.len() so the frontend can recalibrate.
+                                        let initial_total = effective_events.len();
+                                        let is_initial_large_batch = initial_total > 2000;
+                                        if is_initial_large_batch {
+                                            if let Ok(mut bp) = state.batch_progress.lock() {
+                                                bp.is_running = true;
+                                                bp.task_id = Some(task_id.clone());
+                                                bp.total_files = initial_total;
+                                                bp.processed_files = 0;
+                                            }
+                                            let _ = app.emit("large-batch-started", serde_json::json!({
+                                                "file_count": initial_total,
+                                                "task_id": task_id,
+                                                "phase": "planning",
+                                            }));
+                                        }
+
+                                        for (stage_a_idx, event) in effective_events.iter().enumerate() {
+                                            let baseline = if let Ok(rdb) = state.read_db.lock() {
                                                 rew_core::baseline::resolve_baseline(
-                                                    &db, &task_id, &event.path, None,
+                                                    &rdb, &task_id, &event.path, None,
                                                 )
                                             } else {
                                                 rew_core::baseline::Baseline {
@@ -1976,8 +2011,8 @@ async fn run_pipeline(
                                             // recently completed task (within 90s).
                                             if let Some(ref nh) = new_hash {
                                                 let p = event.path.to_string_lossy().to_string();
-                                                let already_recorded = if let Ok(db) = state.db.lock() {
-                                                    db.is_change_already_recorded(&p, nh).unwrap_or(false)
+                                                let already_recorded = if let Ok(rdb) = state.read_db.lock() {
+                                                    rdb.is_change_already_recorded(&p, nh).unwrap_or(false)
                                                 } else {
                                                     false
                                                 };
@@ -1987,8 +2022,6 @@ async fn run_pipeline(
                                             }
 
                                             // Compute line-count stats on the fly.
-                                            // We read from the object store (already in memory
-                                            // as file_hashes); reads are cheap for text files.
                                             let (lines_added, lines_removed) = compute_line_stats(
                                                 &obj_store,
                                                 old_hash.as_deref(),
@@ -2009,11 +2042,9 @@ async fn run_pipeline(
                                                 old_file_path: None,
                                             };
 
-                                            // Before upserting, record which new_hash currently
-                                            // occupies this (task_id, file_path) slot so we can
-                                            // delete it from the ObjectStore if it becomes orphaned.
-                                            let prev_new_hash = if let Ok(db) = state.db.lock() {
-                                                db.get_change_new_hash(
+                                            // Read prev_new_hash for orphan cleanup (Stage C).
+                                            let prev_new_hash = if let Ok(rdb) = state.read_db.lock() {
+                                                rdb.get_change_new_hash(
                                                     &change.task_id,
                                                     &change.file_path,
                                                 ).ok().flatten()
@@ -2021,25 +2052,174 @@ async fn run_pipeline(
                                                 None
                                             };
 
-                                            if let Ok(db) = state.db.lock() {
-                                                if db.upsert_change(&change).is_ok() {
-                                                    let seen_at = chrono::Utc::now().to_rfc3339();
-                                                    let _ = sync_file_index_after_change(&db, &change, fsevent_attribution, &seen_at);
-                                                    changes_written += 1;
-                                                }
-                                            }
+                                            planned.push(PlannedChange { change, prev_new_hash });
 
-                                            // Clean up orphaned object: the previous new_hash is
-                                            // only deleted when the hash actually changed AND
-                                            // no other change record references it.
-                                            if let Some(ref prev_hash) = prev_new_hash {
-                                                let new_hash_differs = change.new_hash
+                                            // Emit planning progress every 1000 events so the
+                                            // user sees a smooth counter while Stage A is running.
+                                            if is_initial_large_batch && (stage_a_idx + 1) % 1000 == 0 {
+                                                if let Ok(mut bp) = state.batch_progress.lock() {
+                                                    bp.processed_files = stage_a_idx + 1;
+                                                }
+                                                let _ = app.emit("large-batch-progress", serde_json::json!({
+                                                    "processed": stage_a_idx + 1,
+                                                    "total": initial_total,
+                                                    "phase": "planning",
+                                                    "task_id": task_id,
+                                                }));
+                                            }
+                                        }
+
+                                        // ── Stage B: Batch write ─────────────────────────────────
+                                        let total_planned = planned.len();
+                                        // A batch is "large" if it triggered the early banner
+                                        // (is_initial_large_batch) OR if the planned set grew
+                                        // beyond 2000 despite a smaller initial event count.
+                                        let is_large_batch = is_initial_large_batch || total_planned > 2000;
+                                        if is_large_batch {
+                                            // Transition to writing phase: update total to
+                                            // planned.len() (which may differ from initial_total
+                                            // after dedup / no-op filtering in Stage A).
+                                            if let Ok(mut bp) = state.batch_progress.lock() {
+                                                bp.is_running = true;
+                                                bp.task_id = Some(task_id.clone());
+                                                bp.total_files = total_planned;
+                                                bp.processed_files = 0;
+                                            }
+                                            let _ = app.emit("large-batch-progress", serde_json::json!({
+                                                "processed": 0,
+                                                "total": total_planned,
+                                                "phase": "writing",
+                                                "task_id": task_id,
+                                            }));
+                                        }
+
+                                        const BATCH_CHUNK_SIZE: usize = 500;
+                                        let mut changes_written: usize = 0;
+                                        let seen_at = chrono::Utc::now().to_rfc3339();
+
+                                        for chunk in planned.chunks(BATCH_CHUNK_SIZE) {
+                                            let chunk_written = if let Ok(db) = state.db.lock() {
+                                                // Attempt batch transaction for this chunk.
+                                                let mut written_in_chunk = 0usize;
+                                                let tx_ok = match db.begin_transaction() {
+                                                    Ok(_) => true,
+                                                    Err(e) => {
+                                                        warn!(
+                                                            "BEGIN DEFERRED failed for chunk ({}); \
+                                                             falling back to per-file writes: {}",
+                                                            chunk.len(), e
+                                                        );
+                                                        false
+                                                    }
+                                                };
+                                                if tx_ok {
+                                                    let mut batch_ok = true;
+                                                    for pc in chunk {
+                                                        if db.upsert_change(&pc.change).is_err() {
+                                                            batch_ok = false;
+                                                            break;
+                                                        }
+                                                        let _ = sync_file_index_after_change(
+                                                            &db, &pc.change, fsevent_attribution, &seen_at,
+                                                        );
+                                                        written_in_chunk += 1;
+                                                    }
+                                                    if batch_ok {
+                                                        if let Err(e) = db.commit_transaction() {
+                                                            warn!(
+                                                                "COMMIT failed for chunk ({}); \
+                                                                 rolling back and retrying individually: {}",
+                                                                chunk.len(), e
+                                                            );
+                                                            let _ = db.rollback_transaction();
+                                                            // Fallback: write each file individually
+                                                            written_in_chunk = 0;
+                                                            for pc in chunk {
+                                                                if db.upsert_change(&pc.change).is_ok() {
+                                                                    let _ = sync_file_index_after_change(
+                                                                        &db, &pc.change, fsevent_attribution, &seen_at,
+                                                                    );
+                                                                    written_in_chunk += 1;
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
+                                                        warn!(
+                                                            "Batch write error at file {}/{}; rolling back chunk, retrying individually",
+                                                            written_in_chunk + 1, chunk.len()
+                                                        );
+                                                        let _ = db.rollback_transaction();
+                                                        // Fallback: write each file individually
+                                                        written_in_chunk = 0;
+                                                        for pc in chunk {
+                                                            if db.upsert_change(&pc.change).is_ok() {
+                                                                let _ = sync_file_index_after_change(
+                                                                    &db, &pc.change, fsevent_attribution, &seen_at,
+                                                                );
+                                                                written_in_chunk += 1;
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    // BEGIN failed — fall back to per-file writes
+                                                    for pc in chunk {
+                                                        if db.upsert_change(&pc.change).is_ok() {
+                                                            let _ = sync_file_index_after_change(
+                                                                &db, &pc.change, fsevent_attribution, &seen_at,
+                                                            );
+                                                            written_in_chunk += 1;
+                                                        }
+                                                    }
+                                                }
+                                                written_in_chunk
+                                            } else {
+                                                0
+                                            };
+                                            changes_written += chunk_written;
+
+                                            // Emit per-chunk writing progress
+                                            if is_large_batch {
+                                                if let Ok(mut bp) = state.batch_progress.lock() {
+                                                    bp.processed_files = changes_written;
+                                                }
+                                                let _ = app.emit("large-batch-progress", serde_json::json!({
+                                                    "processed": changes_written,
+                                                    "total": total_planned,
+                                                    "phase": "writing",
+                                                    "task_id": task_id,
+                                                }));
+                                            }
+                                        }
+
+                                        if is_large_batch {
+                                            if let Ok(mut bp) = state.batch_progress.lock() {
+                                                bp.is_running = false;
+                                                bp.processed_files = changes_written;
+                                            }
+                                            let _ = app.emit("large-batch-completed", serde_json::json!({
+                                                "file_count": changes_written,
+                                                "task_id": task_id,
+                                            }));
+                                        }
+
+                                        // ── Stage C: Orphaned object cleanup ─────────────────────
+                                        //
+                                        // We use read_db here intentionally. There is a benign
+                                        // TOCTOU window: Stage B just committed, but read_db may
+                                        // still be on an older WAL snapshot and could report a
+                                        // hash as "still referenced" even though Stage B just
+                                        // made it unreferenced. The result is conservative — we
+                                        // skip deletion rather than accidentally removing an
+                                        // object. The hash will be cleaned up in a future GC pass.
+                                        for pc in &planned {
+                                            if let Some(ref prev_hash) = pc.prev_new_hash {
+                                                let new_hash_differs = pc.change.new_hash
                                                     .as_deref()
                                                     .map(|h| h != prev_hash.as_str())
                                                     .unwrap_or(true);
                                                 if new_hash_differs {
-                                                    let still_referenced = if let Ok(db) = state.db.lock() {
-                                                        db.is_hash_referenced(prev_hash).unwrap_or(true)
+                                                    let still_referenced = if let Ok(rdb) = state.read_db.lock() {
+                                                        rdb.is_hash_referenced(prev_hash).unwrap_or(true)
                                                     } else {
                                                         true
                                                     };

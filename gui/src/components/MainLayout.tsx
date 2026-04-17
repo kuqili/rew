@@ -4,7 +4,9 @@ import TaskTimeline from "./TaskTimeline";
 import TaskDetail from "./TaskDetail";
 import SettingsPanel from "./SettingsPanel";
 import InsightsPanel from "./InsightsPanel";
+import BatchProgressBanner from "./BatchProgressBanner";
 import { useTasks } from "../hooks/useTasks";
+import { useBatchProgress } from "../hooks/useBatchProgress";
 import { getToolMeta } from "../lib/tools";
 
 export type ViewMode = "all" | "ai" | "insights";
@@ -19,6 +21,9 @@ export default function MainLayout() {
 
   // Load tasks to compute active tools for sidebar
   const { tasks: allTasks } = useTasks(selectedDir, { enabled: viewMode !== "insights" });
+
+  // Batch processing progress for large FSEvent batches
+  const batchProgress = useBatchProgress();
 
   const activeTools = useMemo(() => {
     const seen = new Map<string, string>();
@@ -46,6 +51,9 @@ export default function MainLayout() {
 
   return (
     <div className="flex flex-col h-screen bg-white overflow-hidden">
+      {/* Batch processing progress banner (large file deletions/creates) */}
+      <BatchProgressBanner progress={batchProgress} />
+
       {/* Settings modal overlay */}
       {showSettings && (
         <div className="modal-overlay">

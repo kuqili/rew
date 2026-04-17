@@ -605,6 +605,128 @@ impl TaskRestoreEngine {
     ///
     /// Processes changes in reverse order (last change first).
     /// On success, marks the task as `RolledBack`.
+    /// Same as `undo_task` but calls `on_progress` after each file so callers
+    /// can report progress to the UI. The callback receives a
+    /// `PreparedDirectoryUndoProgress` value with the current counters.
+    ///
+    /// Returns `(UndoResult, Vec<PreparedSuppressionEntry>)`. The suppression
+    /// entries are **not** written to `file_index` by this method; the caller is
+    /// responsible for a single batch write via
+    /// `db.sync_file_index_after_restore_batch` after the call returns.
+    /// This separates the O(N) per-file DB writes from the FS operations and
+    /// collapses them into a single transaction, matching the design of
+    /// `execute_prepared_directory_undo_with_progress`.
+    pub fn undo_task_with_progress<F>(
+        &self,
+        db: &crate::db::Database,
+        task_id: &str,
+        mut on_progress: F,
+    ) -> RewResult<(UndoResult, Vec<PreparedSuppressionEntry>)>
+    where
+        F: FnMut(PreparedDirectoryUndoProgress),
+    {
+        let _task = db
+            .get_task(task_id)?
+            .ok_or_else(|| RewError::Snapshot(format!("Task '{}' not found", task_id)))?;
+
+        let mut changes = db.get_changes_for_task(task_id)?;
+        changes.retain(|c| !is_temp_file(&c.file_path));
+
+        let mut seen: std::collections::HashMap<PathBuf, crate::types::Change> =
+            std::collections::HashMap::new();
+        for change in &changes {
+            if let Some(existing) = seen.get(&change.file_path) {
+                let dominated = match (&change.change_type, &existing.change_type) {
+                    (crate::types::ChangeType::Deleted, _) if change.old_hash.is_some() => true,
+                    (crate::types::ChangeType::Renamed, _) if change.old_hash.is_some() => true,
+                    (crate::types::ChangeType::Modified, crate::types::ChangeType::Created)
+                        if change.old_hash.is_some() =>
+                    {
+                        true
+                    }
+                    _ => false,
+                };
+                if dominated {
+                    seen.insert(change.file_path.clone(), change.clone());
+                }
+            } else {
+                seen.insert(change.file_path.clone(), change.clone());
+            }
+        }
+        changes = seen.into_values().collect();
+        changes.sort_by_key(|c| std::cmp::Reverse(path_depth(&c.file_path)));
+
+        let total_files = changes.len();
+        let mut files_restored = 0;
+        let mut files_deleted = 0;
+        let mut failures = Vec::new();
+        // Accumulate suppression entries for a single batch file_index write after
+        // all FS operations complete. This avoids O(N) individual AUTO-COMMIT writes
+        // (one per file) and replaces them with a single transaction at the call site.
+        let mut all_suppression_entries: Vec<PreparedSuppressionEntry> = Vec::with_capacity(total_files * 2);
+
+        on_progress(PreparedDirectoryUndoProgress {
+            total_files,
+            processed_files: 0,
+            restored_files: 0,
+            deleted_files: 0,
+            failed_files: 0,
+            current_path: None,
+        });
+
+        for (idx, change) in changes.iter().enumerate() {
+            // prepare_undo_change reads from DB (resolve hash); execute_prepared_undo_change
+            // is pure FS — no DB writes during the loop.
+            let prepared = self.prepare_undo_change(db, change);
+            let suppression_entries = prepared.suppression_entries();
+            match self.execute_prepared_undo_change(&prepared) {
+                Ok(UndoAction::Restored) => {
+                    files_restored += 1;
+                    all_suppression_entries.extend(suppression_entries);
+                }
+                Ok(UndoAction::Deleted) => {
+                    files_deleted += 1;
+                    all_suppression_entries.extend(suppression_entries);
+                }
+                Err(e) => {
+                    failures.push((change.file_path.clone(), e));
+                }
+            }
+            on_progress(PreparedDirectoryUndoProgress {
+                total_files,
+                processed_files: idx + 1,
+                restored_files: files_restored,
+                deleted_files: files_deleted,
+                failed_files: failures.len(),
+                current_path: Some(change.file_path.clone()),
+            });
+        }
+
+        if failures.is_empty() {
+            db.update_task_status(
+                task_id,
+                &crate::types::TaskStatus::RolledBack,
+                None,
+            )?;
+        } else if files_restored > 0 || files_deleted > 0 {
+            db.update_task_status(
+                task_id,
+                &crate::types::TaskStatus::PartialRolledBack,
+                None,
+            )?;
+        }
+
+        info!(
+            "Undo task '{}' (with progress): restored={}, deleted={}, failures={}",
+            task_id, files_restored, files_deleted, failures.len()
+        );
+
+        Ok((
+            UndoResult { files_restored, files_deleted, failures },
+            all_suppression_entries,
+        ))
+    }
+
     pub fn undo_task(
         &self,
         db: &crate::db::Database,
@@ -650,22 +772,31 @@ impl TaskRestoreEngine {
         let mut files_restored = 0;
         let mut files_deleted = 0;
         let mut failures = Vec::new();
+        let mut all_suppression_entries: Vec<PreparedSuppressionEntry> =
+            Vec::with_capacity(changes.len() * 2);
 
         for change in &changes {
-            match self.undo_single_change(db, change) {
-                Ok((UndoAction::Restored, suppression_entries)) => {
+            // prepare (DB read) → execute (FS only) → collect suppression entries.
+            // No DB writes inside the loop; one batch write happens after.
+            let prepared = self.prepare_undo_change(db, change);
+            let suppression_entries = prepared.suppression_entries();
+            match self.execute_prepared_undo_change(&prepared) {
+                Ok(UndoAction::Restored) => {
                     files_restored += 1;
-                    apply_file_index_updates_after_restore(db, &suppression_entries);
+                    all_suppression_entries.extend(suppression_entries);
                 }
-                Ok((UndoAction::Deleted, suppression_entries)) => {
+                Ok(UndoAction::Deleted) => {
                     files_deleted += 1;
-                    apply_file_index_updates_after_restore(db, &suppression_entries);
+                    all_suppression_entries.extend(suppression_entries);
                 }
                 Err(e) => {
                     failures.push((change.file_path.clone(), e));
                 }
             }
         }
+
+        // Batch-write file_index for all restored/deleted files in one transaction.
+        apply_file_index_updates_after_restore(db, &all_suppression_entries);
 
         // Update task status — keep completed_at unchanged so the archive's
         // original timestamp is preserved in the timeline (the rollback time

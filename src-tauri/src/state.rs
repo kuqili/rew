@@ -84,6 +84,16 @@ pub struct RestoreProgress {
     pub current_path: Option<String>,
 }
 
+/// Progress state for large FSEvent batch processing (>2000 files in one batch).
+/// Stored in AppState so the frontend can poll it on window reconnect.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct BatchProcessingProgress {
+    pub is_running: bool,
+    pub task_id: Option<String>,
+    pub total_files: usize,
+    pub processed_files: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct SuppressedRestorePath {
     pub created_at: Instant,
@@ -93,8 +103,11 @@ pub struct SuppressedRestorePath {
 
 /// Application state shared across Tauri commands and the tray.
 pub struct AppState {
-    /// SQLite database handle.
+    /// SQLite database write connection — used by daemon writes and Tauri write commands.
     pub db: Mutex<Database>,
+    /// SQLite database read-only connection — used by UI read commands to avoid blocking on writes.
+    /// WAL mode allows concurrent reads from a separate connection while writes are in progress.
+    pub read_db: Mutex<Database>,
     /// Current configuration.
     pub config: Mutex<RewConfig>,
     /// Whether protection is paused.
@@ -121,18 +134,22 @@ pub struct AppState {
     pub suppressed_restore_paths: Mutex<HashMap<PathBuf, SuppressedRestorePath>>,
     /// Live directory-restore progress for large rollback operations.
     pub restore_progress: Arc<Mutex<RestoreProgress>>,
+    /// Live batch processing progress for large FSEvent batches (>2000 files).
+    /// Arc so daemon thread can update while UI polls via get_batch_progress command.
+    pub batch_progress: Arc<Mutex<BatchProcessingProgress>>,
     /// Channel to send hot-update commands (add/remove path) to the running daemon pipeline.
     /// Set by the daemon after the pipeline starts; None if daemon not yet running.
     pub pipeline_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<PipelineCmd>>>,
 }
 
 impl AppState {
-    pub fn new(db: Database, config: RewConfig) -> Self {
+    pub fn new(db: Database, read_db: Database, config: RewConfig) -> Self {
         // Try to load persisted scan status from disk
         let scan_progress = load_scan_status();
 
         Self {
             db: Mutex::new(db),
+            read_db: Mutex::new(read_db),
             config: Mutex::new(config),
             paused: Mutex::new(false),
             has_warning: Mutex::new(false),
@@ -142,6 +159,7 @@ impl AppState {
             suppressed_paths: Mutex::new(HashMap::new()),
             suppressed_restore_paths: Mutex::new(HashMap::new()),
             restore_progress: Arc::new(Mutex::new(RestoreProgress::default())),
+            batch_progress: Arc::new(Mutex::new(BatchProcessingProgress::default())),
             pipeline_tx: Mutex::new(None),
         }
     }

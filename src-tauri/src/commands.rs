@@ -206,14 +206,14 @@ pub struct ConfigInfo {
 
 #[tauri::command]
 pub async fn list_snapshots(state: State<'_, AppState>) -> Result<Vec<SnapshotInfo>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
     let snapshots = db.list_snapshots().map_err(|e| e.to_string())?;
     Ok(snapshots.into_iter().map(SnapshotInfo::from).collect())
 }
 
 #[tauri::command]
 pub async fn get_status(state: State<'_, AppState>) -> Result<StatusInfo, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
     let snapshots = db.list_snapshots().unwrap_or_default();
     let anomaly_count = snapshots
         .iter()
@@ -358,12 +358,16 @@ pub async fn restore_snapshot(
     state: State<'_, AppState>,
     snapshot_id: String,
 ) -> Result<String, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
     let uuid = uuid::Uuid::parse_str(&snapshot_id).map_err(|e| e.to_string())?;
-    let _snapshot = db
-        .get_snapshot(&uuid)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Snapshot not found".to_string())?;
+    {
+        // Validate snapshot existence via read connection, then release lock
+        // before the heavy file-restore I/O work starts.
+        let db = state.read_db.lock().map_err(|e| e.to_string())?;
+        let _snapshot = db
+            .get_snapshot(&uuid)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Snapshot not found".to_string())?;
+    }
 
     // Get the backup directory for this snapshot
     let backup_root = rew_home_dir().join("backups");
@@ -373,8 +377,12 @@ pub async fn restore_snapshot(
         return Err(format!("No backup found for snapshot {}", snapshot_id));
     }
 
-    // Perform the restore
-    match restore_files_from_backup(&backup_dir) {
+    // Perform restore on a blocking thread to avoid monopolizing the async
+    // command runtime on very large restores (e.g. 150k files).
+    match tauri::async_runtime::spawn_blocking(move || restore_files_from_backup(&backup_dir))
+        .await
+        .map_err(|e| format!("Restore task join failed: {}", e))?
+    {
         Ok(count) => {
             Ok(format!(
                 "Restore successful! {} files restored from snapshot {}",
@@ -390,7 +398,7 @@ pub async fn get_restore_preview(
     state: State<'_, AppState>,
     snapshot_id: String,
 ) -> Result<RestorePreviewInfo, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
     let uuid = uuid::Uuid::parse_str(&snapshot_id).map_err(|e| e.to_string())?;
     let snapshot = db
         .get_snapshot(&uuid)
@@ -759,7 +767,7 @@ pub async fn list_tasks(
         .ok()
         .and_then(|guard| guard.as_ref().map(|w| w.task_id.clone()));
 
-    let db = state.db.lock().map_err(|e| format!("DB lock error: {}", e))?;
+    let db = state.read_db.lock().map_err(|e| format!("DB lock error: {}", e))?;
 
     let mut tasks = if let Some(ref path) = dir_filter {
         if infer_path_filter_mode(&db, path) == PathFilterMode::File {
@@ -807,7 +815,7 @@ pub async fn list_tasks(
 
 #[tauri::command]
 pub async fn get_task(state: State<'_, AppState>, task_id: String) -> Result<TaskInfo, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
     let task = db.get_task(&task_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task '{}' not found", task_id))?;
@@ -838,7 +846,7 @@ pub async fn get_task_changes(
     const DEFAULT_RETURNED_CHANGES: usize = 1000;
     const LARGE_TASK_RETURNED_CHANGES: usize = 100;
     const LARGE_TASK_THRESHOLD: usize = 5000;
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
     let (changes, total_count) = if let Some(ref path) = dir_filter {
         if infer_path_filter_mode(&db, path) == PathFilterMode::File {
             let total_count = db.count_changes_for_file(&task_id, path).map_err(|e| e.to_string())?;
@@ -973,7 +981,7 @@ pub async fn get_task_stats(
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<Option<TaskStatsInfo>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
     let stats = db.get_task_stats(&task_id).map_err(|e| e.to_string())?;
     Ok(stats.map(|s| TaskStatsInfo {
         task_id: s.task_id,
@@ -1016,7 +1024,7 @@ pub async fn get_insights(
     period: String,
 ) -> Result<InsightsDataInfo, String> {
     let (start_at, end_at) = insights_period_bounds(&period)?;
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
     let rows = db
         .list_insight_tasks(&start_at.to_rfc3339(), &end_at.to_rfc3339())
         .map_err(|e| e.to_string())?;
@@ -1164,7 +1172,7 @@ pub async fn get_change_diff(
     file_path: String,
 ) -> Result<ChangeDiffResult, String> {
     let (old_hash, new_hash) = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let db = state.read_db.lock().map_err(|e| e.to_string())?;
         let changes = db.get_changes_for_task(&task_id).map_err(|e| e.to_string())?;
         let change = changes
             .into_iter()
@@ -1211,7 +1219,7 @@ pub async fn get_change_diff(
 
 #[tauri::command]
 pub async fn preview_rollback(state: State<'_, AppState>, task_id: String) -> Result<UndoPreviewInfo, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
     let objects_root = rew_home_dir().join("objects");
     let engine = TaskRestoreEngine::new(objects_root)
         .with_cleanup_boundaries(restore_cleanup_boundaries(&state, &[]));
@@ -1255,12 +1263,74 @@ pub async fn rollback_task_cmd(
         count
     };
 
+    // Set initial restore progress so the frontend can show a spinner
+    // immediately before the (possibly large) task restore starts.
+    if let Ok(mut progress) = state.restore_progress.lock() {
+        *progress = crate::state::RestoreProgress {
+            is_running: true,
+            phase: RestorePhase::RestoringFiles,
+            task_id: Some(task_id.clone()),
+            dir_path: None,
+            total_files: requested_count,
+            processed_files: 0,
+            restored_files: 0,
+            deleted_files: 0,
+            failed_files: 0,
+            current_path: None,
+        };
+    }
+    emit_restore_progress(&app, &state);
+
+    let app_handle_for_progress = app.clone();
+    let mut last_emitted_at = std::time::Instant::now();
     let result = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let mut db = state.db.lock().map_err(|e| e.to_string())?;
         let objects_root = rew_home_dir().join("objects");
         let engine = TaskRestoreEngine::new(objects_root)
             .with_cleanup_boundaries(restore_cleanup_boundaries(&state, &[]));
-        engine.undo_task(&db, &task_id).map_err(|e| e.to_string())
+        engine
+            .undo_task_with_progress(&db, &task_id, |progress| {
+                // Throttle: emit at most once every RESTORE_PROGRESS_EMIT_INTERVAL_MS,
+                // or every RESTORE_PROGRESS_EMIT_EVERY_FILES files.
+                let now = std::time::Instant::now();
+                let should_emit = progress.processed_files == 0
+                    || progress.processed_files % RESTORE_PROGRESS_EMIT_EVERY_FILES == 0
+                    || now.duration_since(last_emitted_at).as_millis()
+                        >= RESTORE_PROGRESS_EMIT_INTERVAL_MS;
+                if !should_emit {
+                    return;
+                }
+                last_emitted_at = now;
+                if let Ok(mut shared) = state.restore_progress.lock() {
+                    shared.is_running = true;
+                    shared.phase = RestorePhase::RestoringFiles;
+                    shared.task_id = Some(task_id.clone());
+                    shared.dir_path = None;
+                    shared.total_files = progress.total_files;
+                    shared.processed_files = progress.processed_files;
+                    shared.restored_files = progress.restored_files;
+                    shared.deleted_files = progress.deleted_files;
+                    shared.failed_files = progress.failed_files;
+                    shared.current_path = progress
+                        .current_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string());
+                }
+                emit_restore_progress(&app_handle_for_progress, &state);
+            })
+            .map(|(undo_result, suppression_entries)| {
+                // Emit SyncingDatabase phase before the batch write
+                if let Ok(mut shared) = state.restore_progress.lock() {
+                    shared.phase = RestorePhase::SyncingDatabase;
+                }
+                emit_restore_progress(&app_handle_for_progress, &state);
+
+                // Batch-write all file_index updates in a single transaction
+                // instead of one AUTO-COMMIT per file.
+                sync_file_index_after_directory_restore(&mut db, &suppression_entries);
+                undo_result
+            })
+            .map_err(|e| e.to_string())
     };
 
     // On success: add all affected paths to suppressed_paths (60s TTL)
@@ -1309,13 +1379,45 @@ pub async fn rollback_task_cmd(
         }
     }
 
-    // Delay-clear global rolling_back flag
+    // Mark restore as done and notify the frontend
+    {
+        let (total, processed, restored, deleted, failed) = match &result {
+            Ok(r) => (
+                r.files_restored + r.files_deleted + r.failures.len(),
+                r.files_restored + r.files_deleted + r.failures.len(),
+                r.files_restored,
+                r.files_deleted,
+                r.failures.len(),
+            ),
+            Err(_) => (requested_count, 0, 0, 0, requested_count.max(1)),
+        };
+        if let Ok(mut progress) = state.restore_progress.lock() {
+            progress.is_running = false;
+            progress.phase = RestorePhase::Done;
+            progress.task_id = Some(task_id.clone());
+            progress.dir_path = None;
+            progress.total_files = total;
+            progress.processed_files = processed;
+            progress.restored_files = restored;
+            progress.deleted_files = deleted;
+            progress.failed_files = failed;
+            progress.current_path = None;
+        }
+        emit_restore_progress(&app, &state);
+    }
+
+    // Delay-clear global rolling_back flag and reset restore progress
     let app_handle = app.clone();
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         if let Some(s) = app_handle.try_state::<AppState>() {
             if let Ok(mut g) = s.rolling_back.lock() {
                 *g = false;
+            }
+            if let Ok(mut p) = s.restore_progress.lock() {
+                if p.phase == RestorePhase::Done {
+                    *p = crate::state::RestoreProgress::default();
+                }
             }
         }
     });
@@ -1677,7 +1779,7 @@ pub async fn list_restore_operations(
     task_id: String,
     limit: Option<usize>,
 ) -> Result<Vec<RestoreOperationInfo>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
     let operations = db
         .list_restore_operations_for_task(&task_id, limit.unwrap_or(20))
         .map_err(|e| e.to_string())?;
@@ -2320,7 +2422,7 @@ pub struct FullAnalysis {
 #[tauri::command]
 pub async fn get_dir_stats(state: State<'_, AppState>) -> Result<DirStatsResult, String> {
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
 
     let mut dirs = Vec::new();
     let mut total_files = 0usize;
@@ -2546,6 +2648,20 @@ pub async fn uninstall_tool_hook(tool_id: String) -> Result<(), String> {
         .to_string_lossy()
         .to_string();
     rew_core::hooks::uninstall_hook(&tool_id, &rew_bin)
+}
+
+/// Return the current batch processing progress so the frontend can show
+/// a progress banner after window reconnect (same pattern as get_restore_progress).
+#[tauri::command]
+pub async fn get_batch_progress(
+    state: State<'_, AppState>,
+) -> Result<crate::state::BatchProcessingProgress, String> {
+    let progress = state
+        .batch_progress
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    Ok(progress)
 }
 
 /// Manually stop an active AI task from the frontend.

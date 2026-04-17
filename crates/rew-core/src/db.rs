@@ -9,7 +9,7 @@ use crate::types::{
     Snapshot, SnapshotTrigger, Task, TaskStats, TaskStatus, TaskWithStats,
 };
 use chrono::{DateTime, NaiveDateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -150,11 +150,25 @@ pub struct RestoreFileIndexSyncEntry {
 }
 
 impl Database {
-    /// Open (or create) the database at the given path.
+    /// Open (or create) the database at the given path in read-write mode.
     pub fn open(path: &Path) -> RewResult<Self> {
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        Ok(Database { conn })
+    }
+
+    /// Open the database in SQLite read-only mode.
+    ///
+    /// Any attempt to execute a write statement on this connection will return
+    /// an error immediately at the SQLite layer, providing a hard enforcement
+    /// boundary rather than relying on convention.
+    pub fn open_readonly(path: &Path) -> RewResult<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Ok(Database { conn })
     }
 
@@ -341,6 +355,11 @@ impl Database {
         let _ = self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_changes_task_file_unique
                 ON changes(task_id, file_path)",
+            [],
+        );
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_changes_file_path_new_hash
+                ON changes(file_path, new_hash)",
             [],
         );
 
@@ -1669,7 +1688,7 @@ impl Database {
              FROM changes c
              JOIN tasks t ON c.task_id = t.id
              WHERE c.file_path = ?1 AND c.new_hash IS NOT NULL
-             ORDER BY t.created_at DESC",
+             ORDER BY t.started_at DESC",
         )?;
         let all_hashes: Vec<String> = stmt
             .query_map(params![path_str], |row| row.get::<_, String>(0))?
@@ -2511,6 +2530,11 @@ impl Database {
 
     pub fn commit_transaction(&self) -> RewResult<()> {
         self.conn.execute_batch("COMMIT")?;
+        Ok(())
+    }
+
+    pub fn rollback_transaction(&self) -> RewResult<()> {
+        self.conn.execute_batch("ROLLBACK")?;
         Ok(())
     }
 }
