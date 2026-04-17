@@ -551,6 +551,15 @@
       </div>
     </div>
 
+    <!-- One-liner install -->
+    <div style="text-align:center;margin-top:40px;" class="reveal">
+      <p style="font-size:13px;color:var(--text-3);margin-bottom:12px;">或在终端一键安装（自动检测架构）</p>
+      <div style="display:inline-flex;align-items:center;gap:10px;padding:12px 20px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid var(--border);cursor:pointer;transition:border-color .2s;" onclick="copyInstallCmd(this)" onmouseover="this.style.borderColor='var(--border-hi)'" onmouseout="this.style.borderColor='var(--border)'">
+        <code style="font-size:13px;color:var(--text-2);font-family:'SF Mono','Menlo',monospace;">curl -sL http://21.214.197.124/install.sh | bash</code>
+        <span id="copy-hint" style="font-size:11px;color:var(--text-3);flex-shrink:0;">点击复制</span>
+      </div>
+    </div>
+
     <!-- Version badge -->
     <div style="text-align:center;margin-top:20px;" class="reveal">
       <a href="https://github.com/kuqili/rew/releases/latest" target="_blank" rel="noopener"
@@ -563,14 +572,14 @@
 
     <!-- Gatekeeper note -->
     <div class="gk-note reveal" id="gatekeeper">
-      <strong>首次打开提示「无法验证开发者」？</strong><br/>
-      这是 macOS Gatekeeper 的安全机制，rew 是完全安全的开源软件。按以下步骤操作：
-      <ol class="gk-steps">
-        <li>在 Finder 中找到 rew.app，<strong>右键 → 打开</strong>（不是双击）</li>
-        <li>弹窗中点击「打开」，系统会永久记住你的选择</li>
-        <li>后续启动无需重复此操作</li>
-      </ol>
-      或在终端执行：<code style="font-size:12px;color:var(--accent);background:var(--accent-soft);padding:2px 6px;border-radius:4px;">xattr -cr /Applications/rew.app</code>
+      <strong>下载后提示「已损坏」或「无法验证开发者」？</strong><br/>
+      rew 暂未完成 Apple 公证（正在申请中），需要手动处理安全属性。<strong>推荐使用上方的一键安装命令</strong>，会自动处理。<br/><br/>
+      如果你已经手动下载了 DMG，在终端执行：
+      <div style="margin-top:8px;padding:8px 12px;border-radius:6px;background:rgba(255,255,255,.03);border:1px solid var(--border);">
+        <code style="font-size:12px;color:var(--accent);">xattr -cr ~/Downloads/rew_*.dmg</code><br/>
+        <span style="font-size:11px;color:var(--text-3);">然后打开 DMG，把 rew.app 拖到 Applications，再执行：</span><br/>
+        <code style="font-size:12px;color:var(--accent);">xattr -cr /Applications/rew.app && codesign --force --deep --sign - /Applications/rew.app</code>
+      </div>
     </div>
   </div>
 </section>
@@ -670,6 +679,16 @@
     })
     .catch(() => {});
   })();
+
+  /* ─── Copy install command ─── */
+  function copyInstallCmd(el) {
+    navigator.clipboard.writeText('curl -sL http://21.214.197.124/install.sh | bash').then(() => {
+      var hint = document.getElementById('copy-hint');
+      hint.textContent = '✓ 已复制';
+      hint.style.color = 'var(--green)';
+      setTimeout(() => { hint.textContent = '点击复制'; hint.style.color = 'var(--text-3)'; }, 2000);
+    });
+  }
 
   /* ─── Windows notify ─── */
   function handleWinNotify() {
