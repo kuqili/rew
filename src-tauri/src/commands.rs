@@ -1263,8 +1263,11 @@ pub async fn rollback_task_cmd(
         count
     };
 
-    // Set initial restore progress so the frontend can show a spinner
-    // immediately before the (possibly large) task restore starts.
+    let objects_root = rew_home_dir().join("objects");
+    let engine = TaskRestoreEngine::new(objects_root)
+        .with_cleanup_boundaries(restore_cleanup_boundaries(&state, &[]));
+
+    // Set initial restore progress so the frontend can show a spinner immediately.
     if let Ok(mut progress) = state.restore_progress.lock() {
         *progress = crate::state::RestoreProgress {
             is_running: true,
@@ -1281,84 +1284,139 @@ pub async fn rollback_task_cmd(
     }
     emit_restore_progress(&app, &state);
 
-    let app_handle_for_progress = app.clone();
-    let mut last_emitted_at = std::time::Instant::now();
-    let result = {
-        let mut db = state.db.lock().map_err(|e| e.to_string())?;
-        let objects_root = rew_home_dir().join("objects");
-        let engine = TaskRestoreEngine::new(objects_root)
-            .with_cleanup_boundaries(restore_cleanup_boundaries(&state, &[]));
+    // ── Phase 1: Prepare (DB lock held briefly) ──────────────────────────────
+    // Fetch all changes, deduplicate and resolve per-file restore hashes into a
+    // pre-computed plan.  The DB lock is released as soon as this block exits so
+    // the long-running FS phase below does not starve other readers.
+    //
+    // We intentionally use state.db (the write connection) rather than
+    // state.read_db here.  The write connection is used continuously by the
+    // daemon and therefore has a warm SQLite page cache for file_index.
+    // state.read_db is rarely accessed and has a cold cache, which causes
+    // each get_file_index_entry() call to trigger disk reads (~0.25 ms each),
+    // turning 158 k files into a ~40 s stall.  Using the warm connection
+    // eliminates that per-file I/O cost even when the fast-hash fallback path
+    // is hit.  The lock is held only for the brief prepare phase (bulk SQL
+    // query + in-memory hash resolution), not for the FS execution phase.
+    let plan_result = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
         engine
-            .undo_task_with_progress(&db, &task_id, |progress| {
-                // Throttle: emit at most once every RESTORE_PROGRESS_EMIT_INTERVAL_MS,
-                // or every RESTORE_PROGRESS_EMIT_EVERY_FILES files.
-                let now = std::time::Instant::now();
-                let should_emit = progress.processed_files == 0
-                    || progress.processed_files % RESTORE_PROGRESS_EMIT_EVERY_FILES == 0
-                    || now.duration_since(last_emitted_at).as_millis()
-                        >= RESTORE_PROGRESS_EMIT_INTERVAL_MS;
-                if !should_emit {
-                    return;
-                }
-                last_emitted_at = now;
-                if let Ok(mut shared) = state.restore_progress.lock() {
-                    shared.is_running = true;
-                    shared.phase = RestorePhase::RestoringFiles;
-                    shared.task_id = Some(task_id.clone());
-                    shared.dir_path = None;
-                    shared.total_files = progress.total_files;
-                    shared.processed_files = progress.processed_files;
-                    shared.restored_files = progress.restored_files;
-                    shared.deleted_files = progress.deleted_files;
-                    shared.failed_files = progress.failed_files;
-                    shared.current_path = progress
-                        .current_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().to_string());
-                }
-                emit_restore_progress(&app_handle_for_progress, &state);
-            })
-            .map(|(undo_result, suppression_entries)| {
-                // Emit SyncingDatabase phase before the batch write
-                if let Ok(mut shared) = state.restore_progress.lock() {
-                    shared.phase = RestorePhase::SyncingDatabase;
-                }
-                emit_restore_progress(&app_handle_for_progress, &state);
-
-                // Batch-write all file_index updates in a single transaction
-                // instead of one AUTO-COMMIT per file.
-                sync_file_index_after_directory_restore(&mut db, &suppression_entries);
-                undo_result
-            })
+            .prepare_task_undo(&db, &task_id)
             .map_err(|e| e.to_string())
+    }; // DB lock released here
+
+    let plan = match plan_result {
+        Ok(p) => p,
+        Err(err) => {
+            if let Ok(db) = state.db.lock() {
+                let failure = vec![RestoreFailureSample {
+                    file_path: PathBuf::from(format!("<task:{task_id}>")),
+                    error: err.clone(),
+                }];
+                let _ = db.complete_restore_operation(
+                    &restore_op_id,
+                    &RestoreOperationStatus::Failed,
+                    chrono::Utc::now(),
+                    0,
+                    0,
+                    requested_count.max(1),
+                    &failure,
+                );
+            }
+            if let Ok(mut g) = state.rolling_back.lock() {
+                *g = false;
+            }
+            return Err(err);
+        }
     };
 
-    // On success: add all affected paths to suppressed_paths (60s TTL)
-    if result.is_ok() {
-        let now_instant = std::time::Instant::now();
-        if let Ok(mut sp) = state.suppressed_paths.lock() {
-            if let Ok(db) = state.db.lock() {
-                if let Ok(changes) = db.get_changes_for_task(&task_id) {
-                    for c in changes {
-                        sp.insert(c.file_path, now_instant);
-                    }
-                }
-            }
+    // Refine the initial progress total with the deduplicated file count.
+    if let Ok(mut progress) = state.restore_progress.lock() {
+        progress.total_files = plan.scoped_change_paths.len();
+    }
+    emit_restore_progress(&app, &state);
+
+    // ── Phase 2: Execute FS operations (no DB lock held) ─────────────────────
+    let app_handle_for_progress = app.clone();
+    let mut last_emitted_processed = 0usize;
+    let mut last_emitted_at = std::time::Instant::now();
+
+    let outcome = engine.execute_prepared_directory_undo_with_progress(&plan, |progress| {
+        let should_emit = progress.processed_files == 0
+            || progress.processed_files == progress.total_files
+            || progress.processed_files.saturating_sub(last_emitted_processed)
+                >= RESTORE_PROGRESS_EMIT_EVERY_FILES
+            || last_emitted_at.elapsed().as_millis() >= RESTORE_PROGRESS_EMIT_INTERVAL_MS;
+        if !should_emit {
+            return;
+        }
+        last_emitted_processed = progress.processed_files;
+        last_emitted_at = std::time::Instant::now();
+        if let Ok(mut shared) = state.restore_progress.lock() {
+            shared.is_running = true;
+            shared.phase = RestorePhase::RestoringFiles;
+            shared.task_id = Some(task_id.clone());
+            shared.dir_path = None;
+            shared.total_files = progress.total_files;
+            shared.processed_files = progress.processed_files;
+            shared.restored_files = progress.restored_files;
+            shared.deleted_files = progress.deleted_files;
+            shared.failed_files = progress.failed_files;
+            shared.current_path = progress
+                .current_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string());
+        }
+        emit_restore_progress(&app_handle_for_progress, &state);
+    });
+
+    // ── Stage 2: DB writes (short write-lock section) ─────────────────────────
+    if let Ok(mut shared) = state.restore_progress.lock() {
+        shared.phase = RestorePhase::SyncingDatabase;
+    }
+    emit_restore_progress(&app, &state);
+
+    let result: Result<UndoResult, String> = {
+        let mut db = state.db.lock().map_err(|e| e.to_string())?;
+        sync_file_index_after_directory_restore(&mut db, &outcome.suppression_entries);
+        if outcome.result.failures.is_empty() {
+            db.update_task_status(
+                &task_id,
+                &rew_core::types::TaskStatus::RolledBack,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        } else if outcome.result.files_restored > 0 || outcome.result.files_deleted > 0 {
+            db.update_task_status(
+                &task_id,
+                &rew_core::types::TaskStatus::PartialRolledBack,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(outcome.result)
+    };
+
+    // Suppress file-watch events for restored/deleted paths.
+    let now_instant = std::time::Instant::now();
+    if let Ok(mut sp) = state.suppressed_paths.lock() {
+        for entry in &outcome.suppression_entries {
+            sp.insert(entry.path.clone(), now_instant);
         }
     }
 
     let completed_at = chrono::Utc::now();
     if let Ok(db) = state.db.lock() {
         match &result {
-            Ok(outcome) => {
+            Ok(r) => {
                 let _ = db.complete_restore_operation(
                     &restore_op_id,
-                    &summarize_restore_status(outcome),
+                    &summarize_restore_status(r),
                     completed_at,
-                    outcome.files_restored,
-                    outcome.files_deleted,
-                    outcome.failures.len(),
-                    &sample_restore_failures(&outcome.failures),
+                    r.files_restored,
+                    r.files_deleted,
+                    r.failures.len(),
+                    &sample_restore_failures(&r.failures),
                 );
             }
             Err(err) => {
@@ -1379,7 +1437,7 @@ pub async fn rollback_task_cmd(
         }
     }
 
-    // Mark restore as done and notify the frontend
+    // Mark restore as done and notify the frontend.
     {
         let (total, processed, restored, deleted, failed) = match &result {
             Ok(r) => (
@@ -1406,7 +1464,7 @@ pub async fn rollback_task_cmd(
         emit_restore_progress(&app, &state);
     }
 
-    // Delay-clear global rolling_back flag and reset restore progress
+    // Delay-clear global rolling_back flag and reset restore progress.
     let app_handle = app.clone();
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -1426,7 +1484,11 @@ pub async fn rollback_task_cmd(
     Ok(UndoResultInfo {
         files_restored: res.files_restored,
         files_deleted: res.files_deleted,
-        failures: res.failures.iter().map(|(p, e)| (p.to_string_lossy().to_string(), e.clone())).collect(),
+        failures: res
+            .failures
+            .iter()
+            .map(|(p, e)| (p.to_string_lossy().to_string(), e.clone()))
+            .collect(),
     })
 }
 

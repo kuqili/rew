@@ -19,8 +19,9 @@ export default function BatchProgressBanner({ progress }: BatchProgressBannerPro
         clearTimeout(dismissTimerRef.current);
         dismissTimerRef.current = null;
       }
-    } else if (progress.total > 0) {
-      // Batch just completed — auto-dismiss after 3 seconds
+    } else {
+      // Batch just completed (total may be 0 if all changes were deduped) —
+      // auto-dismiss after 3 seconds regardless.
       dismissTimerRef.current = setTimeout(() => {
         setVisible(false);
       }, 3000);

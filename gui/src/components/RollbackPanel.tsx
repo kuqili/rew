@@ -56,7 +56,18 @@ export default function RollbackPanel({
 
   const handleRollback = async () => {
     setRolling(true);
-    setRestoreProgress(null);
+    setRestoreProgress({
+      is_running: true,
+      phase: "restoring-files",
+      task_id: taskId,
+      dir_path: null,
+      total_files: preview?.total_changes ?? 0,
+      processed_files: 0,
+      restored_files: 0,
+      deleted_files: 0,
+      failed_files: 0,
+      current_path: null,
+    });
     setError(null);
     try {
       const res = await rollbackTask(taskId);
@@ -142,13 +153,23 @@ export default function RollbackPanel({
             )}
           </div>
 
-          {/* Restore progress — shown while rolling is in progress */}
-          {rolling && restoreProgress && restoreProgress.is_running && (
+          {/* Restore progress — shown while rolling is in progress.
+               NOTE: do NOT gate on restoreProgress.is_running here.  The backend emits
+               {is_running:false, phase:"done"} before returning the command response, so
+               conditioning on is_running would cause the bar to disappear while rolling is
+               still true, creating a blank gap before the success message appears. */}
+          {rolling && restoreProgress && (
             <div className="mb-3 space-y-2">
               <div className="flex items-center justify-between text-[11px] text-t-3">
                 <span className="flex items-center gap-1.5">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-sys-blue animate-pulse" />
-                  正在恢复文件…
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full bg-sys-blue ${restoreProgress.is_running ? "animate-pulse" : ""}`} />
+                  {restoreProgress.phase === "syncing-database"
+                    ? "正在同步数据库…"
+                    : restoreProgress.phase === "finalizing"
+                      ? "正在收尾…"
+                      : restoreProgress.phase === "done"
+                        ? "恢复完成"
+                        : "正在恢复文件…"}
                 </span>
                 <span className="tabular-nums">
                   {restoreProgress.processed_files.toLocaleString()} /{" "}

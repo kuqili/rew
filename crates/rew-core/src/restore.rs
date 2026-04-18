@@ -702,20 +702,6 @@ impl TaskRestoreEngine {
             });
         }
 
-        if failures.is_empty() {
-            db.update_task_status(
-                task_id,
-                &crate::types::TaskStatus::RolledBack,
-                None,
-            )?;
-        } else if files_restored > 0 || files_deleted > 0 {
-            db.update_task_status(
-                task_id,
-                &crate::types::TaskStatus::PartialRolledBack,
-                None,
-            )?;
-        }
-
         info!(
             "Undo task '{}' (with progress): restored={}, deleted={}, failures={}",
             task_id, files_restored, files_deleted, failures.len()
@@ -853,6 +839,75 @@ impl TaskRestoreEngine {
         }
 
         Ok(outcome.result)
+    }
+
+    /// Prepare an undo plan for an **entire task** without executing any FS operations.
+    ///
+    /// This is the two-phase equivalent of `undo_task_with_progress`: all DB reads are
+    /// performed upfront while the caller holds the DB lock, and the resulting
+    /// `PreparedDirectoryUndoPlan` can then be handed to
+    /// `execute_prepared_directory_undo_with_progress` **without** holding the DB lock.
+    ///
+    /// Compared to `undo_task_with_progress` (which interleaves a DB read + FS write per
+    /// file), this approach:
+    /// - Releases the DB lock before the long-running FS phase.
+    /// - Allows the Tauri async runtime to deliver progress events to the webview
+    ///   between file operations.
+    /// - Matches the two-phase design already used by `prepare_directory_undo` /
+    ///   `execute_prepared_directory_undo_with_progress`.
+    pub fn prepare_task_undo(
+        &self,
+        db: &crate::db::Database,
+        task_id: &str,
+    ) -> RewResult<PreparedDirectoryUndoPlan> {
+        let _task = db
+            .get_task(task_id)?
+            .ok_or_else(|| RewError::Snapshot(format!("Task '{}' not found", task_id)))?;
+
+        let mut changes = db.get_changes_for_task(task_id)?;
+        changes.retain(|c| !is_temp_file(&c.file_path));
+
+        // Deduplicate: same logic as undo_task_with_progress.
+        let mut seen: std::collections::HashMap<PathBuf, crate::types::Change> =
+            std::collections::HashMap::new();
+        for change in &changes {
+            if let Some(existing) = seen.get(&change.file_path) {
+                let dominated = match (&change.change_type, &existing.change_type) {
+                    (crate::types::ChangeType::Deleted, _) if change.old_hash.is_some() => true,
+                    (crate::types::ChangeType::Renamed, _) if change.old_hash.is_some() => true,
+                    (crate::types::ChangeType::Modified, crate::types::ChangeType::Created)
+                        if change.old_hash.is_some() =>
+                    {
+                        true
+                    }
+                    _ => false,
+                };
+                if dominated {
+                    seen.insert(change.file_path.clone(), change.clone());
+                }
+            } else {
+                seen.insert(change.file_path.clone(), change.clone());
+            }
+        }
+        changes = seen.into_values().collect();
+        changes.sort_by_key(|c| std::cmp::Reverse(path_depth(&c.file_path)));
+
+        let total_task_changes = changes.len();
+        let operations = changes
+            .iter()
+            .map(|change| self.prepare_undo_change(db, change))
+            .collect::<Vec<_>>();
+        let scoped_change_paths = changes
+            .iter()
+            .map(|change| change.file_path.clone())
+            .collect::<Vec<_>>();
+
+        Ok(PreparedDirectoryUndoPlan {
+            task_id: task_id.to_string(),
+            total_task_changes,
+            scoped_change_paths,
+            operations,
+        })
     }
 
     pub fn prepare_directory_undo(
@@ -1141,6 +1196,7 @@ impl TaskRestoreEngine {
     ) -> Result<ResolvedRestoreHashes, String> {
         let mut candidates = Vec::new();
         let mut expected_content_hash = None;
+
         if let Some(hash) = old_hash {
             candidates.push(hash.to_string());
             if !hash.starts_with("fast-") {
@@ -1202,6 +1258,22 @@ impl TaskRestoreEngine {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create dir {}: {}", parent.display(), e))?;
+        }
+
+        // If the target already exists and is read-only (e.g. Go module cache files are
+        // intentionally set to r--r--r-- by `go mod download`), unlock it before
+        // overwriting.  We only do this when the file is already present — new files
+        // written into a freshly-created parent directory never need this.
+        if target.exists() {
+            if let Ok(meta) = std::fs::metadata(target) {
+                if meta.permissions().readonly() {
+                    let mut perms = meta.permissions();
+                    perms.set_readonly(false);
+                    // Best-effort: if we can't chmod (e.g. wrong owner) the copy below
+                    // will fail with a clearer "Permission denied" message anyway.
+                    let _ = std::fs::set_permissions(target, perms);
+                }
+            }
         }
 
         // Copy object to target
