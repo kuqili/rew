@@ -70,9 +70,13 @@ impl ScopeEngine {
     }
 
     /// Create a ScopeEngine with default rules (no .rewscope file).
+    ///
+    /// Empty allow = allow everything except deny patterns.  This avoids false
+    /// "outside allowed scope" blocks in multi-repo/monorepo setups where the
+    /// AI session may edit files across sibling directories.
     pub fn default_rules(project_root: Option<PathBuf>) -> RewResult<Self> {
         let scope = RewScopeFile {
-            allow: vec!["./**".to_string()],
+            allow: vec![],
             deny: default_deny_patterns(),
             alert: default_alert_rules(),
         };
@@ -223,9 +227,14 @@ fn default_deny_patterns() -> Vec<String> {
         // AWS credentials
         "~/.aws/**".to_string(),
         "/Users/*/.aws/**".to_string(),
-        // Environment files with secrets
+        // Environment files with secrets.
+        // Only the bare .env and known production/staging variants are denied.
+        // Template files (.env.example, .env.sample, .env.test) are allowed
+        // because they are committed to source control and contain no real secrets.
         "**/.env".to_string(),
-        "**/.env.*".to_string(),
+        "**/.env.local".to_string(),
+        "**/.env.production".to_string(),
+        "**/.env.staging".to_string(),
         // macOS system dirs
         "/System/**".to_string(),
         "/Library/**".to_string(),
@@ -233,17 +242,14 @@ fn default_deny_patterns() -> Vec<String> {
 }
 
 /// Default alert rules.
+///
+/// Intentionally empty: all genuinely dangerous command patterns are already
+/// handled with precision by `check_dangerous_command()` (catastrophic rm,
+/// block-device writes, dd, mkfs, fork bomb).  Broad string-match alert rules
+/// like "rm -rf" or "> /dev/" cause false positives on normal AI operations
+/// (`rm -rf ./node_modules`, `echo foo > /dev/null`) and are removed here.
 fn default_alert_rules() -> Vec<AlertRule> {
-    vec![
-        AlertRule {
-            pattern: "rm -rf".to_string(),
-            action: "block".to_string(),
-        },
-        AlertRule {
-            pattern: "> /dev/".to_string(),
-            action: "block".to_string(),
-        },
-    ]
+    vec![]
 }
 
 // ── rew directory protection ─────────────────────────────────────────────────
@@ -502,11 +508,29 @@ mod tests {
     fn test_default_deny_env() {
         let engine = ScopeEngine::default_rules(None).unwrap();
 
+        // Bare .env always denied (contains real secrets)
         let result = engine.check_path(Path::new("/Users/alice/project/.env"));
         assert!(matches!(result, ScopeResult::Deny(_)));
 
+        // Known sensitive variants denied
         let result2 = engine.check_path(Path::new("/Users/alice/project/.env.local"));
         assert!(matches!(result2, ScopeResult::Deny(_)));
+
+        let result3 = engine.check_path(Path::new("/Users/alice/project/.env.production"));
+        assert!(matches!(result3, ScopeResult::Deny(_)));
+
+        let result4 = engine.check_path(Path::new("/Users/alice/project/.env.staging"));
+        assert!(matches!(result4, ScopeResult::Deny(_)));
+
+        // Template files committed to source control must be allowed
+        let result5 = engine.check_path(Path::new("/Users/alice/project/.env.example"));
+        assert_eq!(result5, ScopeResult::Allow, ".env.example should not be denied");
+
+        let result6 = engine.check_path(Path::new("/Users/alice/project/.env.sample"));
+        assert_eq!(result6, ScopeResult::Allow, ".env.sample should not be denied");
+
+        let result7 = engine.check_path(Path::new("/Users/alice/project/.env.test"));
+        assert_eq!(result7, ScopeResult::Allow, ".env.test should not be denied");
     }
 
     #[test]
@@ -698,5 +722,87 @@ alert: []
         let engine = ScopeEngine::default_rules(None).unwrap();
         let result = engine.check_command("cat ~/.rew/snapshots.db");
         assert_eq!(result, ScopeResult::Allow);
+    }
+
+    // ── Regression tests: false-positive interceptions ───────────────────────
+    // These tests document current mis-blocking behaviour and are expected to
+    // FAIL before the fixes are applied, then PASS afterwards.
+
+    #[test]
+    fn regression_rm_rf_safe_paths_allowed_via_engine() {
+        // rm -rf on project build artefacts is normal AI behaviour.
+        // check_dangerous_command() already allows these; the default_alert_rules
+        // "rm -rf" string match is the only thing blocking them.
+        let engine = ScopeEngine::default_rules(None).unwrap();
+
+        let r1 = engine.check_command("rm -rf ./node_modules");
+        assert_eq!(r1, ScopeResult::Allow, "rm -rf ./node_modules should be allowed");
+
+        let r2 = engine.check_command("rm -rf ./dist");
+        assert_eq!(r2, ScopeResult::Allow, "rm -rf ./dist should be allowed");
+
+        let r3 = engine.check_command("rm -rf /tmp/build");
+        assert_eq!(r3, ScopeResult::Allow, "rm -rf /tmp/build should be allowed");
+    }
+
+    #[test]
+    fn regression_dev_null_allowed_via_engine() {
+        // Writing to /dev/null is harmless.  check_dangerous_command() explicitly
+        // allows it, but the default_alert_rules "> /dev/" string match blocks it.
+        let engine = ScopeEngine::default_rules(None).unwrap();
+
+        let result = engine.check_command("echo foo > /dev/null");
+        assert_eq!(result, ScopeResult::Allow, "echo > /dev/null should be allowed");
+
+        let result2 = engine.check_command("cat file.txt > /dev/null");
+        assert_eq!(result2, ScopeResult::Allow, "cat > /dev/null should be allowed");
+    }
+
+    #[test]
+    fn regression_env_example_not_denied() {
+        // .env.example is a template file committed to source control.
+        // The **/.env.* glob incorrectly matches it.
+        let engine = ScopeEngine::default_rules(None).unwrap();
+
+        let result = engine.check_path(Path::new("/Users/alice/project/.env.example"));
+        assert_eq!(result, ScopeResult::Allow, ".env.example should be allowed");
+
+        let result2 = engine.check_path(Path::new("/Users/alice/project/.env.sample"));
+        assert_eq!(result2, ScopeResult::Allow, ".env.sample should be allowed");
+
+        let result3 = engine.check_path(Path::new("/Users/alice/project/.env.test"));
+        assert_eq!(result3, ScopeResult::Allow, ".env.test should be allowed");
+    }
+
+    #[test]
+    fn regression_default_rules_allow_cross_directory() {
+        // When no .rewscope exists, default_rules() should not block files that
+        // are outside the inferred project_root.  Multi-repo setups (e.g. a
+        // monorepo with web/ and aiproxy/ siblings) must not be mis-blocked.
+        let root = std::path::PathBuf::from("/Users/alice/code/lawyer-helper/lawyer-helper-web");
+        let engine = ScopeEngine::default_rules(Some(root)).unwrap();
+
+        // File in a sibling directory — previously blocked as "outside allowed scope"
+        let result = engine.check_path(Path::new(
+            "/Users/alice/code/lawyer-helper/lawyer-helper-aiproxy/app/services/backend_client.py",
+        ));
+        assert_eq!(result, ScopeResult::Allow, "sibling directory file should be allowed by default rules");
+    }
+
+    #[test]
+    fn regression_rm_rf_dangerous_still_blocked() {
+        // Sanity check: genuinely dangerous rm commands must remain blocked
+        // even after the alert-rule removal.  This test should pass both before
+        // and after the fix.
+        let engine = ScopeEngine::default_rules(None).unwrap();
+
+        let r1 = engine.check_command("rm -rf ~/Desktop/*");
+        assert!(matches!(r1, ScopeResult::Deny(_)), "rm -rf ~/Desktop/* must still be denied");
+
+        let r2 = engine.check_command("rm -rf /");
+        assert!(matches!(r2, ScopeResult::Deny(_)), "rm -rf / must still be denied");
+
+        let r3 = engine.check_command("rm -rf /usr");
+        assert!(matches!(r3, ScopeResult::Deny(_)), "rm -rf /usr must still be denied");
     }
 }
