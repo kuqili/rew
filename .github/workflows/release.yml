@@ -193,17 +193,7 @@ jobs:
             --entitlements src-tauri/entitlements.plist \
             "$APP_PATH"
 
-          echo "🔏 Notarize DMG..."
-          xcrun notarytool submit "$DMG_PATH" \
-            --key ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8 \
-            --key-id "$APPLE_API_KEY_ID" \
-            --issuer "$APPLE_API_ISSUER" \
-            --wait
-
-          echo "📎 Staple .app first..."
-          xcrun stapler staple "$APP_PATH"
-
-          echo "📦 Rebuild DMG with stapled .app..."
+          echo "📦 Rebuild DMG with re-signed .app..."
           rm -f "$DMG_PATH"
           hdiutil create \
             -volname "rew" \
@@ -217,18 +207,20 @@ jobs:
             --timestamp \
             "$DMG_PATH"
 
-          echo "🔏 Notarize final DMG..."
+          echo "🔏 Notarize DMG..."
           xcrun notarytool submit "$DMG_PATH" \
             --key ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8 \
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER" \
             --wait
 
-          echo "📎 Staple DMG..."
+          echo "📎 Staple .app and DMG..."
+          xcrun stapler staple "$APP_PATH"
           xcrun stapler staple "$DMG_PATH"
 
           echo "🔍 Verify..."
           spctl --assess --type exec --verbose "$APP_PATH"
+          spctl --assess --type install --verbose "$DMG_PATH" 2>&1 || true
 
           echo "⬆️ Replace Release asset with notarized DMG..."
           gh release upload "${{ github.ref_name }}" "$DMG_PATH" --clobber
