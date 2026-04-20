@@ -193,7 +193,17 @@ jobs:
             --entitlements src-tauri/entitlements.plist \
             "$APP_PATH"
 
-          echo "📦 Rebuild DMG..."
+          echo "🔏 Notarize DMG..."
+          xcrun notarytool submit "$DMG_PATH" \
+            --key ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8 \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+
+          echo "📎 Staple .app first..."
+          xcrun stapler staple "$APP_PATH"
+
+          echo "📦 Rebuild DMG with stapled .app..."
           rm -f "$DMG_PATH"
           hdiutil create \
             -volname "rew" \
@@ -207,15 +217,14 @@ jobs:
             --timestamp \
             "$DMG_PATH"
 
-          echo "🔏 Notarize..."
+          echo "🔏 Notarize final DMG..."
           xcrun notarytool submit "$DMG_PATH" \
             --key ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8 \
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER" \
             --wait
 
-          echo "📎 Staple..."
-          xcrun stapler staple "$APP_PATH"
+          echo "📎 Staple DMG..."
           xcrun stapler staple "$DMG_PATH"
 
           echo "🔍 Verify..."
