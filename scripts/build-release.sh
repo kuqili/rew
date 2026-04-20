@@ -35,14 +35,6 @@ echo "== 2) 构建最新 CLI =="
 cargo build --release -p rew-cli
 cp "$ROOT/target/release/rew" "$ROOT/src-tauri/rew"
 
-# 直接更新 hook 调用路径，不依赖 App 启动时的 install_cli_binary()
-# install_cli_binary() 有内容相同时跳过的优化，在 Tauri 构建缓存场景下
-# 可能导致 ~/.rew/bin/rew 未被更新，hook 继续使用旧二进制
-echo "== 2b) 同步 CLI 到 ~/.rew/bin/ =="
-mkdir -p "$HOME/.rew/bin"
-cp "$ROOT/target/release/rew" "$HOME/.rew/bin/rew"
-echo "   ~/.rew/bin/rew 已更新：$(~/.rew/bin/rew --version 2>/dev/null || echo 'ok')"
-
 # ── Step 3: 编译前端 ──────────────────────────────────────────
 echo "== 3) 构建最新前端 =="
 cd "$ROOT/gui" && pnpm build
@@ -65,6 +57,20 @@ if [[ "$MODE" == "local" ]]; then
     rm -rf "$APP_DST"
   fi
   ditto "$SRC_APP" "$APP_DST"
+
+  # 强制把本次编译的 CLI 写进 App bundle 和 hook 调用路径。
+  # cargo tauri build 可能复用缓存导致 bundle 里的 CLI 是旧版本；
+  # 而 install_cli_binary() 用 bundle 内容覆盖 ~/.rew/bin/rew，
+  # 会把 Step 2 新编译的 CLI 再覆盖回旧的。这里统一刷新两处。
+  echo "== 6b) 刷新 App bundle 和 ~/.rew/bin/ 里的 CLI =="
+  NEW_CLI="$ROOT/target/release/rew"
+  cp "$NEW_CLI" "$APP_DST/Contents/Resources/rew"
+  chmod 755 "$APP_DST/Contents/Resources/rew"
+  mkdir -p "$HOME/.rew/bin"
+  cp "$NEW_CLI" "$HOME/.rew/bin/rew"
+  chmod 755 "$HOME/.rew/bin/rew"
+  echo "   App bundle CLI: $(ls -la "$APP_DST/Contents/Resources/rew" | awk '{print $6,$7,$8}')"
+  echo "   ~/.rew/bin/rew: $(ls -la "$HOME/.rew/bin/rew" | awk '{print $6,$7,$8}')"
 
   echo "== 7) 二进制一致性校验（必须一致） =="
   SRC_SHA=$(shasum -a 256 "$SRC_BIN" | awk '{print $1}')
