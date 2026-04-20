@@ -1029,6 +1029,12 @@ function InfoNote({ children }: { children: React.ReactNode }) {
 function AboutTab({ storage, fmt }: { storage: StorageInfo | null; fmt: (b: number) => string }) {
   const { status, updateInfo, progress, error, checkForUpdates, downloadAndInstall, restart } = useUpdater();
 
+  // 组件挂载时自动静默检查更新
+  useEffect(() => {
+    checkForUpdates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="space-y-4">
       <h3 className="text-[13px] font-semibold text-t-1">rew — AI 时代的文件安全网</h3>
@@ -1042,88 +1048,61 @@ function AboutTab({ storage, fmt }: { storage: StorageInfo | null; fmt: (b: numb
         {storage && <div>备份: {storage.object_count.toLocaleString()} 对象 · {fmt(storage.apparent_bytes)}</div>}
       </div>
 
-      {/* 检查更新区域 */}
-      <div className="pt-3 border-t border-border">
-        <h4 className="text-[11px] font-semibold text-t-1 mb-2">软件更新</h4>
+      {/* 有新版本时才显示更新区域 */}
+      {(status === 'available' || status === 'downloading' || status === 'ready' || status === 'error') && (
+        <div className="pt-3 border-t border-border space-y-2">
+          <h4 className="text-[11px] font-semibold text-t-1">软件更新</h4>
 
-        {status === 'idle' && (
-          <button
-            onClick={checkForUpdates}
-            className="px-3 py-1.5 rounded-md bg-bg-grouped text-[12px] text-t-1 hover:bg-border transition-colors cursor-default"
-          >
-            检查更新
-          </button>
-        )}
-
-        {status === 'checking' && (
-          <p className="text-[11px] text-t-3 flex items-center gap-1.5">
-            <span className="animate-spin">◐</span> 正在检查…
-          </p>
-        )}
-
-        {status === 'up-to-date' && (
-          <p className="text-[11px] text-sys-green flex items-center gap-1">
-            <CheckCircle className="w-3 h-3" /> 已是最新版本
-          </p>
-        )}
-
-        {status === 'available' && updateInfo && (
-          <div className="space-y-2">
-            <p className="text-[11px] text-t-2">
-              发现新版本 <span className="font-semibold text-t-1">{updateInfo.version}</span>
-            </p>
-            {updateInfo.body && (
-              <p className="text-[11px] text-t-3 leading-relaxed whitespace-pre-wrap bg-bg-grouped rounded-md p-2">
-                {updateInfo.body}
+          {status === 'available' && updateInfo && (
+            <div className="space-y-2">
+              <p className="text-[11px] text-t-2">
+                发现新版本 <span className="font-semibold text-t-1">{updateInfo.version}</span>
               </p>
-            )}
-            <button
-              onClick={downloadAndInstall}
-              className="px-3 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover transition-colors cursor-default"
-            >
-              下载并安装
-            </button>
-          </div>
-        )}
-
-        {status === 'downloading' && (
-          <div className="space-y-1.5">
-            <p className="text-[11px] text-t-3">正在下载… {progress}%</p>
-            <div className="w-full h-1.5 bg-border rounded-full overflow-hidden">
-              <div
-                className="h-full bg-sys-blue rounded-full transition-all duration-200"
-                style={{ width: `${progress}%` }}
-              />
+              {updateInfo.body && (
+                <p className="text-[11px] text-t-3 leading-relaxed whitespace-pre-wrap bg-bg-grouped rounded-md p-2">
+                  {updateInfo.body}
+                </p>
+              )}
+              <button
+                onClick={downloadAndInstall}
+                className="px-3 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover transition-colors cursor-default"
+              >
+                下载并安装
+              </button>
             </div>
-          </div>
-        )}
+          )}
 
-        {status === 'ready' && (
-          <div className="space-y-2">
-            <p className="text-[11px] text-sys-green flex items-center gap-1">
-              <CheckCircle className="w-3 h-3" /> 下载完成，重启后生效
-            </p>
-            <button
-              onClick={restart}
-              className="px-3 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover transition-colors cursor-default"
-            >
-              立即重启
-            </button>
-          </div>
-        )}
+          {status === 'downloading' && (
+            <div className="space-y-1.5">
+              <p className="text-[11px] text-t-3">正在下载… {progress}%</p>
+              <div className="w-full h-1.5 bg-border rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-sys-blue rounded-full transition-all duration-200"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
+          )}
 
-        {status === 'error' && (
-          <div className="space-y-2">
-            <p className="text-[11px] text-sys-red">更新失败：{error}</p>
-            <button
-              onClick={checkForUpdates}
-              className="px-3 py-1.5 rounded-md bg-bg-grouped text-[12px] text-t-1 hover:bg-border transition-colors cursor-default"
-            >
-              重试
-            </button>
-          </div>
-        )}
-      </div>
+          {status === 'ready' && (
+            <div className="space-y-2">
+              <p className="text-[11px] text-sys-green flex items-center gap-1">
+                <CheckCircle className="w-3 h-3" /> 下载完成，重启后生效
+              </p>
+              <button
+                onClick={restart}
+                className="px-3 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover transition-colors cursor-default"
+              >
+                立即重启
+              </button>
+            </div>
+          )}
+
+          {status === 'error' && (
+            <p className="text-[11px] text-t-3">更新检查失败（{error}）</p>
+          )}
+        </div>
+      )}
 
       <div className="pt-3 border-t border-border">
         <h4 className="text-[11px] font-semibold text-t-1 mb-2">默认不备份的文件类型</h4>

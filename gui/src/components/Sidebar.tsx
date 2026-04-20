@@ -15,6 +15,7 @@ interface Props {
   toolFilter: string | null;
   onToolFilterChange: (tool: string | null) => void;
   activeTools: { key: string; label: string }[];
+  hasUpdate?: boolean;
 }
 
 export default function Sidebar({
@@ -26,6 +27,7 @@ export default function Sidebar({
   toolFilter,
   onToolFilterChange,
   activeTools,
+  hasUpdate = false,
 }: Props) {
   const status = useStatus();
   const scanProgress = useScanProgress();
@@ -130,8 +132,16 @@ export default function Sidebar({
           onClick={onOpenSettings}
           className="w-full flex items-center gap-2 h-[28px] px-3 mx-2 rounded text-[12px] text-t-3 hover:bg-bg-hover cursor-default transition-colors"
         >
-          <Settings className="w-[14px] h-[14px]" />
+          <div className="relative flex-shrink-0">
+            <Settings className="w-[14px] h-[14px]" />
+            {hasUpdate && (
+              <span className="absolute -top-[3px] -right-[3px] w-[6px] h-[6px] rounded-full bg-sys-red" />
+            )}
+          </div>
           设置
+          {hasUpdate && (
+            <span className="ml-auto text-[10px] text-sys-red font-medium">有更新</span>
+          )}
         </button>
       </div>
     </aside>

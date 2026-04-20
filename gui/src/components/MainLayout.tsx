@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import Sidebar from "./Sidebar";
 import TaskTimeline from "./TaskTimeline";
 import TaskDetail from "./TaskDetail";
@@ -8,6 +8,7 @@ import BatchProgressBanner from "./BatchProgressBanner";
 import { useTasks } from "../hooks/useTasks";
 import { useBatchProgress } from "../hooks/useBatchProgress";
 import { getToolMeta } from "../lib/tools";
+import { check } from "@tauri-apps/plugin-updater";
 
 export type ViewMode = "all" | "ai" | "insights";
 
@@ -18,6 +19,14 @@ export default function MainLayout() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [toolFilter, setToolFilter] = useState<string | null>(null);
+  const [hasUpdate, setHasUpdate] = useState(false);
+
+  // 启动时静默检查更新
+  useEffect(() => {
+    check().then((update) => {
+      if (update) setHasUpdate(true);
+    }).catch(() => {});
+  }, []);
 
   // Load tasks to compute active tools for sidebar
   const { tasks: allTasks } = useTasks(selectedDir, { enabled: viewMode !== "insights" });
@@ -78,6 +87,7 @@ export default function MainLayout() {
           toolFilter={toolFilter}
           onToolFilterChange={setToolFilter}
           activeTools={activeTools}
+          hasUpdate={hasUpdate}
         />
 
         {viewMode === "insights" ? (
