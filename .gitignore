@@ -10,6 +10,7 @@ control.json
 /src-tauri/rew
 /src-tauri/target/
 /src-tauri/icon_source.png
+/src-tauri/gen/
 
 # Design mockups (local reference only)
 /design-mockup/
