@@ -1,0 +1,226 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="720" viewBox="0 0 1100 720">
+  <defs>
+    <marker id="arrow-gray" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#595959"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#1890FF"/>
+    </marker>
+    <style>
+      text { font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif; }
+    </style>
+  </defs>
+
+  <!-- 整体虚线框 -->
+  <rect x="15" y="10" width="1070" height="700" rx="8" ry="8"
+        fill="none" stroke="#8C8C8C" stroke-width="0.5" stroke-dasharray="4,4"/>
+
+  <!-- 主标题 -->
+  <text x="550" y="48" text-anchor="middle" font-size="22" font-weight="bold"
+        fill="#1890FF" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">
+    rew 业务架构图
+  </text>
+
+  <!-- ───────────── 第一层：交互层（用户 &amp; AI工具）───────────── -->
+  <rect x="40" y="65" width="1030" height="100" rx="6" ry="6"
+        fill="#E6F7FF" stroke="#1890FF" stroke-width="0.5"/>
+  <text x="58" y="84" font-size="11" fill="#1890FF" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">
+    用户 &amp; AI 工具层
+  </text>
+
+  <!-- AI工具节点 -->
+  <rect x="70" y="93" width="110" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="125" y="119" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Claude Code</text>
+
+  <rect x="210" y="93" width="110" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="265" y="119" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Cursor</text>
+
+  <rect x="350" y="93" width="110" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="405" y="119" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">WorkBuddy</text>
+
+  <rect x="490" y="93" width="110" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="545" y="119" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">CodeBuddy</text>
+
+  <!-- 无Hook工具 -->
+  <rect x="640" y="93" width="140" height="44" rx="4" ry="4" fill="#FFF7E6" stroke="#FAAD14" stroke-width="0.5"/>
+  <text x="710" y="112" text-anchor="middle" font-size="12" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">其他 AI 工具</text>
+  <text x="710" y="128" text-anchor="middle" font-size="10" fill="#8C8C8C" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">（无 Hook 支持）</text>
+
+  <!-- 用户直接操作 -->
+  <rect x="830" y="93" width="110" height="44" rx="22" ry="22" fill="#F6FFED" stroke="#52C41A" stroke-width="0.5"/>
+  <text x="885" y="119" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">用户操作文件</text>
+
+  <!-- ───────────── 箭头：用户层 → 引擎层 ───────────── -->
+  <!-- Hook工具向下 -->
+  <line x1="125" y1="137" x2="125" y2="196" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <line x1="265" y1="137" x2="265" y2="196" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <line x1="405" y1="137" x2="405" y2="196" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <line x1="545" y1="137" x2="545" y2="196" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <!-- 无Hook工具向下 -->
+  <line x1="710" y1="137" x2="710" y2="196" stroke="#FAAD14" stroke-width="1" marker-end="url(#arrow-gray)"/>
+  <!-- 用户操作向下 -->
+  <line x1="885" y1="137" x2="885" y2="196" stroke="#52C41A" stroke-width="1" marker-end="url(#arrow-gray)"/>
+
+  <!-- Hook注入标注 -->
+  <text x="335" y="172" text-anchor="middle" font-size="10" fill="#1890FF" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Hook 注入</text>
+  <text x="710" y="172" text-anchor="middle" font-size="10" fill="#FAAD14" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">文件系统事件</text>
+  <text x="885" y="172" text-anchor="middle" font-size="10" fill="#52C41A" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">文件系统事件</text>
+
+  <!-- ───────────── 第二层：引擎层 ───────────── -->
+  <rect x="40" y="200" width="1030" height="100" rx="6" ry="6"
+        fill="#F0F5FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <text x="58" y="219" font-size="11" fill="#4169E1" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">
+    双引擎保护层
+  </text>
+
+  <!-- Hook引擎 -->
+  <rect x="80" y="228" width="490" height="54" rx="4" ry="4" fill="#FFFFFF" stroke="#1890FF" stroke-width="0.5"/>
+  <text x="325" y="249" text-anchor="middle" font-size="13" fill="#1890FF" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Hook 引擎（精确层）</text>
+  <text x="325" y="268" text-anchor="middle" font-size="11" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">UserPromptSubmit → PreToolUse → PostToolUse → Stop</text>
+
+  <!-- FSEvents引擎 -->
+  <rect x="610" y="228" width="360" height="54" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="790" y="249" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">FSEvents 引擎（兜底层）</text>
+  <text x="790" y="268" text-anchor="middle" font-size="11" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">macOS 文件系统事件监听</text>
+
+  <!-- ───────────── 箭头：引擎层 → 处理层 ───────────── -->
+  <line x1="325" y1="282" x2="325" y2="331" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <line x1="790" y1="282" x2="790" y2="331" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <text x="325" y="315" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">事件写入</text>
+  <text x="790" y="315" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">文件变更</text>
+
+  <!-- ───────────── 第三层：处理层 ───────────── -->
+  <rect x="40" y="335" width="1030" height="110" rx="6" ry="6"
+        fill="#F5FAFF" stroke="#BAE7FF" stroke-width="0.5"/>
+  <text x="58" y="354" font-size="11" fill="#4169E1" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">
+    事件处理层
+  </text>
+
+  <!-- Hook Spool -->
+  <rect x="70" y="363" width="170" height="64" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="155" y="386" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Hook Spool</text>
+  <text x="155" y="402" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">pending→processing</text>
+  <text x="155" y="416" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">→done / failed</text>
+
+  <!-- Daemon -->
+  <rect x="280" y="363" width="170" height="64" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="365" y="386" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">后台 Daemon</text>
+  <text x="365" y="402" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">异步消费队列</text>
+  <text x="365" y="416" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">入库 / Diff 计算</text>
+
+  <!-- Reconcile -->
+  <rect x="490" y="363" width="170" height="64" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="575" y="386" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Reconcile</text>
+  <text x="575" y="402" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Rename 语义还原</text>
+  <text x="575" y="416" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Deleted+Created 配对</text>
+
+  <!-- AnomalyDetector -->
+  <rect x="700" y="363" width="170" height="64" rx="4" ry="4" fill="#FFF7E6" stroke="#FAAD14" stroke-width="0.5"/>
+  <text x="785" y="386" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">异常检测</text>
+  <text x="785" y="402" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">批量删除 / 敏感文件</text>
+  <text x="785" y="416" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">CRITICAL / HIGH 告警</text>
+
+  <!-- PathFilter -->
+  <rect x="910" y="363" width="140" height="64" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="980" y="386" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">路径过滤</text>
+  <text x="980" y="402" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">node_modules/.git</text>
+  <text x="980" y="416" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">target/tmp 排除</text>
+
+  <!-- 处理层内部箭头 -->
+  <line x1="240" y1="395" x2="278" y2="395" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <line x1="450" y1="395" x2="488" y2="395" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+
+  <!-- ───────────── 箭头：处理层 → 存储层 ───────────── -->
+  <line x1="365" y1="427" x2="365" y2="476" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <line x1="575" y1="427" x2="575" y2="476" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <text x="365" y="460" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">写入</text>
+  <text x="575" y="460" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">写入</text>
+
+  <!-- ───────────── 第四层：存储层 ───────────── -->
+  <rect x="40" y="480" width="1030" height="100" rx="6" ry="6"
+        fill="#F0F5FF" stroke="#ADC6FF" stroke-width="0.5"/>
+  <text x="58" y="499" font-size="11" fill="#4169E1" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">
+    存储层
+  </text>
+
+  <!-- 对象存储 -->
+  <!-- 圆柱体：左上角(120,508) w=200 h=54 eh=12 -->
+  <ellipse cx="220" cy="514" rx="100" ry="6" fill="#F0F5FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <rect x="120" y="514" width="200" height="42" fill="#F0F5FF" stroke="none"/>
+  <line x1="120" y1="514" x2="120" y2="556" stroke="#91D5FF" stroke-width="0.5"/>
+  <line x1="320" y1="514" x2="320" y2="556" stroke="#91D5FF" stroke-width="0.5"/>
+  <ellipse cx="220" cy="556" rx="100" ry="6" fill="#F0F5FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <text x="220" y="534" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">对象存储</text>
+  <text x="220" y="550" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">SHA-256 内容寻址 / APFS CoW</text>
+
+  <!-- SQLite数据库 -->
+  <!-- 圆柱体：左上角(380,508) -->
+  <ellipse cx="500" cy="514" rx="100" ry="6" fill="#F0F5FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <rect x="400" y="514" width="200" height="42" fill="#F0F5FF" stroke="none"/>
+  <line x1="400" y1="514" x2="400" y2="556" stroke="#91D5FF" stroke-width="0.5"/>
+  <line x1="600" y1="514" x2="600" y2="556" stroke="#91D5FF" stroke-width="0.5"/>
+  <ellipse cx="500" cy="556" rx="100" ry="6" fill="#F0F5FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <text x="500" y="534" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">SQLite 数据库</text>
+  <text x="500" y="550" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">任务 / 变更 / 快照 / 索引</text>
+
+  <!-- Pre-tool Hash Store -->
+  <rect x="660" y="508" width="180" height="54" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="750" y="531" text-anchor="middle" font-size="12" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Pre-tool Hash Store</text>
+  <text x="750" y="547" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">session 级文件基线哈希</text>
+
+  <!-- config.toml -->
+  <rect x="880" y="508" width="160" height="54" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="960" y="531" text-anchor="middle" font-size="12" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">config.toml</text>
+  <text x="960" y="547" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">保护目录 / 清理策略</text>
+
+  <!-- ───────────── 箭头：存储层 → 交互层 ───────────── -->
+  <line x1="220" y1="562" x2="220" y2="611" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <line x1="500" y1="562" x2="500" y2="611" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <text x="220" y="595" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">读取</text>
+  <text x="500" y="595" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">查询</text>
+
+  <!-- ───────────── 第五层：交互层（GUI + CLI）───────────── -->
+  <rect x="40" y="615" width="1030" height="84" rx="6" ry="6"
+        fill="#F6FFED" stroke="#B7EB8F" stroke-width="0.5"/>
+  <text x="58" y="634" font-size="11" fill="#52C41A" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">
+    用户交互层
+  </text>
+
+  <!-- 桌面 GUI -->
+  <rect x="80" y="643" width="220" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#52C41A" stroke-width="0.5"/>
+  <text x="190" y="661" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">桌面 GUI（Tauri）</text>
+  <text x="190" y="678" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">任务时间轴 / Diff / 恢复操作 / 洞察</text>
+
+  <!-- CLI -->
+  <rect x="340" y="643" width="200" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="440" y="661" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">CLI 工具（rew）</text>
+  <text x="440" y="678" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">rew install / list / undo / diff</text>
+
+  <!-- 系统通知 -->
+  <rect x="580" y="643" width="180" height="44" rx="4" ry="4" fill="#FFF7E6" stroke="#FAAD14" stroke-width="0.5"/>
+  <text x="670" y="661" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">系统通知</text>
+  <text x="670" y="678" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">异常告警弹窗</text>
+
+  <!-- 系统托盘 -->
+  <rect x="800" y="643" width="180" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="890" y="661" text-anchor="middle" font-size="13" fill="#262626" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">系统托盘</text>
+  <text x="890" y="678" text-anchor="middle" font-size="10" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">防护状态 / 暂停恢复</text>
+
+  <!-- 图例 -->
+  <rect x="870" y="618" width="185" height="90" rx="4" ry="4"
+        fill="#FAFAFA" stroke="#D9D9D9" stroke-width="0.5"/>
+  <text x="882" y="636" font-size="11" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">图例</text>
+  <!-- 实线蓝色 -->
+  <line x1="882" y1="651" x2="912" y2="651" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <text x="920" y="655" font-size="11" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Hook 事件流</text>
+  <!-- 实线灰色 -->
+  <line x1="882" y1="666" x2="912" y2="666" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <text x="920" y="670" font-size="11" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">数据流</text>
+  <!-- 黄色边框节点 -->
+  <rect x="882" y="676" width="24" height="13" rx="2" fill="#FFF7E6" stroke="#FAAD14" stroke-width="0.5"/>
+  <text x="913" y="687" font-size="11" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">异常 / 无Hook</text>
+  <!-- 蓝色边框节点 -->
+  <rect x="882" y="692" width="24" height="13" rx="2" fill="#E6F7FF" stroke="#1890FF" stroke-width="0.5"/>
+  <text x="913" y="703" font-size="11" fill="#595959" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">精确 Hook 引擎</text>
+
+</svg>

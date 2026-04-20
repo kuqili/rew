@@ -49,5 +49,14 @@
       "providerShortName": "TV3TFAJ56J",
       "entitlements": "entitlements.plist"
     }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://api.github.com/repos/kuqili/rew/releases/latest"
+      ],
+      "dialog": false,
+      "pubkey": ""
+    }
   }
 }

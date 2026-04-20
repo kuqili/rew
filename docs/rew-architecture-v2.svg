@@ -1,0 +1,270 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="980" viewBox="0 0 1200 980">
+  <defs>
+    <marker id="arrow-gray" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#595959"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#1890FF"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#FA8C16"/>
+    </marker>
+    <style>
+      text { font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif; }
+    </style>
+  </defs>
+
+  <!-- 整体虚线框 -->
+  <rect x="15" y="10" width="1170" height="960" rx="8" ry="8"
+        fill="none" stroke="#8C8C8C" stroke-width="0.5" stroke-dasharray="4,4"/>
+
+  <!-- 主标题 -->
+  <text x="600" y="46" text-anchor="middle" font-size="22" font-weight="bold"
+        fill="#1890FF" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">
+    rew 完整系统架构图
+  </text>
+
+  <!-- ════════════════════════════════════════════
+       第一层：用户 &amp; AI 工具层
+  ════════════════════════════════════════════ -->
+  <rect x="40" y="60" width="1130" height="90" rx="6" ry="6"
+        fill="#E6F7FF" stroke="#1890FF" stroke-width="0.5"/>
+  <text x="58" y="78" font-size="11" fill="#1890FF">用户 &amp; AI 工具层</text>
+
+  <rect x="70" y="85" width="120" height="40" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="130" y="109" text-anchor="middle" font-size="12" fill="#262626">Claude Code</text>
+
+  <rect x="210" y="85" width="100" height="40" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="260" y="109" text-anchor="middle" font-size="12" fill="#262626">Cursor</text>
+
+  <rect x="330" y="85" width="110" height="40" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="385" y="109" text-anchor="middle" font-size="12" fill="#262626">WorkBuddy</text>
+
+  <rect x="460" y="85" width="110" height="40" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="515" y="109" text-anchor="middle" font-size="12" fill="#262626">CodeBuddy</text>
+
+  <rect x="610" y="85" width="130" height="40" rx="4" fill="#FFF7E6" stroke="#FAAD14" stroke-width="0.5"/>
+  <text x="675" y="101" text-anchor="middle" font-size="11" fill="#262626">其他 AI 工具</text>
+  <text x="675" y="117" text-anchor="middle" font-size="10" fill="#8C8C8C">（无 Hook 支持）</text>
+
+  <rect x="780" y="85" width="110" height="40" rx="22" fill="#F6FFED" stroke="#52C41A" stroke-width="0.5"/>
+  <text x="835" y="109" text-anchor="middle" font-size="12" fill="#262626">用户操作文件</text>
+
+  <!-- Hook注入标注 -->
+  <text x="330" y="162" text-anchor="middle" font-size="10" fill="#1890FF">Hook 注入（rew install）</text>
+  <text x="675" y="162" text-anchor="middle" font-size="10" fill="#FAAD14">文件系统事件</text>
+  <text x="835" y="162" text-anchor="middle" font-size="10" fill="#52C41A">文件系统事件</text>
+
+  <!-- 箭头：用户层 → 下层 -->
+  <line x1="130" y1="125" x2="130" y2="178" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <line x1="260" y1="125" x2="260" y2="178" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <line x1="385" y1="125" x2="385" y2="178" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <line x1="515" y1="125" x2="515" y2="178" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <line x1="675" y1="125" x2="675" y2="178" stroke="#FAAD14" stroke-width="1" marker-end="url(#arrow-gray)"/>
+  <line x1="835" y1="125" x2="835" y2="178" stroke="#52C41A" stroke-width="1" marker-end="url(#arrow-gray)"/>
+
+  <!-- ════════════════════════════════════════════
+       第二层：双引擎层
+  ════════════════════════════════════════════ -->
+  <rect x="40" y="182" width="1130" height="85" rx="6" ry="6"
+        fill="#F0F5FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <text x="58" y="200" font-size="11" fill="#4169E1">双引擎保护层</text>
+
+  <!-- Hook引擎 -->
+  <rect x="65" y="207" width="510" height="44" rx="4" fill="#FFF" stroke="#1890FF" stroke-width="0.5"/>
+  <text x="320" y="225" text-anchor="middle" font-size="12" fill="#1890FF">Hook 引擎（精确层）— rew hook CLI</text>
+  <text x="320" y="241" text-anchor="middle" font-size="10" fill="#595959">UserPromptSubmit → PreToolUse → PostToolUse → Stop  |  写入 Hook Spool</text>
+
+  <!-- FSEvents引擎 -->
+  <rect x="620" y="207" width="390" height="44" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="815" y="225" text-anchor="middle" font-size="12" fill="#262626">FSEvents 引擎（兜底层）</text>
+  <text x="815" y="241" text-anchor="middle" font-size="10" fill="#595959">MacOSWatcher  |  PathFilter 过滤  |  Shadow 备份</text>
+
+  <!-- 层间箭头 -->
+  <line x1="320" y1="251" x2="320" y2="296" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <line x1="815" y1="251" x2="815" y2="296" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <text x="320" y="282" text-anchor="middle" font-size="10" fill="#1890FF">Hook 事件入队</text>
+  <text x="815" y="282" text-anchor="middle" font-size="10" fill="#595959">事件流</text>
+
+  <!-- ════════════════════════════════════════════
+       第三层：事件处理层（两列）
+  ════════════════════════════════════════════ -->
+  <rect x="40" y="300" width="1130" height="380" rx="6" ry="6"
+        fill="#F5FAFF" stroke="#BAE7FF" stroke-width="0.5"/>
+  <text x="58" y="318" font-size="11" fill="#4169E1">事件处理层</text>
+
+  <!-- 左列标题：Hook 路径 -->
+  <rect x="58" y="325" width="190" height="26" rx="3" fill="#E6F7FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <text x="153" y="342" text-anchor="middle" font-size="11" fill="#1890FF">Hook 路径（精确）</text>
+
+  <!-- 右列标题：FSEvents 路径 -->
+  <rect x="620" y="325" width="200" height="26" rx="3" fill="#FFF7E6" stroke="#FAAD14" stroke-width="0.5"/>
+  <text x="720" y="342" text-anchor="middle" font-size="11" fill="#FA8C16">FSEvents 路径（兜底）</text>
+
+  <!-- ── Hook路径各节点 ── -->
+
+  <!-- H1: Hook Spool -->
+  <rect x="58" y="362" width="530" height="50" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="323" y="382" text-anchor="middle" font-size="12" fill="#262626">Hook Spool（磁盘文件队列）</text>
+  <text x="323" y="398" text-anchor="middle" font-size="10" fill="#595959">pending/ → processing/ → done/ / failed/  |  崩溃重启自动 requeue  |  幂等性 receipt 去重</text>
+
+  <line x1="323" y1="412" x2="323" y2="432" stroke="#1890FF" stroke-width="0.8" marker-end="url(#arrow-blue)"/>
+
+  <!-- H2: Hook Event Writer -->
+  <rect x="58" y="432" width="530" height="44" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="323" y="450" text-anchor="middle" font-size="12" fill="#262626">Hook Event Writer（独立线程）</text>
+  <text x="323" y="465" text-anchor="middle" font-size="10" fill="#595959">claim → 重试机制（250ms / 1s）→ 处理 → mark done/failed</text>
+
+  <line x1="323" y1="476" x2="323" y2="496" stroke="#1890FF" stroke-width="0.8" marker-end="url(#arrow-blue)"/>
+
+  <!-- H3: process_hook_event -->
+  <rect x="58" y="496" width="530" height="56" rx="4" fill="#E6F7FF" stroke="#1890FF" stroke-width="0.5"/>
+  <text x="323" y="515" text-anchor="middle" font-size="12" fill="#1890FF">process_hook_event</text>
+  <text x="180" y="532" text-anchor="middle" font-size="10" fill="#595959">PromptStarted</text>
+  <text x="323" y="532" text-anchor="middle" font-size="10" fill="#595959">PostToolObserved</text>
+  <text x="460" y="532" text-anchor="middle" font-size="10" fill="#595959">TaskStopRequested</text>
+  <text x="323" y="545" text-anchor="middle" font-size="10" fill="#595959">Baseline 解析（Pre-tool Hash Store → File Index → shadow hash）</text>
+
+  <line x1="323" y1="552" x2="323" y2="572" stroke="#1890FF" stroke-width="0.8" marker-end="url(#arrow-blue)"/>
+
+  <!-- H4: Task Finalization Worker -->
+  <rect x="58" y="572" width="530" height="50" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="323" y="591" text-anchor="middle" font-size="12" fill="#262626">Task Finalization Worker（独立线程）</text>
+  <text x="323" y="607" text-anchor="middle" font-size="10" fill="#595959">Reconcile（净零移除 / 类型修正 / Rename 配对） → refresh_rollup → 生成 Summary</text>
+
+  <!-- ── FSEvents路径各节点 ── -->
+
+  <!-- F1: EventProcessor -->
+  <rect x="620" y="362" width="530" height="56" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="885" y="381" text-anchor="middle" font-size="12" fill="#262626">EventProcessor（3s 滑动窗口）</text>
+  <text x="885" y="397" text-anchor="middle" font-size="10" fill="#595959">事件去重（同路径保留最后状态）</text>
+  <text x="885" y="411" text-anchor="middle" font-size="10" fill="#595959">merge_kind 合并：Created+Deleted=净零 / Deleted+Created=Modified</text>
+
+  <line x1="885" y1="418" x2="885" y2="442" stroke="#595959" stroke-width="0.8" marker-end="url(#arrow-gray)"/>
+
+  <!-- F2: Dynamic Pause + PathFilter -->
+  <rect x="620" y="442" width="530" height="50" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="885" y="461" text-anchor="middle" font-size="12" fill="#262626">Dynamic Pause + PathFilter（3层过滤）</text>
+  <text x="885" y="477" text-anchor="middle" font-size="10" fill="#595959">package.json/Cargo.toml 变化 → 暂停 node_modules/target 60s  |  glob / 文件名 / 目录组件过滤</text>
+
+  <line x1="885" y1="492" x2="885" y2="512" stroke="#595959" stroke-width="0.8" marker-end="url(#arrow-gray)"/>
+
+  <!-- F3: Daemon 消费 EventBatch -->
+  <rect x="620" y="512" width="530" height="56" rx="4" fill="#FFF7E6" stroke="#FAAD14" stroke-width="0.5"/>
+  <text x="885" y="531" text-anchor="middle" font-size="12" fill="#262626">Daemon 消费 EventBatch</text>
+  <text x="885" y="547" text-anchor="middle" font-size="10" fill="#595959">BackupEngine（APFS clonefile / shadow hash 查找）</text>
+  <text x="885" y="561" text-anchor="middle" font-size="10" fill="#595959">RuleEngine + AnomalyDetector → 异常告警 → 触发系统通知</text>
+
+  <line x1="885" y1="568" x2="885" y2="588" stroke="#595959" stroke-width="0.8" marker-end="url(#arrow-gray)"/>
+
+  <!-- F4: FSEvent 归档任务 -->
+  <rect x="620" y="588" width="530" height="38" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="885" y="607" text-anchor="middle" font-size="12" fill="#262626">FSEvent 监听窗口任务归档（10min 窗口）</text>
+  <text x="885" y="621" text-anchor="middle" font-size="10" fill="#595959">Change 入库  |  File Index 同步更新</text>
+
+  <!-- 两路汇合箭头 → 存储层 -->
+  <!-- Hook路径下箭头 -->
+  <line x1="323" y1="622" x2="323" y2="693" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <!-- FSEvents路径下箭头 -->
+  <line x1="885" y1="626" x2="885" y2="693" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <text x="323" y="678" text-anchor="middle" font-size="10" fill="#1890FF">写入</text>
+  <text x="885" y="678" text-anchor="middle" font-size="10" fill="#595959">写入</text>
+
+  <!-- ════════════════════════════════════════════
+       第四层：存储层
+  ════════════════════════════════════════════ -->
+  <rect x="40" y="697" width="1130" height="100" rx="6" ry="6"
+        fill="#F0F5FF" stroke="#ADC6FF" stroke-width="0.5"/>
+  <text x="58" y="715" font-size="11" fill="#4169E1">存储层</text>
+
+  <!-- 对象存储圆柱 -->
+  <ellipse cx="185" cy="730" rx="105" ry="6" fill="#F0F5FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <rect x="80" y="730" width="210" height="44" fill="#F0F5FF" stroke="none"/>
+  <line x1="80" y1="730" x2="80" y2="774" stroke="#91D5FF" stroke-width="0.5"/>
+  <line x1="290" y1="730" x2="290" y2="774" stroke="#91D5FF" stroke-width="0.5"/>
+  <ellipse cx="185" cy="774" rx="105" ry="6" fill="#F0F5FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <text x="185" y="749" text-anchor="middle" font-size="12" fill="#262626">对象存储</text>
+  <text x="185" y="765" text-anchor="middle" font-size="10" fill="#595959">SHA-256 内容寻址 / APFS CoW</text>
+
+  <!-- SQLite 圆柱 -->
+  <ellipse cx="440" cy="730" rx="105" ry="6" fill="#F0F5FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <rect x="335" y="730" width="210" height="44" fill="#F0F5FF" stroke="none"/>
+  <line x1="335" y1="730" x2="335" y2="774" stroke="#91D5FF" stroke-width="0.5"/>
+  <line x1="545" y1="730" x2="545" y2="774" stroke="#91D5FF" stroke-width="0.5"/>
+  <ellipse cx="440" cy="774" rx="105" ry="6" fill="#F0F5FF" stroke="#91D5FF" stroke-width="0.5"/>
+  <text x="440" y="749" text-anchor="middle" font-size="12" fill="#262626">SQLite 数据库</text>
+  <text x="440" y="765" text-anchor="middle" font-size="10" fill="#595959">任务 / 变更 / File Index / Hook Receipt</text>
+
+  <!-- Pre-tool Hash Store -->
+  <rect x="590" y="720" width="185" height="54" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="682" y="743" text-anchor="middle" font-size="11" fill="#262626">Pre-tool Hash Store</text>
+  <text x="682" y="758" text-anchor="middle" font-size="10" fill="#595959">session_key 级文件基线哈希</text>
+  <text x="682" y="770" text-anchor="middle" font-size="10" fill="#595959">磁盘持久化，崩溃不丢</text>
+
+  <!-- Shadow Hash Store -->
+  <rect x="790" y="720" width="170" height="54" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="875" y="743" text-anchor="middle" font-size="11" fill="#262626">Shadow Hash Store</text>
+  <text x="875" y="758" text-anchor="middle" font-size="10" fill="#595959">.shadow_hashes/</text>
+  <text x="875" y="770" text-anchor="middle" font-size="10" fill="#595959">文件删除前的即时备份映射</text>
+
+  <!-- config.toml -->
+  <rect x="975" y="720" width="165" height="54" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="1057" y="743" text-anchor="middle" font-size="11" fill="#262626">config.toml</text>
+  <text x="1057" y="758" text-anchor="middle" font-size="10" fill="#595959">保护目录 / 清理策略</text>
+  <text x="1057" y="770" text-anchor="middle" font-size="10" fill="#595959">异常规则阈值</text>
+
+  <!-- 存储层 → 交互层 箭头 -->
+  <line x1="185" y1="780" x2="185" y2="835" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <line x1="440" y1="780" x2="440" y2="835" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <text x="185" y="818" text-anchor="middle" font-size="10" fill="#595959">读取</text>
+  <text x="440" y="818" text-anchor="middle" font-size="10" fill="#595959">查询</text>
+
+  <!-- ════════════════════════════════════════════
+       第五层：用户交互层
+  ════════════════════════════════════════════ -->
+  <rect x="40" y="839" width="1130" height="90" rx="6" ry="6"
+        fill="#F6FFED" stroke="#B7EB8F" stroke-width="0.5"/>
+  <text x="58" y="857" font-size="11" fill="#52C41A">用户交互层</text>
+
+  <rect x="70" y="865" width="240" height="48" rx="4" fill="#FFF" stroke="#52C41A" stroke-width="0.5"/>
+  <text x="190" y="884" text-anchor="middle" font-size="12" fill="#262626">桌面 GUI（Tauri + React）</text>
+  <text x="190" y="900" text-anchor="middle" font-size="10" fill="#595959">任务时间轴 / Diff / 回到这一刻 / 使用洞察</text>
+
+  <rect x="330" y="865" width="210" height="48" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="435" y="884" text-anchor="middle" font-size="12" fill="#262626">CLI（rew）</text>
+  <text x="435" y="900" text-anchor="middle" font-size="10" fill="#595959">install / list / show / undo / diff</text>
+
+  <rect x="560" y="865" width="200" height="48" rx="4" fill="#FFF7E6" stroke="#FAAD14" stroke-width="0.5"/>
+  <text x="660" y="884" text-anchor="middle" font-size="12" fill="#262626">系统通知</text>
+  <text x="660" y="900" text-anchor="middle" font-size="10" fill="#595959">异常告警弹窗（批量删除等）</text>
+
+  <rect x="780" y="865" width="180" height="48" rx="4" fill="#FFF" stroke="#8C8C8C" stroke-width="0.5"/>
+  <text x="870" y="884" text-anchor="middle" font-size="12" fill="#262626">系统托盘</text>
+  <text x="870" y="900" text-anchor="middle" font-size="10" fill="#595959">防护状态 / 暂停恢复</text>
+
+  <!-- ════════════════════════════════════════════
+       右侧：启动时扫描 + 图例
+  ════════════════════════════════════════════ -->
+
+  <!-- 启动扫描模块（竖条，右侧）-->
+  <rect x="990" y="300" width="165" height="120" rx="6" fill="#F9F0FF" stroke="#D3ADF7" stroke-width="0.5"/>
+  <text x="1072" y="318" text-anchor="middle" font-size="11" fill="#722ED1">启动时全量扫描</text>
+  <rect x="1002" y="326" width="141" height="30" rx="3" fill="#FFF" stroke="#D3ADF7" stroke-width="0.5"/>
+  <text x="1072" y="344" text-anchor="middle" font-size="10" fill="#262626">Scanner（增量 Manifest）</text>
+  <rect x="1002" y="362" width="141" height="30" rx="3" fill="#FFF" stroke="#D3ADF7" stroke-width="0.5"/>
+  <text x="1072" y="380" text-anchor="middle" font-size="10" fill="#262626">File Index 初始化</text>
+  <line x1="1072" y1="392" x2="1072" y2="418" stroke="#722ED1" stroke-width="0.8" marker-end="url(#arrow-gray)"/>
+  <text x="1072" y="414" text-anchor="middle" font-size="10" fill="#722ED1">写入对象存储</text>
+
+  <!-- 图例（右下角）-->
+  <rect x="990" y="840" width="165" height="84" rx="4"
+        fill="#FAFAFA" stroke="#D9D9D9" stroke-width="0.5"/>
+  <text x="1002" y="858" font-size="11" fill="#595959">图例</text>
+  <line x1="1002" y1="872" x2="1032" y2="872" stroke="#1890FF" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <text x="1040" y="876" font-size="11" fill="#595959">Hook 路径</text>
+  <line x1="1002" y1="888" x2="1032" y2="888" stroke="#595959" stroke-width="0.5" marker-end="url(#arrow-gray)"/>
+  <text x="1040" y="892" font-size="11" fill="#595959">FSEvents 路径</text>
+  <rect x="1002" y="900" width="22" height="13" rx="2" fill="#F9F0FF" stroke="#D3ADF7" stroke-width="0.5"/>
+  <text x="1032" y="911" font-size="11" fill="#595959">启动扫描</text>
+
+</svg>

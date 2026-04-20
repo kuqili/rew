@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { X, Plus, FolderOpen, RefreshCw, Trash2, ChevronDown, ChevronRight, Info, CheckCircle, Settings, Clock, Cpu, HelpCircle } from "lucide-react";
 import { useScanProgress } from "../hooks/useScanProgress";
 import { getToolBrandIcon } from "./ToolIcons";
+import { useUpdater } from "../hooks/useUpdater";
 import {
   analyzeDirectories, getStorageInfo, getDirStats, addWatchDir, removeWatchDir,
   getMonitoringWindow, setMonitoringWindow,
@@ -415,28 +416,7 @@ export default function SettingsPanel({ onClose }: Props) {
         ) : tab === "ai_tools" ? (
           <AiToolsTab />
         ) : (
-          <div className="space-y-4">
-            <h3 className="text-[13px] font-semibold text-t-1">rew — AI 时代的文件安全网</h3>
-            <p className="text-[11px] text-t-2 leading-relaxed">
-              实时监控文件，AI 工具操作时自动备份。误删或改错，一键撤销。
-            </p>
-            <div className="text-[11px] text-t-3 space-y-1">
-              <div>版本: 0.1.0</div>
-              <div>存储: APFS clonefile (CoW)</div>
-              <div>作者（联系人）: kuqili</div>
-              {storage && <div>备份: {storage.object_count.toLocaleString()} 对象 · {fmt(storage.apparent_bytes)}</div>}
-            </div>
-            <div className="mt-4 pt-3 border-t border-border">
-              <h4 className="text-[11px] font-semibold text-t-1 mb-2">默认不备份的文件类型</h4>
-              <div className="text-[11px] text-t-3 space-y-1 leading-relaxed">
-                <div>• <b>应用程序</b> — .app 包内文件</div>
-                <div>• <b>安装包</b> — .dmg, .pkg, .iso, .msi, .exe</div>
-                <div>• <b>开发产物</b> — node_modules, .git, target, __pycache__</div>
-                <div>• <b>系统临时文件</b> — .DS_Store, Thumbs.db, .swp</div>
-                <div>• <b>大部分系统运行过程中会频繁产生变更的文件（非用户文件）</b> </div>
-              </div>
-            </div>
-          </div>
+          <AboutTab storage={storage} fmt={fmt} />
         )}
         </div>
       </div>
@@ -1041,6 +1021,120 @@ function InfoNote({ children }: { children: React.ReactNode }) {
   return (
     <div className="text-[12px] text-t-3 leading-relaxed p-3 bg-bg-grouped rounded-md mb-2">
       {children}
+    </div>
+  );
+}
+
+// ─── About Tab ───
+function AboutTab({ storage, fmt }: { storage: StorageInfo | null; fmt: (b: number) => string }) {
+  const { status, updateInfo, progress, error, checkForUpdates, downloadAndInstall, restart } = useUpdater();
+
+  return (
+    <div className="space-y-4">
+      <h3 className="text-[13px] font-semibold text-t-1">rew — AI 时代的文件安全网</h3>
+      <p className="text-[11px] text-t-2 leading-relaxed">
+        实时监控文件，AI 工具操作时自动备份。误删或改错，一键撤销。
+      </p>
+      <div className="text-[11px] text-t-3 space-y-1">
+        <div>版本: 0.1.0</div>
+        <div>存储: APFS clonefile (CoW)</div>
+        <div>作者（联系人）: kuqili</div>
+        {storage && <div>备份: {storage.object_count.toLocaleString()} 对象 · {fmt(storage.apparent_bytes)}</div>}
+      </div>
+
+      {/* 检查更新区域 */}
+      <div className="pt-3 border-t border-border">
+        <h4 className="text-[11px] font-semibold text-t-1 mb-2">软件更新</h4>
+
+        {status === 'idle' && (
+          <button
+            onClick={checkForUpdates}
+            className="px-3 py-1.5 rounded-md bg-bg-grouped text-[12px] text-t-1 hover:bg-border transition-colors cursor-default"
+          >
+            检查更新
+          </button>
+        )}
+
+        {status === 'checking' && (
+          <p className="text-[11px] text-t-3 flex items-center gap-1.5">
+            <span className="animate-spin">◐</span> 正在检查…
+          </p>
+        )}
+
+        {status === 'up-to-date' && (
+          <p className="text-[11px] text-sys-green flex items-center gap-1">
+            <CheckCircle className="w-3 h-3" /> 已是最新版本
+          </p>
+        )}
+
+        {status === 'available' && updateInfo && (
+          <div className="space-y-2">
+            <p className="text-[11px] text-t-2">
+              发现新版本 <span className="font-semibold text-t-1">{updateInfo.version}</span>
+            </p>
+            {updateInfo.body && (
+              <p className="text-[11px] text-t-3 leading-relaxed whitespace-pre-wrap bg-bg-grouped rounded-md p-2">
+                {updateInfo.body}
+              </p>
+            )}
+            <button
+              onClick={downloadAndInstall}
+              className="px-3 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover transition-colors cursor-default"
+            >
+              下载并安装
+            </button>
+          </div>
+        )}
+
+        {status === 'downloading' && (
+          <div className="space-y-1.5">
+            <p className="text-[11px] text-t-3">正在下载… {progress}%</p>
+            <div className="w-full h-1.5 bg-border rounded-full overflow-hidden">
+              <div
+                className="h-full bg-sys-blue rounded-full transition-all duration-200"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {status === 'ready' && (
+          <div className="space-y-2">
+            <p className="text-[11px] text-sys-green flex items-center gap-1">
+              <CheckCircle className="w-3 h-3" /> 下载完成，重启后生效
+            </p>
+            <button
+              onClick={restart}
+              className="px-3 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover transition-colors cursor-default"
+            >
+              立即重启
+            </button>
+          </div>
+        )}
+
+        {status === 'error' && (
+          <div className="space-y-2">
+            <p className="text-[11px] text-sys-red">更新失败：{error}</p>
+            <button
+              onClick={checkForUpdates}
+              className="px-3 py-1.5 rounded-md bg-bg-grouped text-[12px] text-t-1 hover:bg-border transition-colors cursor-default"
+            >
+              重试
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="pt-3 border-t border-border">
+        <h4 className="text-[11px] font-semibold text-t-1 mb-2">默认不备份的文件类型</h4>
+        <div className="text-[11px] text-t-3 space-y-1 leading-relaxed">
+          <div>• <b>应用程序</b> — .app 包内文件</div>
+          <div>• <b>安装包</b> — .dmg, .pkg, .iso, .msi, .exe</div>
+          <div>• <b>开发产物</b> — node_modules, .git, target, __pycache__</div>
+          <div>• <b>系统临时文件</b> — .DS_Store, Thumbs.db, .swp</div>
+          <div>• <b>大部分系统运行过程中会频繁产生变更的文件（非用户文件）</b></div>
+        </div>
+      </div>
     </div>
   );
 }
