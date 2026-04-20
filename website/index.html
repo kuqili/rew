@@ -718,13 +718,34 @@
     </div>
   </section>
 
-  <!-- CLI section -->
+  <!-- Download section -->
   <section class="section" id="download" style="padding-top: 40px;">
     <div class="section-header" style="margin-bottom: 40px;">
-      <h2 class="section-title">Install via Terminal</h2>
-      <p class="bento-desc">For developers. Run this command to install the daemon and CLI.</p>
+      <h2 class="section-title">Download rew</h2>
+      <p class="bento-desc">macOS only · Requires macOS 11.0+</p>
     </div>
-    
+
+    <!-- DMG download buttons -->
+    <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-bottom: 48px;">
+      <a id="btn-arm64" href="#" download
+        style="display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px; background: #000; color: #fff; border-radius: 10px; font-size: 15px; font-weight: 500; text-decoration: none; transition: opacity 0.15s;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Download for Apple Silicon</span>
+        <span id="ver-arm64" style="font-size: 12px; opacity: 0.6; font-weight: 400;"></span>
+      </a>
+      <a id="btn-x64" href="#" download
+        style="display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px; background: #1a1a1a; color: #fff; border-radius: 10px; font-size: 15px; font-weight: 500; text-decoration: none; transition: opacity 0.15s; border: 1px solid #333;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Download for Intel Mac</span>
+        <span id="ver-x64" style="font-size: 12px; opacity: 0.6; font-weight: 400;"></span>
+      </a>
+    </div>
+
+    <!-- CLI install -->
+    <div class="section-header" style="margin-bottom: 24px;">
+      <h3 style="font-size: 18px; font-weight: 600; margin-bottom: 8px;">Or install via Terminal</h3>
+      <p class="bento-desc">For developers. Installs the daemon and CLI automatically.</p>
+    </div>
     <div class="cli-box">
       <div>
         <span>$</span> curl -fsSL https://raw.githubusercontent.com/rew-ai/rew/main/install.sh | sh
@@ -757,6 +778,31 @@
       btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
       setTimeout(() => { btn.innerHTML = originalSVG; }, 2000);
     }
+
+    // 自动从 GitHub API 获取最新 Release 下载链接
+    (async function() {
+      try {
+        const res = await fetch('https://api.github.com/repos/kuqili/rew/releases/latest');
+        const data = await res.json();
+        const tag = data.tag_name; // e.g. "v0.1.2"
+        const assets = data.assets || [];
+
+        const arm64Asset = assets.find(a => a.name.includes('aarch64') && a.name.endsWith('.dmg'));
+        const x64Asset   = assets.find(a => a.name.includes('x64')     && a.name.endsWith('.dmg'));
+
+        if (arm64Asset) {
+          document.getElementById('btn-arm64').href = arm64Asset.browser_download_url;
+          document.getElementById('ver-arm64').textContent = tag;
+        }
+        if (x64Asset) {
+          document.getElementById('btn-x64').href = x64Asset.browser_download_url;
+          document.getElementById('ver-x64').textContent = tag;
+        }
+      } catch(e) {
+        // API 失败时 fallback 到固定链接，不影响页面
+        console.warn('Failed to fetch latest release:', e);
+      }
+    })();
 
     // Scroll blur effect
     window.addEventListener('scroll', () => {
