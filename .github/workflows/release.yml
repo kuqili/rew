@@ -171,6 +171,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TARGET=${{ matrix.target }}
           APP_PATH="target/${TARGET}/release/bundle/macos/rew.app"
@@ -219,3 +220,6 @@ jobs:
 
           echo "🔍 Verify..."
           spctl --assess --type exec --verbose "$APP_PATH"
+
+          echo "⬆️ Replace Release asset with notarized DMG..."
+          gh release upload "${{ github.ref_name }}" "$DMG_PATH" --clobber
