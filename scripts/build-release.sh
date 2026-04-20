@@ -35,6 +35,14 @@ echo "== 2) 构建最新 CLI =="
 cargo build --release -p rew-cli
 cp "$ROOT/target/release/rew" "$ROOT/src-tauri/rew"
 
+# 直接更新 hook 调用路径，不依赖 App 启动时的 install_cli_binary()
+# install_cli_binary() 有内容相同时跳过的优化，在 Tauri 构建缓存场景下
+# 可能导致 ~/.rew/bin/rew 未被更新，hook 继续使用旧二进制
+echo "== 2b) 同步 CLI 到 ~/.rew/bin/ =="
+mkdir -p "$HOME/.rew/bin"
+cp "$ROOT/target/release/rew" "$HOME/.rew/bin/rew"
+echo "   ~/.rew/bin/rew 已更新：$(~/.rew/bin/rew --version 2>/dev/null || echo 'ok')"
+
 # ── Step 3: 编译前端 ──────────────────────────────────────────
 echo "== 3) 构建最新前端 =="
 cd "$ROOT/gui" && pnpm build
