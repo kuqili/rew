@@ -154,8 +154,8 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           TARGET=${{ matrix.target }}
-          APP_PATH="target/release/bundle/macos/rew.app"
-          DMG_PATH=$(ls target/release/bundle/dmg/rew_*.dmg | head -1)
+          APP_PATH="target/${TARGET}/release/bundle/macos/rew.app"
+          DMG_PATH=$(ls target/${TARGET}/release/bundle/dmg/rew_*.dmg | head -1)
 
           echo "✍️ Re-sign CLI binary inside .app..."
           codesign --force \
