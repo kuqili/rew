@@ -16,6 +16,7 @@ export default function MainLayout() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<"dirs" | "record" | "ai_tools" | "about">("dirs");
   const [refreshKey, setRefreshKey] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [toolFilter, setToolFilter] = useState<string | null>(null);
@@ -67,7 +68,7 @@ export default function MainLayout() {
       {showSettings && (
         <div className="modal-overlay">
           <div className="w-[720px] h-[540px] bg-white rounded-[10px] shadow-[0_20px_60px_rgba(0,0,0,0.2),0_0_0_0.5px_rgba(0,0,0,0.1)] flex overflow-hidden">
-            <SettingsPanel onClose={() => setShowSettings(false)} />
+            <SettingsPanel onClose={() => setShowSettings(false)} initialTab={settingsInitialTab} />
           </div>
         </div>
       )}
@@ -83,7 +84,10 @@ export default function MainLayout() {
           onSelectDir={handleSelectDir}
           viewMode={viewMode}
           onViewModeChange={handleViewModeChange}
-          onOpenSettings={() => setShowSettings(true)}
+          onOpenSettings={(tab) => {
+            setSettingsInitialTab(tab ?? (hasUpdate ? 'about' : 'dirs'))
+            setShowSettings(true)
+          }}
           toolFilter={toolFilter}
           onToolFilterChange={setToolFilter}
           activeTools={activeTools}

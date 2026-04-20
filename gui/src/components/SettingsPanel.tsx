@@ -20,7 +20,10 @@ function fmt(b: number): string {
   return (b / Math.pow(1024, i)).toFixed(i > 1 ? 1 : 0) + " " + u[i];
 }
 
-interface Props { onClose: () => void; }
+interface Props {
+  onClose: () => void;
+  initialTab?: "dirs" | "record" | "ai_tools" | "about";
+}
 
 const WINDOW_OPTIONS: { label: string; secs: number }[] = [
   { label: "5 分钟",  secs: 300 },
@@ -36,8 +39,8 @@ const TABS = [
   { k: "about" as const,    label: "关于",     icon: <HelpCircle className="w-4 h-4" /> },
 ];
 
-export default function SettingsPanel({ onClose }: Props) {
-  const [tab, setTab] = useState<"dirs" | "record" | "ai_tools" | "about">("dirs");
+export default function SettingsPanel({ onClose, initialTab = "dirs" }: Props) {
+  const [tab, setTab] = useState<"dirs" | "record" | "ai_tools" | "about">(initialTab);
   const [dirStats, setDirStats] = useState<DirStatsResult | null>(null);
   const [analysis, setAnalysis] = useState<FullAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);

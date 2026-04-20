@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react'
-import { check } from '@tauri-apps/plugin-updater'
+import { useState, useCallback, useRef } from 'react'
+import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 
 export type UpdateStatus =
@@ -22,9 +22,15 @@ export function useUpdater() {
   const [progress, setProgress] = useState(0)         // 0-100
   const [error, setError] = useState<string | null>(null)
 
+  // Cache the Update object from check() so downloadAndInstall doesn't
+  // need to call check() a second time (which could return null on network
+  // hiccups and silently abort the download with no user feedback).
+  const updateRef = useRef<Update | null>(null)
+
   const checkForUpdates = useCallback(async () => {
     setStatus('checking')
     setError(null)
+    updateRef.current = null
 
     try {
       const update = await check()
@@ -34,6 +40,7 @@ export function useUpdater() {
         return
       }
 
+      updateRef.current = update
       setUpdateInfo({ version: update.version, body: update.body ?? null })
       setStatus('available')
     } catch (e) {
@@ -43,15 +50,19 @@ export function useUpdater() {
   }, [])
 
   const downloadAndInstall = useCallback(async () => {
-    if (status !== 'available' || !updateInfo) return
+    if (status !== 'available') return
+
+    const update = updateRef.current
+    if (!update) {
+      setError('更新信息已丢失，请重新检查更新')
+      setStatus('error')
+      return
+    }
 
     setStatus('downloading')
     setProgress(0)
 
     try {
-      const update = await check()
-      if (!update) return
-
       let downloaded = 0
       let total = 0
 
@@ -76,7 +87,7 @@ export function useUpdater() {
       setError(String(e))
       setStatus('error')
     }
-  }, [status, updateInfo])
+  }, [status])
 
   const restart = useCallback(async () => {
     await relaunch()

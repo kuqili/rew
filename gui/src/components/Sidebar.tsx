@@ -10,7 +10,7 @@ interface Props {
   onSelectDir: (dir: string | null) => void;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (tab?: "dirs" | "record" | "ai_tools" | "about") => void;
   /** AI tool filter sub-items under "AI 任务历史" */
   toolFilter: string | null;
   onToolFilterChange: (tool: string | null) => void;
@@ -129,7 +129,7 @@ export default function Sidebar({
       {/* Footer */}
       <div className="mt-auto p-2 border-t border-border-light">
         <button
-          onClick={onOpenSettings}
+          onClick={() => onOpenSettings()}
           className="w-full flex items-center gap-2 h-[28px] px-3 mx-2 rounded text-[12px] text-t-3 hover:bg-bg-hover cursor-default transition-colors"
         >
           <div className="relative flex-shrink-0">
