@@ -1,29 +1,31 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>rew — AI 时代的文件安全网</title>
   <meta name="description" content="AI 每次改动你的文件，rew 自动存档。出错了？一键读档回到任意历史状态。不需要 Git，不需要任何命令。"/>
   <meta property="og:title" content="rew — AI 时代的文件安全网"/>
   <meta property="og:description" content="自动存档每一次 AI 改动，出错后一键读档还原。支持 Cursor、Claude Code、Codebuddy 等所有 AI 工具。"/>
-  <meta property="og:type" content="website"/>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
     :root {
       --bg: #000000;
       --fg: #ffffff;
       --text-muted: #8a8f98;
-      --border: rgba(255,255,255,0.1);
-      --border-hover: rgba(255,255,255,0.2);
-      --card-bg: rgba(255,255,255,0.03);
+      --text-dim: #555;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-hover: rgba(255, 255, 255, 0.18);
+      --card-bg: rgba(255, 255, 255, 0.03);
       --accent: #ff453a;
-      --green: #34d399;
-      --red: #f87171;
     }
 
     body {
@@ -32,65 +34,81 @@
       color: var(--fg);
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
       overflow-x: hidden;
     }
 
     a { text-decoration: none; color: inherit; }
 
-    /* ── Nav ── */
+    /* ─── Nav ─── */
     nav {
-      position: fixed; top: 0; left: 0; right: 0;
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 20px 40px; z-index: 100;
-      background: rgba(0,0,0,0.5);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 40px;
+      z-index: 100;
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
       border-bottom: 1px solid transparent;
       transition: border-color 0.3s;
     }
     nav.scrolled { border-bottom: 1px solid var(--border); }
 
     .nav-brand {
-      display: flex; align-items: center; gap: 10px;
-      font-weight: 700; font-size: 16px; letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      font-size: 16px;
+      letter-spacing: -0.02em;
     }
-    .nav-logo-mark {
-      width: 26px; height: 26px; background: var(--fg); border-radius: 6px;
-      display: flex; align-items: center; justify-content: center;
-      color: var(--bg); font-weight: 800; font-size: 13px;
-    }
+    .nav-brand img { width: 26px; height: 26px; border-radius: 6px; }
 
-    .nav-links { display: flex; gap: 28px; list-style: none; }
-    .nav-links a { color: var(--text-muted); font-size: 14px; font-weight: 500; transition: color 0.2s; }
+    .nav-links {
+      display: flex;
+      gap: 32px;
+      list-style: none;
+    }
+    .nav-links a {
+      color: var(--text-muted);
+      font-size: 14px;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
     .nav-links a:hover { color: var(--fg); }
 
-    .nav-actions { display: flex; gap: 12px; align-items: center; }
-
     .btn {
-      padding: 9px 18px; border-radius: 8px; font-size: 14px; font-weight: 500;
-      cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 8px;
+      padding: 9px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
       border: none;
     }
-    .btn-ghost { background: transparent; color: var(--text-muted); }
-    .btn-ghost:hover { color: var(--fg); }
     .btn-primary { background: #fff; color: #000; }
-    .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
-    .btn-accent {
-      background: var(--accent); color: #fff;
-      padding: 12px 28px; border-radius: 10px; font-size: 15px; font-weight: 600;
+    .btn-primary:hover { opacity: 0.88; transform: translateY(-1px); }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
     }
-    .btn-accent:hover { opacity: 0.9; transform: translateY(-1px); }
-    .btn-outline {
-      background: rgba(255,255,255,0.05); color: var(--fg);
-      border: 1px solid rgba(255,255,255,0.12);
-      padding: 12px 28px; border-radius: 10px; font-size: 15px; font-weight: 500;
-    }
-    .btn-outline:hover { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.2); }
+    .btn-ghost:hover { color: var(--fg); border-color: var(--border-hover); }
 
-    /* ── Hero Background ── */
+    /* ─── WebGL Background ─── */
     #webgl-container {
-      position: absolute; top: 0; left: 0; right: 0; height: 1000px;
-      overflow: hidden; z-index: 0; pointer-events: none;
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1100px;
+      overflow: hidden;
+      z-index: 0;
+      pointer-events: none;
       background-color: var(--bg);
     }
     .fade-out-mask {
@@ -101,712 +119,1242 @@
     .grain-overlay {
       position: absolute; inset: 0;
       background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
-      opacity: 0.08; mix-blend-mode: overlay; pointer-events: none; z-index: 3;
+      opacity: 0.08; mix-blend-mode: overlay;
+      pointer-events: none; z-index: 3;
     }
 
-    /* ── Hero ── */
+    /* ─── Hero ─── */
     .hero {
-      padding: 180px 24px 100px; text-align: center;
-      max-width: 1200px; margin: 0 auto;
-      position: relative; z-index: 1;
+      padding: 160px 24px 80px;
+      text-align: center;
+      max-width: 1200px;
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
     }
+
     .hero-badge {
-      display: inline-flex; align-items: center; gap: 8px;
-      font-size: 12px; font-weight: 600; color: var(--text-muted);
-      margin-bottom: 32px; padding: 6px 16px; border-radius: 100px;
-      background: rgba(255,255,255,.04); border: 1px solid var(--border);
-      transition: border-color 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 28px;
+      padding: 6px 16px;
+      border-radius: 100px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--border);
+      letter-spacing: 0.02em;
     }
-    .hero-badge:hover { border-color: var(--border-hover); }
-    .hero-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px rgba(255,69,58,.5); }
+    .hero-badge-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px rgba(255,69,58,.5);
+    }
+
     .hero-title {
-      font-size: clamp(56px, 8vw, 88px); font-weight: 800;
-      letter-spacing: -0.05em; line-height: 1.0;
-      margin-bottom: 24px; color: var(--fg);
+      font-size: 88px;
+      font-weight: 800;
+      letter-spacing: -0.05em;
+      line-height: 1;
+      margin-bottom: 24px;
+      color: var(--fg);
       text-shadow: 0 4px 40px rgba(0,0,0,0.8);
     }
-    .hero-title .accent {
-      background: linear-gradient(135deg, #ff453a 0%, #ff7043 100%);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-    }
-    .hero-sub {
-      font-size: 19px; color: var(--text-muted); max-width: 540px;
-      margin: 0 auto 40px; line-height: 1.65;
+    .hero-subtitle {
+      font-size: 20px;
+      color: #8a8f98;
+      max-width: 560px;
+      margin: 0 auto 36px;
+      line-height: 1.6;
+      font-weight: 400;
       text-shadow: 0 2px 20px rgba(0,0,0,0.8);
     }
     .hero-actions {
-      display: flex; align-items: center; justify-content: center;
-      gap: 12px; flex-wrap: wrap; margin-bottom: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
     }
-    .hero-meta {
-      margin-top: 20px; font-size: 13px; color: var(--text-muted);
-      display: flex; align-items: center; justify-content: center; gap: 20px; flex-wrap: wrap;
+    .hero-actions .btn-download {
+      padding: 13px 28px;
+      font-size: 15px;
+      font-weight: 600;
+      border-radius: 10px;
     }
-    .hero-meta span { display: flex; align-items: center; gap: 4px; }
+    .hero-actions .btn-learn {
+      padding: 12px 22px;
+      font-size: 15px;
+      font-weight: 500;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.06);
+      color: var(--text-muted);
+      border: 1px solid rgba(255,255,255,0.18);
+      transition: all 0.2s ease;
+    }
+    .hero-actions .btn-learn:hover { color: var(--fg); border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.1); }
 
-    /* ── Mockup ── */
-    .mockup-container {
-      perspective: 1200px; margin-top: 64px;
-      display: flex; justify-content: center;
-      animation: float 8s infinite alternate ease-in-out;
+    .hero-meta {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      color: var(--text-dim);
+      margin-bottom: 80px;
     }
-    @keyframes float {
+    .hero-meta-item { display: flex; align-items: center; gap: 5px; }
+    .hero-meta-sep { width: 1px; height: 12px; background: var(--border); }
+
+    /* ─── Mockup (Command Box) ─── */
+    .mockup-container {
+      perspective: 1200px;
+      display: flex;
+      justify-content: center;
+      animation: container-float 8s infinite alternate ease-in-out;
+    }
+    @keyframes container-float {
       0% { transform: rotateY(1.5deg) rotateX(1deg) translateY(0); }
       100% { transform: rotateY(-2.5deg) rotateX(-1deg) translateY(-16px); }
     }
     .rc-window {
-      width: 100%; max-width: 720px;
-      background: rgba(20,20,20,0.75); backdrop-filter: blur(40px);
-      border: 1px solid rgba(255,255,255,0.15); border-radius: 16px;
-      box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 40px 80px rgba(0,0,0,0.8);
-      overflow: hidden; text-align: left;
-      transition: transform 0.5s cubic-bezier(0.16,1,0.3,1);
+      width: 100%;
+      max-width: 760px;
+      background: rgba(20, 20, 20, 0.75);
+      backdrop-filter: blur(40px) saturate(150%);
+      -webkit-backdrop-filter: blur(40px) saturate(150%);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 16px;
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.1),   /* 顶部内发光 — 苹果系统受光面 */
+        0 0 0 1px rgba(0,0,0,0.5),                  /* 外层暗色描边 */
+        0 24px 48px rgba(0, 0, 0, 0.6),              /* 深邃主阴影 — 让窗口浮起来 */
+        0 48px 100px rgba(0, 0, 0, 0.5),             /* 远距离漫射阴影 */
+        0 0 120px rgba(255,255,255,0.03);            /* 微弱辉光 */
+      text-align: left;
+      overflow: hidden;
     }
-    .rc-window:hover { transform: translateY(-8px); }
-    .rc-titlebar {
-      height: 40px; background: rgba(255,255,255,0.02);
-      border-bottom: 1px solid rgba(255,255,255,0.08);
-      display: flex; align-items: center; padding: 0 16px; gap: 8px;
+    .rc-search {
+      display: flex;
+      align-items: center;
+      padding: 22px 28px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      gap: 16px;
     }
-    .tb-dot { width: 12px; height: 12px; border-radius: 50%; }
-    .tb-close { background: #ff5f57; } .tb-min { background: #febc2e; } .tb-max { background: #28c840; }
-    .tb-title { flex: 1; text-align: center; font-size: 12px; color: var(--text-muted); font-weight: 500; }
-    .rc-body { display: grid; grid-template-columns: 48px 200px 1fr; min-height: 360px; }
-    .mock-rail {
-      background: rgba(255,255,255,.01); border-right: 1px solid rgba(255,255,255,0.06);
-      display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 4px;
+    .rc-search-icon { color: var(--text-muted); }
+    .rc-input {
+      background: transparent; border: none; outline: none;
+      color: var(--fg);
+      font-family: 'Inter', sans-serif;
+      font-size: 22px; font-weight: 400; width: 100%;
+      letter-spacing: -0.02em;
     }
-    .rail-icon {
-      width: 32px; height: 32px; border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 14px; color: var(--text-muted); transition: all 0.2s;
-    }
-    .rail-icon.active { background: rgba(255,69,58,.12); color: var(--accent); }
-    .mock-sidebar {
-      border-right: 1px solid rgba(255,255,255,0.06);
-      display: flex; flex-direction: column; overflow: hidden;
-    }
-    .ms-header { padding: 12px 12px 8px; border-bottom: 1px solid rgba(255,255,255,0.06); }
-    .ms-title { font-size: 10px; font-weight: 700; color: var(--text-muted); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 8px; }
-    .ms-tabs { display: flex; gap: 4px; }
-    .ms-tab { padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; color: var(--text-muted); cursor: pointer; }
-    .ms-tab.active { background: rgba(255,69,58,.12); color: var(--accent); }
-    .ms-list { flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
-    .ms-item {
-      padding: 8px 10px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;
-    }
-    .ms-item.active { background: rgba(255,255,255,.06); }
-    .ms-item-label { font-size: 11px; color: #ccc; }
-    .ms-item.active .ms-item-label { color: var(--fg); }
-    .ms-badge { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: rgba(255,69,58,.12); color: var(--accent); }
-    .ms-meta { font-size: 10px; color: var(--text-muted); }
-    .mock-detail { display: flex; flex-direction: column; overflow: hidden; }
-    .md-header {
-      padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.06);
-      display: flex; justify-content: space-between; align-items: center;
-    }
-    .md-title { font-size: 11px; font-weight: 700; color: #ccc; }
-    .md-btn {
-      padding: 4px 10px; border-radius: 6px; font-size: 10px; font-weight: 700;
-      background: rgba(255,69,58,.12); color: var(--accent); border: none; cursor: pointer;
-    }
-    .md-list { flex: 1; padding: 10px; display: flex; flex-direction: column; gap: 4px; }
-    .md-file {
+    .rc-input::placeholder { color: var(--text-muted); }
+    .typewriter-effect::after { content: '|'; animation: blink 1s step-end infinite; color: var(--accent); }
+    @keyframes blink { 50% { opacity: 0; } }
+    .rc-list { padding: 12px; }
+    .rc-list-header { font-size: 11px; font-weight: 600; color: var(--text-muted); padding: 8px 16px; margin-bottom: 4px; letter-spacing: 0.04em; text-transform: uppercase; }
+    .rc-item {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 6px 10px; border-radius: 6px; background: rgba(255,255,255,.02);
-      border: 1px solid rgba(255,255,255,0.06);
+      padding: 11px 16px; border-radius: 10px; margin-bottom: 3px;
+      transition: background 0.1s;
+      animation: rewind-item 4s infinite alternate ease-in-out;
     }
-    .md-file-name { font-size: 11px; color: #ccc; font-family: 'SF Mono','Menlo',monospace; }
-    .md-tag { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
-    .tag-mod { background: rgba(255,69,58,.08); color: var(--accent); }
-    .tag-add { background: rgba(52,211,153,.08); color: var(--green); }
-    .tag-del { background: rgba(248,113,113,.08); color: var(--red); }
-    .md-restore {
-      margin: 8px 10px 10px; padding: 8px 12px; border-radius: 8px;
-      background: rgba(255,69,58,.08); border: 1px solid rgba(255,69,58,.15);
+    .rc-item:nth-child(2) { animation-delay: 0.5s; }
+    .rc-item:nth-child(3) { animation-delay: 1s; }
+    @keyframes rewind-item {
+      0% { transform: translateY(0); opacity: 1; filter: blur(0); }
+      90% { transform: translateY(0); opacity: 1; filter: blur(0); }
+      100% { transform: translateY(4px) scale(0.99); opacity: 0.8; filter: blur(1px); }
+    }
+    .rc-item.active { background: rgba(255, 255, 255, 0.1); }
+    .rc-item-left { display: flex; align-items: center; gap: 14px; }
+    .rc-icon-box { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+    .rc-icon-box.red { background: var(--accent); }
+    .rc-icon-box.gray { background: rgba(255, 255, 255, 0.08); }
+    .rc-item-content { display: flex; flex-direction: column; gap: 2px; }
+    .rc-item-title { font-size: 14px; font-weight: 500; color: var(--fg); }
+    .rc-item:not(.active) .rc-item-title { color: #cccccc; }
+    .rc-item-sub { font-size: 12px; color: var(--text-muted); }
+    .rc-shortcut { display: flex; gap: 4px; align-items: center; }
+    .kbd {
+      background: rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px; padding: 3px 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px; color: var(--text-muted);
+      box-shadow: 0 1px 1px rgba(0,0,0,0.2);
+    }
+    .rc-footer {
       display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 24px;
+      background: rgba(0,0,0,0.3);
+      border-top: 1px solid rgba(255,255,255,0.05);
+      font-size: 11px; color: var(--text-muted);
     }
-    .md-restore-label { font-size: 10px; color: #ccc; }
-    .md-restore-btn {
-      font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 6px;
-      background: var(--accent); color: #fff; border: none; cursor: pointer;
+    .rc-footer-left { display: flex; gap: 16px; }
+    .rc-action-hint { display: flex; align-items: center; gap: 6px; }
+
+    /* ─── Section Base ─── */
+    .section {
+      padding: 100px 24px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .section-header { text-align: center; margin-bottom: 64px; }
+    .section-label {
+      display: inline-block;
+      font-size: 11px; font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-size: 40px; font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 16px;
+      line-height: 1.1;
+    }
+    .section-sub {
+      font-size: 16px; color: var(--text-muted);
+      max-width: 480px; margin: 0 auto;
+      line-height: 1.7;
     }
 
-    /* ── Integration strip ── */
+    /* ─── Value Prop Section ─── */
+    .value-prop {
+      padding: 100px 24px 60px;
+      text-align: center;
+    }
+    .value-prop-inner { max-width: 900px; margin: 0 auto; }
+    .value-eyebrow {
+      font-size: 11px; font-weight: 700;
+      color: var(--text-dim);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }
+    .value-title {
+      font-size: 56px; font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.05;
+      margin-bottom: 16px;
+    }
+    .value-sub {
+      font-size: 18px; color: var(--text-muted);
+      max-width: 500px;
+      margin: 0 auto 48px;
+      line-height: 1.6;
+    }
+    .value-tags {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .value-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 100px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.03);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--fg);
+      transition: border-color 0.2s, background 0.2s;
+      letter-spacing: -0.01em;
+    }
+    .value-tag:hover { border-color: rgba(255,255,255,0.25); background: rgba(255,255,255,0.06); }
+    .value-tag-accent { color: var(--accent); font-family: ui-monospace, monospace; font-size: 13px; }
+
+    /* ─── Integration Strip ─── */
     .integration-strip {
-      border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
-      padding: 32px 0; overflow: hidden; position: relative; z-index: 1;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      padding: 0;
+    }
+    .integration-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 22px 40px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      flex-wrap: wrap;
     }
     .integration-label {
-      text-align: center; font-size: 12px; font-weight: 600; letter-spacing: .06em;
-      text-transform: uppercase; color: var(--text-muted); margin-bottom: 24px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-dim);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
-    .integration-logos { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; padding: 0 24px; }
+    .integration-sep {
+      width: 1px; height: 24px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+    .integration-logos {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
     .tool-chip {
-      display: flex; align-items: center; gap: 8px;
-      padding: 8px 16px; border-radius: 100px;
-      border: 1px solid var(--border); font-size: 13px; font-weight: 500; color: #ccc;
-      transition: border-color 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      transition: border-color 0.2s, color 0.2s, background 0.2s;
     }
-    .tool-chip:hover { border-color: var(--border-hover); color: var(--fg); }
-
-    /* ── Sections ── */
-    .section { padding: 120px 24px; max-width: 1200px; margin: 0 auto; }
-    .section-center { text-align: center; margin-bottom: 64px; }
-    .label {
-      display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .08em;
-      text-transform: uppercase; color: var(--accent); margin-bottom: 16px;
+    .tool-chip:hover { border-color: var(--border-hover); color: var(--fg); background: rgba(255,255,255,0.04); }
+    .tool-chip-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--text-dim);
+      flex-shrink: 0;
     }
-    .title { font-size: clamp(28px, 4vw, 40px); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 16px; }
-    .sub { font-size: 16px; color: var(--text-muted); line-height: 1.7; max-width: 560px; margin: 0 auto; }
-
-    /* ── Pillars ── */
-    .pillars-grid {
-      display: grid; grid-template-columns: repeat(3, 1fr);
-      gap: 1px; background: var(--border); border-radius: 16px; overflow: hidden;
-    }
-    @media (max-width: 768px) { .pillars-grid { grid-template-columns: 1fr; } }
-    .pillar { padding: 48px 36px; background: var(--bg); transition: background 0.2s; }
-    .pillar:hover { background: rgba(255,255,255,.02); }
-    .pillar-num { font-size: 11px; font-weight: 700; color: var(--accent); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 20px; }
-    .pillar-title { font-size: 24px; font-weight: 800; margin-bottom: 14px; letter-spacing: -0.02em; }
-    .pillar-desc { font-size: 14px; color: var(--text-muted); line-height: 1.8; }
-    .pillar-link {
-      display: inline-flex; align-items: center; gap: 4px; margin-top: 24px;
-      font-size: 13px; font-weight: 600; color: var(--text-muted); transition: color 0.2s;
-    }
-    .pillar-link:hover { color: var(--fg); }
-
-    /* ── Features grid ── */
-    .features-grid {
-      display: grid; grid-template-columns: repeat(3, 1fr);
-      gap: 1px; background: var(--border); border-radius: 12px; overflow: hidden;
-    }
-    @media (max-width: 768px) { .features-grid { grid-template-columns: 1fr; } }
-    .feat-cell { padding: 36px 32px; background: var(--bg); transition: background 0.2s; }
-    .feat-cell:hover { background: rgba(255,255,255,.02); }
-    .feat-icon { width: 36px; height: 36px; border-radius: 8px; background: rgba(255,255,255,.04); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; margin-bottom: 20px; font-size: 16px; color: var(--text-muted); }
-    .feat-name { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
-    .feat-desc { font-size: 13px; color: var(--text-muted); line-height: 1.7; }
-
-    /* ── Download section ── */
-    .dl-section { text-align: center; }
-    .dl-grid {
-      display: grid; grid-template-columns: repeat(2, 1fr);
-      gap: 20px; max-width: 800px; margin: 0 auto;
-    }
-    @media (max-width: 640px) { .dl-grid { grid-template-columns: 1fr; } }
-    .dl-card {
-      padding: 36px; border-radius: 16px;
-      border: 1px solid var(--border); background: var(--card-bg);
-      text-align: left; transition: border-color 0.2s;
-    }
-    .dl-card.primary { border-color: rgba(255,69,58,.25); background: rgba(255,69,58,.04); }
-    .dl-card:hover { border-color: var(--border-hover); }
-    .dl-card.primary:hover { border-color: rgba(255,69,58,.4); }
-    .dl-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
-    .dl-sub { font-size: 13px; color: var(--text-muted); line-height: 1.6; margin-bottom: 24px; }
-    .dl-meta { font-size: 12px; color: var(--text-muted); margin-top: 16px; line-height: 1.6; }
-    .dl-meta a { color: var(--text-muted); border-bottom: 1px solid var(--border); transition: color 0.2s, border-color 0.2s; }
-    .dl-meta a:hover { color: var(--fg); border-color: var(--border-hover); }
-
-    .gk-note {
-      max-width: 680px; margin: 40px auto 0;
-      padding: 20px 24px; border-radius: 12px;
-      border: 1px solid var(--border); background: rgba(255,255,255,.02);
-      font-size: 13px; color: var(--text-muted); line-height: 1.7; text-align: left;
+    .tool-chip-universal {
+      border-style: dashed;
+      color: var(--text-dim);
+      font-size: 12px;
     }
 
-    /* ── CLI box ── */
-    .cli-box {
-      background: #0a0a0a; border: 1px solid var(--border); border-radius: 12px;
-      padding: 18px 22px; display: flex; align-items: center; justify-content: space-between;
-      font-family: 'SF Mono','Menlo',monospace; font-size: 13px; color: #e2e8f0;
-      max-width: 600px; margin: 16px auto 0;
+    /* ─── App Screenshot ─── */
+    .app-screenshot-section {
+      padding: 80px 24px 60px;
+      max-width: 1100px;
+      margin: 0 auto;
     }
-    .cli-box span { color: var(--text-muted); margin-right: 10px; user-select: none; }
-    .copy-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; transition: color 0.2s; }
-    .copy-btn:hover { color: var(--fg); }
-
-    .divider { border: none; border-top: 1px solid var(--border); margin: 0 0; }
-
-    /* ── Footer ── */
-    footer { border-top: 1px solid var(--border); padding: 60px 40px; margin-top: 0; }
-    .footer-inner {
-      max-width: 1200px; margin: 0 auto;
-      display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 40px;
+    .app-screenshot-header { text-align: center; margin-bottom: 48px; }
+    .app-screenshot-frame {
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,0.08),
+        0 40px 80px rgba(0,0,0,0.6),
+        0 0 80px rgba(255,69,58,0.04);
+      transform: perspective(1200px) rotateX(1deg);
+      transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.5s;
     }
-    @media (max-width: 768px) { .footer-inner { grid-template-columns: 1fr 1fr; } }
-    .footer-brand .nav-logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; margin-bottom: 12px; }
-    .footer-tagline { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
-    .footer-col-title { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 16px; }
+    .app-screenshot-frame:hover {
+      transform: perspective(1200px) rotateX(0deg) translateY(-4px);
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,0.12),
+        0 56px 100px rgba(0,0,0,0.7),
+        0 0 100px rgba(255,69,58,0.06);
+    }
+    .app-screenshot-img {
+      width: 100%;
+      display: block;
+    }
+
+    /* ─── Bento Grid / Features (existing, preserved) ─── */
+    .features-section {
+      padding: 80px 24px 60px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .features-header { text-align: left; margin-bottom: 56px; }
+    .features-header-en {
+      font-size: 38px; font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 8px;
+    }
+    .features-header-label {
+      font-size: 11px; color: var(--text-dim);
+      font-weight: 600; letter-spacing: 0.05em;
+      text-transform: uppercase; margin-bottom: 6px;
+    }
+    .features-header-sub { font-size: 16px; color: var(--text-muted); }
+
+    .bento-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+    }
+    .bento-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 44px;
+      transition: border-color 0.3s, background 0.3s;
+    }
+    .bento-card:hover {
+      border-color: rgba(255,255,255,0.12);
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .bento-icon { margin-bottom: 20px; color: var(--text-muted); }
+    .bento-title { font-size: 19px; font-weight: 600; margin-bottom: 10px; letter-spacing: -0.01em; }
+    .bento-label { font-size: 10px; color: var(--text-dim); font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 8px; }
+    .bento-desc { font-size: 14px; color: var(--text-muted); line-height: 1.65; }
+    .bento-card.full {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 56px;
+    }
+    .bento-card.full .bento-content { max-width: 460px; }
+    .stats-row { display: flex; gap: 40px; margin-top: 28px; }
+    .stat-item h4 { font-size: 30px; font-weight: 700; color: var(--fg); letter-spacing: -0.03em; margin-bottom: 4px; }
+    .stat-item p { font-size: 13px; color: var(--text-muted); }
+
+    /* ─── FIG Grid Section ─── */
+    .fig-section {
+      padding: 100px 0 120px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .fig-section-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 40px;
+    }
+    .fig-section-header {
+      margin-bottom: 56px;
+    }
+    .fig-section-eyebrow {
+      font-size: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: rgba(255,255,255,0.2);
+      letter-spacing: 0.12em;
+      margin-bottom: 10px;
+    }
+    .fig-section-title {
+      font-size: 48px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: #fff;
+      line-height: 1;
+    }
+    .fig-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .fig-cell {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-height: 420px;
+      border-right: 1px solid rgba(255,255,255,0.06);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .fig-cell:nth-child(even) { border-right: none; }
+    .fig-cell:nth-child(3),
+    .fig-cell:nth-child(4) { border-bottom: none; }
+    .fig-label {
+      position: absolute;
+      top: 18px; left: 20px;
+      font-size: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: rgba(255,255,255,0.18);
+      letter-spacing: 0.12em;
+      z-index: 2;
+    }
+    .fig-arrow {
+      position: absolute;
+      top: 16px; right: 20px;
+      color: rgba(255,255,255,0.12);
+      font-size: 13px;
+      font-family: ui-monospace, monospace;
+    }
+    .fig-visual {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 52px 40px 28px;
+    }
+    .fig-visual svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .fig-text {
+      padding: 18px 20px 24px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .fig-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.85);
+      margin-bottom: 5px;
+      letter-spacing: -0.01em;
+    }
+    .fig-desc {
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: rgba(255,255,255,0.26);
+      line-height: 1.75;
+    }
+
+    /* ─── Divider ─── */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    /* ─── Download ─── */
+    .download-section {
+      padding: 120px 24px 100px;
+      max-width: 800px;
+      margin: 0 auto;
+      text-align: center;
+      position: relative;
+    }
+    .download-section::before {
+      content: '';
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .download-section > * { position: relative; z-index: 1; }
+    .download-title {
+      font-size: 48px; font-weight: 700;
+      letter-spacing: -0.03em; margin-bottom: 16px;
+      background: linear-gradient(180deg, #fff 0%, #aaa 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .download-sub {
+      font-size: 18px; color: #a1a1a6;
+      font-weight: 400; margin-bottom: 56px;
+      letter-spacing: -0.01em;
+    }
+    .dl-btn-primary {
+      display: inline-flex; align-items: center;
+      background: #fff; color: #000;
+      padding: 18px 44px;
+      border-radius: 100px;
+      text-decoration: none;
+      transition: all 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+      box-shadow: 0 4px 24px rgba(255,255,255,0.12);
+      gap: 14px;
+    }
+    .dl-btn-primary:hover {
+      transform: translateY(-2px) scale(1.02);
+      box-shadow: 0 8px 32px rgba(255,255,255,0.2);
+    }
+    .dl-btn-primary:active { transform: translateY(1px) scale(0.98); }
+    .dl-btn-primary svg { flex-shrink: 0; }
+    .dl-btn-text { display: flex; flex-direction: column; align-items: flex-start; }
+    .dl-btn-main { font-size: 17px; font-weight: 600; line-height: 1.2; letter-spacing: -0.01em; }
+    .dl-btn-sub { font-size: 12px; font-weight: 500; color: #666; margin-top: 2px; }
+    .dl-fallback {
+      margin-top: 28px;
+      font-size: 14px; color: #6e6e73;
+    }
+    .dl-fallback-link {
+      color: #a1a1a6; text-decoration: none; font-weight: 500;
+      border-bottom: 1px solid rgba(161,161,166,0.3);
+      padding-bottom: 1px; margin-left: 6px;
+      transition: all 0.2s;
+    }
+    .dl-fallback-link:hover { color: #fff; border-bottom-color: #fff; }
+    .dl-sysreq {
+      margin-top: 52px;
+      font-size: 13px; color: #4a4a50;
+    }
+
+    /* ─── Footer ─── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 64px 40px 48px;
+    }
+    .footer-content {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .footer-top {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 80px;
+      align-items: start;
+      margin-bottom: 48px;
+      padding-bottom: 40px;
+      border-bottom: 1px solid var(--border);
+    }
+    .footer-brand {}
+    .footer-brand-name {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 700; font-size: 15px;
+      margin-bottom: 12px;
+    }
+    .footer-brand-name img { width: 22px; height: 22px; border-radius: 5px; }
+    .footer-tagline { font-size: 13px; color: var(--text-muted); line-height: 1.65; max-width: 200px; }
+    .footer-cols {
+      display: flex;
+      gap: 64px;
+      align-items: start;
+    }
+    .footer-col {}
+    .footer-col-title {
+      font-size: 11px; font-weight: 700;
+      color: rgba(255,255,255,0.25);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
     .footer-links { list-style: none; display: flex; flex-direction: column; gap: 10px; }
-    .footer-links a { font-size: 13px; color: var(--text-muted); transition: color 0.2s; }
+    .footer-links a { color: var(--text-muted); font-size: 13px; transition: color 0.2s; }
     .footer-links a:hover { color: var(--fg); }
     .footer-bottom {
-      max-width: 1200px; margin: 40px auto 0;
-      padding-top: 24px; border-top: 1px solid var(--border);
-      display: flex; justify-content: space-between; align-items: center;
-      font-size: 12px; color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
     }
+    .footer-copy { font-size: 12px; color: rgba(255,255,255,0.2); }
 
-    @media (max-width: 768px) {
-      nav { padding: 16px 20px; }
+    /* ─── Scroll Reveal ─── */
+    .reveal {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+    .reveal.visible { opacity: 1; transform: translateY(0); }
+    .reveal.d1 { transition-delay: 0.1s; }
+    .reveal.d2 { transition-delay: 0.2s; }
+    .reveal.d3 { transition-delay: 0.3s; }
+
+    /* ─── Responsive ─── */
+    @media (max-width: 900px) {
+      .hero-title { font-size: 52px; }
+      .value-title { font-size: 36px; }
+      .bento-grid { grid-template-columns: 1fr; }
+      .bento-card.full { flex-direction: column; align-items: flex-start; padding: 36px; gap: 32px; }
+      .fig-grid { grid-template-columns: 1fr; }
+      .fig-cell:nth-child(even) { border-right: none; }
+      .fig-cell:nth-child(3) { border-bottom: 1px solid rgba(255,255,255,0.06); }
+      .fig-cell:nth-child(4) { border-bottom: none; }
       .nav-links { display: none; }
-      .section { padding: 80px 20px; }
+      .app-body { grid-template-columns: 40px 160px 1fr; }
+      .footer-cols { gap: 32px; }
+      .dl-cards { flex-direction: column; align-items: center; }
+      .footer-top { flex-direction: column; }
+    }
+    @media (max-width: 600px) {
+      nav { padding: 16px 20px; }
+      .hero { padding: 140px 16px 60px; }
+      .hero-title { font-size: 40px; }
+      .integration-inner { padding: 16px 20px; }
+      .app-mockup-section { padding-left: 16px; padding-right: 16px; }
+      .app-body { grid-template-columns: 36px 140px 1fr; min-height: 280px; }
+      .fig-section-inner { padding: 0 20px; }
+    }
+      .app-body { grid-template-columns: 40px 160px 1fr; }
+      .footer-cols { gap: 32px; }
+      .dl-cards { flex-direction: column; align-items: center; }
+      .footer-top { flex-direction: column; }
+    }
+    @media (max-width: 600px) {
+      nav { padding: 16px 20px; }
+      .hero { padding: 140px 16px 60px; }
+      .hero-title { font-size: 40px; }
+      .integration-inner { padding: 16px 20px; }
+      .app-mockup-section, .mechanics-section { padding-left: 16px; padding-right: 16px; }
+      .app-body { grid-template-columns: 36px 140px 1fr; min-height: 280px; }
     }
   </style>
 </head>
 <body>
 
-<!-- ─── Nav ─────────────────────────────────────────────── -->
-<nav id="nav">
-  <a href="index.html" class="nav-brand">
-    <div class="nav-logo-mark">R</div>
-    rew
-  </a>
-  <ul class="nav-links">
-    <li><a href="why.html">为什么需要</a></li>
-    <li><a href="features.html">功能详情</a></li>
-    <li><a href="#download">下载</a></li>
-  </ul>
-  <div class="nav-actions">
-    <a href="https://github.com/kuqili/rew" class="btn btn-ghost" target="_blank">GitHub</a>
-    <a href="#download" class="btn btn-primary">下载</a>
-  </div>
-</nav>
-
-<!-- ─── WebGL 背景 ─────────────────────────────────────── -->
-<div id="webgl-container">
-  <div class="fade-out-mask"></div>
-  <div class="grain-overlay"></div>
-</div>
-
-<!-- ─── Hero ─────────────────────────────────────────────── -->
-<section class="hero">
-  <div class="hero-badge">
-    <span class="hero-badge-dot"></span>
-    macOS 免费下载 · 开源
-  </div>
-  <h1 class="hero-title">
-    AI 改文件，<br/>
-    <span class="accent">rew 守着</span>
-  </h1>
-  <p class="hero-sub">
-    自动存档每一次文件变更，出错后一键读档还原。<br/>
-    不需要 Git，不需要命令行。
-  </p>
-  <div class="hero-actions">
-    <a href="#download" class="btn btn-accent">下载 macOS 版本</a>
-    <a href="why.html" class="btn btn-outline">了解背后的故事 →</a>
-  </div>
-  <div class="hero-meta">
-    <span>免费 · 开源</span>
-    <span>数据仅存本地</span>
-    <span>macOS 11+</span>
-  </div>
-
-  <!-- App mockup -->
-  <div class="mockup-container">
-    <div class="rc-window">
-      <div class="rc-titlebar">
-        <div class="tb-dot tb-close"></div>
-        <div class="tb-dot tb-min"></div>
-        <div class="tb-dot tb-max"></div>
-        <div class="tb-title">rew</div>
-        <div style="width:36px;"></div>
-      </div>
-      <div class="rc-body">
-        <div class="mock-rail">
-          <div class="rail-icon active">⏱</div>
-          <div class="rail-icon">⚙</div>
-        </div>
-        <div class="mock-sidebar">
-          <div class="ms-header">
-            <div class="ms-title">存档记录</div>
-            <div class="ms-tabs">
-              <div class="ms-tab active">定时存档</div>
-              <div class="ms-tab">AI 任务</div>
-            </div>
-          </div>
-          <div class="ms-list">
-            <div class="ms-item active">
-              <span class="ms-item-label">16:30 存档</span>
-              <span class="ms-badge">7 文件</span>
-            </div>
-            <div class="ms-item">
-              <span class="ms-item-label">15:30 存档</span>
-              <span class="ms-meta">2 文件</span>
-            </div>
-            <div class="ms-item">
-              <span class="ms-item-label">14:30 存档</span>
-              <span class="ms-meta">12 文件</span>
-            </div>
-            <div class="ms-item">
-              <span class="ms-item-label">13:30 存档</span>
-              <span class="ms-meta">5 文件</span>
-            </div>
-          </div>
-        </div>
-        <div class="mock-detail">
-          <div class="md-header">
-            <span class="md-title">16:30 存档 · 7 个文件</span>
-            <button class="md-btn">↩ 整体读档</button>
-          </div>
-          <div class="md-list">
-            <div class="md-file">
-              <span class="md-file-name">src/components/App.tsx</span>
-              <span class="md-tag tag-mod">修改</span>
-            </div>
-            <div class="md-file">
-              <span class="md-file-name">src/utils/api.ts</span>
-              <span class="md-tag tag-mod">修改</span>
-            </div>
-            <div class="md-file">
-              <span class="md-file-name">src/types.ts</span>
-              <span class="md-tag tag-add">新建</span>
-            </div>
-            <div class="md-file">
-              <span class="md-file-name">docs/report.md</span>
-              <span class="md-tag tag-del">删除</span>
-            </div>
-          </div>
-          <div class="md-restore">
-            <span class="md-restore-label">回到此存档点</span>
-            <button class="md-restore-btn">↩ 读档</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ─── Integration strip ──────────────────────────────── -->
-<div class="integration-strip">
-  <div style="max-width:1200px;margin:0 auto;padding:0 24px;">
-    <p class="integration-label">适配你正在使用的 AI 工具</p>
-    <div class="integration-logos">
-      <div class="tool-chip">⌨ Cursor</div>
-      <div class="tool-chip">⬡ Claude Code</div>
-      <div class="tool-chip">◆ Codebuddy</div>
-      <div class="tool-chip">▲ Windsurf</div>
-      <div class="tool-chip">◉ GitHub Copilot</div>
-      <div class="tool-chip" style="border-style:dashed;color:var(--text-muted);">通用文件监控，任意工具均支持</div>
-    </div>
-  </div>
-</div>
-
-<!-- ─── Three Pillars ──────────────────────────────────── -->
-<section class="section">
-  <div class="section-center">
-    <span class="label">核心理念</span>
-    <h2 class="title">三件事，守护每一次 AI 协作</h2>
-    <p class="sub">看着、拦着、兜底。简单到不需要解释。</p>
-  </div>
-  <div class="pillars-grid">
-    <div class="pillar">
-      <div class="pillar-num">01 · 监控</div>
-      <div class="pillar-title">看着</div>
-      <p class="pillar-desc">AI 每次改动文件，rew 在后台自动存档快照。完全无感知，直到你需要它。</p>
-      <a href="features.html#monitor" class="pillar-link">了解自动存档 →</a>
-    </div>
-    <div class="pillar">
-      <div class="pillar-num">02 · 防护</div>
-      <div class="pillar-title">拦着</div>
-      <p class="pillar-desc">短时间内大量文件被删除或修改？立即告警。三秒内 800 个文件被删？先暂停。</p>
-      <a href="features.html#guard" class="pillar-link">了解异常熔断 →</a>
-    </div>
-    <div class="pillar">
-      <div class="pillar-num">03 · 恢复</div>
-      <div class="pillar-title">兜底</div>
-      <p class="pillar-desc">像游戏读档一样回到任意历史节点。不需要 git checkout，一键还原。</p>
-      <a href="features.html#restore" class="pillar-link">了解一键读档 →</a>
-    </div>
-  </div>
-</section>
-
-<hr class="divider" style="max-width:1200px;margin:0 auto;"/>
-
-<!-- ─── Feature Highlights ─────────────────────────────── -->
-<section class="section">
-  <div class="section-center">
-    <span class="label">核心能力</span>
-    <h2 class="title">你需要的，都在这里</h2>
-    <p class="sub">从自动存档到异常熔断，rew 在看不见的地方持续工作。</p>
-  </div>
-  <div class="features-grid">
-    <div class="feat-cell">
-      <div class="feat-icon">⚡</div>
-      <div class="feat-name">毫秒级文件追踪</div>
-      <p class="feat-desc">基于 macOS FSEvents，捕捉每一次文件创建、修改、删除。内容未变则不记录。</p>
-    </div>
-    <div class="feat-cell">
-      <div class="feat-icon">◎</div>
-      <div class="feat-name">AI 任务独立存档</div>
-      <p class="feat-desc">AI 工具完成任务后，自动生成独立存档记录，与定时存档分开展示。</p>
-    </div>
-    <div class="feat-cell">
-      <div class="feat-icon">⇄</div>
-      <div class="feat-name">文件级 diff 对比</div>
-      <p class="feat-desc">点击任意存档，查看每个文件的前后变更，精确定位 AI 改了什么。</p>
-    </div>
-  </div>
-  <div style="text-align:center;margin-top:36px;">
-    <a href="features.html" style="font-size:13px;font-weight:600;color:var(--text-muted);border-bottom:1px solid var(--border);padding-bottom:2px;transition:color .2s,border-color .2s;" onmouseover="this.style.color='var(--fg)';this.style.borderColor='var(--border-hover)'" onmouseout="this.style.color='var(--text-muted)';this.style.borderColor='var(--border)'">查看全部核心功能 →</a>
-  </div>
-</section>
-
-<!-- ─── Download ───────────────────────────────────────── -->
-<section class="section dl-section" id="download">
-  <span class="label" style="display:block;">立即开始</span>
-  <h2 class="title" style="margin-top:8px;">免费下载，本地运行</h2>
-  <p class="sub" style="margin:16px auto 56px;">数据完全存储在本地，无需注册，无需联网，无任何隐私顾虑。</p>
-
-  <div class="dl-grid">
-    <!-- Apple Silicon -->
-    <div class="dl-card primary">
-      <div class="dl-title">macOS · Apple Silicon</div>
-      <div class="dl-sub">M1 / M2 / M3 / M4 · macOS 11+<br/>基于 APFS clonefile，备份极速</div>
-      <a id="dl-arm64"
-         href="https://github.com/kuqili/rew/releases/latest"
-         class="btn btn-accent"
-         style="width:100%;justify-content:center;"
-         onclick="trackDownload('arm64')">
-        下载 .dmg（Apple Silicon）
-      </a>
-      <div class="dl-meta">
-        免费使用 &nbsp;·&nbsp;
-        <a href="https://github.com/kuqili/rew/releases/latest" target="_blank" rel="noopener">查看所有版本 →</a>
-        &nbsp;·&nbsp; <a href="#gatekeeper">无法打开？</a>
-      </div>
-    </div>
-
-    <!-- Intel -->
-    <div class="dl-card">
-      <div class="dl-title">macOS · Intel</div>
-      <div class="dl-sub">x86_64 · macOS 11+<br/>适用于 Intel 芯片 Mac</div>
-      <a id="dl-x64"
-         href="https://github.com/kuqili/rew/releases/latest"
-         class="btn btn-outline"
-         style="width:100%;justify-content:center;"
-         onclick="trackDownload('x64')">
-        下载 .dmg（Intel）
-      </a>
-      <div class="dl-meta" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
-        <strong style="color:#ccc;">Windows — 即将上线</strong><br/>
-        留下邮箱，上线后第一时间通知你
-        <div style="display:flex;gap:8px;margin-top:10px;">
-          <input type="email" id="win-email" placeholder="your@email.com"
-            style="flex:1;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--fg);font-size:13px;outline:none;"/>
-          <button onclick="handleWinNotify()"
-            style="padding:8px 16px;background:rgba(255,255,255,.08);border:1px solid var(--border);border-radius:8px;color:var(--fg);font-size:13px;cursor:pointer;">通知我</button>
-        </div>
-        <p id="win-msg" style="font-size:12px;color:var(--green);margin-top:8px;"></p>
-      </div>
-    </div>
-  </div>
-
-  <!-- 一键安装 -->
-  <div style="text-align:center;margin-top:40px;">
-    <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">或在终端一键安装（自动检测架构）</p>
-    <div class="cli-box" style="cursor:pointer;" onclick="copyInstallCmd(this)">
-      <div><span>$</span>curl -sL http://21.214.197.124/install.sh | bash</div>
-      <span id="copy-hint" style="font-size:11px;color:var(--text-muted);flex-shrink:0;">点击复制</span>
-    </div>
-  </div>
-
-  <!-- 最新版本 -->
-  <div style="text-align:center;margin-top:20px;">
-    <a href="https://github.com/kuqili/rew/releases/latest" target="_blank" rel="noopener"
-       id="version-badge"
-       style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);padding:6px 14px;border:1px solid var(--border);border-radius:100px;transition:color .15s,border-color .15s;"
-       onmouseover="this.style.color='#ccc';this.style.borderColor='var(--border-hover)'"
-       onmouseout="this.style.color='var(--text-muted)';this.style.borderColor='var(--border)'">
-      <span id="latest-version">查看最新版本 →</span>
+  <!-- ─── Nav ─── -->
+  <nav id="navbar">
+    <a href="#" class="nav-brand">
+      <img src="icon.png" alt="rew" onerror="this.style.display='none'"/>
+      rew
     </a>
-  </div>
-
-  <!-- Gatekeeper note -->
-  <div class="gk-note" id="gatekeeper">
-    <strong style="color:#ccc;">下载后提示「已损坏」或「无法验证开发者」？</strong><br/>
-    rew 已完成 Apple 公证，如仍遇到问题，推荐使用上方的一键安装命令，会自动处理。<br/><br/>
-    如已手动下载 DMG，在终端执行：
-    <div style="margin-top:8px;padding:10px 14px;border-radius:8px;background:rgba(255,255,255,.03);border:1px solid var(--border);">
-      <code style="font-size:12px;color:var(--accent);">xattr -cr ~/Downloads/rew_*.dmg</code><br/>
-      <span style="font-size:11px;color:var(--text-muted);">然后打开 DMG，把 rew.app 拖到 Applications，再执行：</span><br/>
-      <code style="font-size:12px;color:var(--accent);">xattr -cr /Applications/rew.app && codesign --force --deep --sign - /Applications/rew.app</code>
+    <ul class="nav-links">
+      <li><a href="#features">功能</a></li>
+      <li><a href="#how-it-works">工作原理</a></li>
+      <li><a href="#download">下载</a></li>
+    </ul>
+    <div>
+      <a href="#download" class="btn btn-primary" style="font-size:13px;padding:8px 16px;">立即下载</a>
     </div>
-  </div>
-</section>
+  </nav>
 
-<!-- ─── Footer ─────────────────────────────────────────── -->
-<footer>
-  <div class="footer-inner">
-    <div class="footer-brand">
-      <div class="nav-logo">
-        <div class="nav-logo-mark">R</div>
-        rew
+  <!-- ─── WebGL Background ─── -->
+  <div id="webgl-container">
+    <div class="fade-out-mask"></div>
+    <div class="grain-overlay"></div>
+  </div>
+
+  <!-- ─── Hero ─── -->
+  <section class="hero">
+    <div class="hero-badge">
+      <span class="hero-badge-dot"></span>
+      macOS 免费下载
+    </div>
+    <h1 class="hero-title">Your safety net for AI.</h1>
+    <p class="hero-subtitle">rew silently monitors your files and creates snapshots when AI tools modify them. Undo any mistake instantly. Fast, local, and reliable.</p>
+
+    <div class="hero-actions">
+      <a href="#download" class="btn btn-primary btn-download">
+        <svg viewBox="0 0 384 512" width="16" height="16" fill="currentColor"><path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>
+        Download for Mac
+      </a>
+      <a href="#features" class="btn btn-learn">了解更多 →</a>
+    </div>
+
+    <div class="hero-meta">
+      <span class="hero-meta-item">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        免费 · 开源
+      </span>
+      <span class="hero-meta-sep"></span>
+      <span class="hero-meta-item">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        数据仅存本地
+      </span>
+      <span class="hero-meta-sep"></span>
+      <span class="hero-meta-item">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h.01M7 20v-4M12 20v-8M17 20V8M22 4v16"/></svg>
+        macOS 11+
+      </span>
+    </div>
+
+    <!-- Raycast-style Command Box Mockup -->
+    <div class="mockup-container">
+      <div class="rc-window">
+        <div class="rc-search">
+          <svg class="rc-search-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" class="rc-input" id="typer" value="" readonly>
+        </div>
+        <div class="rc-list">
+          <div class="rc-list-header">Recent Tasks</div>
+          <div class="rc-item active">
+            <div class="rc-item-left">
+              <div class="rc-icon-box red">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/></svg>
+              </div>
+              <div class="rc-item-content">
+                <div class="rc-item-title">Revert 47 deleted files</div>
+                <div class="rc-item-sub">Claude Code · 21:16</div>
+              </div>
+            </div>
+            <div class="rc-shortcut"><span class="kbd">↵</span></div>
+          </div>
+          <div class="rc-item">
+            <div class="rc-item-left">
+              <div class="rc-icon-box gray">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+              </div>
+              <div class="rc-item-content">
+                <div class="rc-item-title">Cursor code generation</div>
+                <div class="rc-item-sub">Cursor · 21:11</div>
+              </div>
+            </div>
+            <div class="rc-shortcut"><span class="kbd" style="background:transparent;border:none;box-shadow:none;">3 files</span></div>
+          </div>
+          <div class="rc-item">
+            <div class="rc-item-left">
+              <div class="rc-icon-box gray">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              </div>
+              <div class="rc-item-content">
+                <div class="rc-item-title">Refactor storage.rs</div>
+                <div class="rc-item-sub">Claude Code · 21:06</div>
+              </div>
+            </div>
+            <div class="rc-shortcut"><span class="kbd" style="background:transparent;border:none;box-shadow:none;">12 files</span></div>
+          </div>
+        </div>
+        <div class="rc-footer">
+          <div class="rc-footer-left">
+            <div class="rc-action-hint"><span class="kbd">↵</span> Restore Files</div>
+            <div class="rc-action-hint"><span class="kbd">⌘</span><span class="kbd">K</span> Actions</div>
+          </div>
+          <div>rew CLI & Daemon</div>
+        </div>
       </div>
-      <p class="footer-tagline">AI 时代的文件安全网</p>
     </div>
-    <div>
-      <div class="footer-col-title">产品</div>
-      <ul class="footer-links">
-        <li><a href="features.html">功能详情</a></li>
-        <li><a href="why.html">为什么需要</a></li>
-        <li><a href="#download">立即下载</a></li>
-      </ul>
-    </div>
-    <div>
-      <div class="footer-col-title">资源</div>
-      <ul class="footer-links">
-        <li><a href="why.html#story">真实案例</a></li>
-        <li><a href="why.html#tools">与 Git 的区别</a></li>
-        <li><a href="features.html#howto">三步上手</a></li>
-      </ul>
-    </div>
-    <div>
-      <div class="footer-col-title">开源</div>
-      <ul class="footer-links">
-        <li><a href="https://github.com/kuqili/rew" target="_blank" rel="noopener">GitHub</a></li>
-      </ul>
+  </section>
+
+  <!-- ─── Value Prop ─── -->
+  <div class="value-prop reveal">
+    <div class="value-prop-inner">
+      <div class="value-eyebrow">For the AI-native developer</div>
+      <h2 class="value-title">It's not about backup.<br/>It's about staying fearless.</h2>
+      <p class="value-sub">大胆让 AI 改代码。rew 守着每一次变更，随时一键还原。</p>
+      <div class="value-tags">
+        <span class="value-tag"><span class="value-tag-accent">&lt;3%</span> CPU 占用</span>
+        <span class="value-tag">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          100% 本地存储
+        </span>
+        <span class="value-tag">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          零配置启动
+        </span>
+        <span class="value-tag">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3"/></svg>
+          秒级读档还原
+        </span>
+      </div>
     </div>
   </div>
-  <div class="footer-bottom">
-    <span>© 2026 rew</span>
-    <span>数据仅存储在你的设备上</span>
+
+  <!-- ─── Integration Strip ─── -->
+  <div class="integration-strip reveal">
+    <div class="integration-inner">
+      <span class="integration-label">适配你正在使用的 AI 工具</span>
+      <div class="integration-sep"></div>
+      <div class="integration-logos">
+        <div class="tool-chip">
+          <span class="tool-chip-dot"></span>
+          Cursor
+        </div>
+        <div class="tool-chip">
+          <span class="tool-chip-dot"></span>
+          Claude Code
+        </div>
+        <div class="tool-chip">
+          <span class="tool-chip-dot"></span>
+          Codebuddy
+        </div>
+        <div class="tool-chip">
+          <span class="tool-chip-dot"></span>
+          WorkBuddy
+        </div>
+        <div class="tool-chip tool-chip-universal">
+          通用文件监控，任意工具均支持
+        </div>
+      </div>
+    </div>
   </div>
-</footer>
 
-<script>
-  /* ── Nav scroll ── */
-  const nav = document.getElementById('nav');
-  window.addEventListener('scroll', () => nav.classList.toggle('scrolled', window.scrollY > 20), { passive: true });
+  <!-- ─── App Screenshot ─── -->
+  <div class="app-screenshot-section" id="how-it-works">
+    <div class="app-screenshot-header reveal">
+      <span class="section-label">产品预览</span>
+      <h2 class="section-title" style="margin-top:12px;">主界面展示</h2>
+      <p class="section-sub" style="margin-top:12px;">AI 任务历史 · 文件变更 diff · 一键回到任意节点。</p>
+    </div>
+    <div class="app-screenshot-frame reveal">
+      <img src="screenshot.png" alt="rew app screenshot" class="app-screenshot-img"/>
+    </div>
+  </div>
 
-  /* ── GitHub API: 自动获取最新版本下载链接 ── */
-  (function() {
-    const REPO = 'kuqili/rew';
-    fetch('https://api.github.com/repos/' + REPO + '/releases/latest', {
-      headers: { 'Accept': 'application/vnd.github+json' }
-    })
-    .then(r => r.ok ? r.json() : null)
-    .then(data => {
-      if (!data || !data.tag_name) return;
-      const ver = data.tag_name;
-      const numVer = ver.replace(/^v/, '');
-      document.getElementById('latest-version').textContent = ver + ' · 查看发布说明 →';
+  <!-- ─── Features (Bento Grid, preserved) ─── -->
+  <div class="features-section" id="features">
+    <div class="features-header reveal">
+      <div class="features-header-label">专为 AI 协作设计</div>
+      <h2 class="features-header-en">Designed for focus.</h2>
+      <p class="features-header-sub">让 AI 放手写代码，rew 确保你不会丢失任何东西。</p>
+    </div>
 
-      const arm64Url = 'https://github.com/' + REPO + '/releases/download/' + ver + '/rew_' + numVer + '_aarch64.dmg';
-      const x64Url   = 'https://github.com/' + REPO + '/releases/download/' + ver + '/rew_' + numVer + '_x64.dmg';
+    <div class="bento-grid">
+      <div class="bento-card reveal d1">
+        <svg class="bento-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/><line x1="18" y1="2" x2="22" y2="6"/><line x1="22" y1="2" x2="18" y2="6"/></svg>
+        <div class="bento-label">自动存档，零配置</div>
+        <h3 class="bento-title">Automatic Snapshots</h3>
+        <p class="bento-desc">rew 基于 macOS APFS clonefile 技术，在 AI 工具触碰文件的瞬间完成备份，完全无感知运行。</p>
+      </div>
 
-      const arm64Btn = document.getElementById('dl-arm64');
-      const x64Btn   = document.getElementById('dl-x64');
-      if (arm64Btn) arm64Btn.href = arm64Url;
-      if (x64Btn)   x64Btn.href   = x64Url;
-    })
-    .catch(() => {});
-  })();
+      <div class="bento-card reveal d2">
+        <svg class="bento-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div class="bento-label">异常熔断，实时告警</div>
+        <h3 class="bento-title">Anomaly Detection</h3>
+        <p class="bento-desc">当 Claude 或 Cursor 在数秒内批量删除或修改大量文件时，rew 立即告警并锁定最后一个安全存档点。</p>
+      </div>
 
-  /* ── Download click feedback ── */
-  function trackDownload(arch) {
-    const btn = document.getElementById('dl-' + arch);
-    if (!btn) return;
-    const orig = btn.innerHTML;
-    btn.innerHTML = '✓ 开始下载';
-    btn.style.opacity = '.8';
-    setTimeout(() => { btn.innerHTML = orig; btn.style.opacity = ''; }, 3000);
-  }
+      <div class="bento-card full reveal" id="how-it-works-perf">
+        <div class="bento-content">
+          <div class="bento-label">Rust 编写，极致本地性能</div>
+          <h3 class="bento-title">Native Performance</h3>
+          <p class="bento-desc">基于 macOS FSEvents 事件驱动，无轮询，CPU 占用极低。数据 100% 存储在本地，无需联网，无隐私顾虑。</p>
+          <div class="stats-row">
+            <div class="stat-item">
+              <h4>&lt;3%</h4>
+              <p>CPU 占用</p>
+            </div>
+            <div class="stat-item">
+              <h4>&lt;2s</h4>
+              <p>存档速度</p>
+            </div>
+            <div class="stat-item">
+              <h4>&lt;50MB</h4>
+              <p>内存占用</p>
+            </div>
+          </div>
+        </div>
+        <div style="flex-shrink:0;width:200px;height:200px;background:radial-gradient(circle, rgba(255,69,58,0.08) 0%, transparent 70%);display:flex;align-items:center;justify-content:center;border-radius:50%;">
+          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        </div>
+      </div>
+    </div>
+  </div>
 
-  /* ── Copy install command ── */
-  function copyInstallCmd(el) {
-    navigator.clipboard.writeText('curl -sL http://21.214.197.124/install.sh | bash').then(() => {
-      var hint = document.getElementById('copy-hint');
-      hint.textContent = '✓ 已复制';
-      hint.style.color = 'var(--green)';
-      setTimeout(() => { hint.textContent = '点击复制'; hint.style.color = 'var(--text-muted)'; }, 2000);
+  <hr class="divider"/>
+
+  <!-- ─── FIG Grid ─── -->
+  <div class="fig-section">
+    <div class="fig-section-inner">
+      <div class="fig-section-header reveal">
+        <div class="fig-section-eyebrow">UNDER THE HOOD</div>
+        <h2 class="fig-section-title">How rew works.</h2>
+      </div>
+      <div class="fig-grid">
+
+      <!-- FIG_01: FSEvents 监听 -->
+      <div class="fig-cell reveal">
+        <div class="fig-label">FIG_01</div>
+        <div class="fig-arrow">↗</div>
+        <div class="fig-visual">
+          <svg viewBox="0 0 340 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="10" y="16" width="320" height="40" rx="2" stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
+            <text x="24" y="42" font-size="11" fill="rgba(255,255,255,0.5)" font-family="ui-monospace,monospace" letter-spacing="0.05em">MACOS KERNEL  /  FSEVENT STREAM</text>
+            <line x1="170" y1="56" x2="170" y2="74" stroke="rgba(255,255,255,0.2)" stroke-width="1" stroke-dasharray="3 3"/>
+            <polygon points="165,72 170,80 175,72" fill="rgba(255,255,255,0.25)"/>
+            <rect x="30" y="82" width="280" height="44" rx="2" stroke="rgba(255,255,255,0.6)" stroke-width="1"/>
+            <circle cx="54" cy="104" r="5" stroke="rgba(255,255,255,0.6)" stroke-width="1" fill="none"/>
+            <circle cx="54" cy="104" r="2" fill="rgba(255,255,255,0.6)"/>
+            <text x="70" y="108" font-size="13" fill="rgba(255,255,255,0.85)" font-family="ui-monospace,monospace">rew daemon  ·  &lt;3% CPU</text>
+            <line x1="170" y1="128" x2="170" y2="146" stroke="rgba(255,255,255,0.2)" stroke-width="1" stroke-dasharray="3 3"/>
+            <polygon points="165,144 170,152 175,144" fill="rgba(255,255,255,0.25)"/>
+            <rect x="10" y="154" width="90" height="32" rx="2" stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
+            <text x="26" y="175" font-size="11" fill="rgba(255,255,255,0.55)" font-family="ui-monospace,monospace">CREATE</text>
+            <rect x="125" y="154" width="90" height="32" rx="2" stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
+            <text x="141" y="175" font-size="11" fill="rgba(255,255,255,0.55)" font-family="ui-monospace,monospace">MODIFY</text>
+            <rect x="240" y="154" width="90" height="32" rx="2" stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
+            <text x="256" y="175" font-size="11" fill="rgba(255,255,255,0.55)" font-family="ui-monospace,monospace">DELETE</text>
+            <line x1="10" y1="214" x2="330" y2="214" stroke="rgba(255,255,255,0.08)" stroke-width="0.8"/>
+            <text x="10" y="230" font-size="10" fill="rgba(255,255,255,0.28)" font-family="ui-monospace,monospace">EVENT LATENCY  &lt; 8ms  ·  ZERO POLLING</text>
+          </svg>
+        </div>
+        <div class="fig-text">
+          <div class="fig-title">原生 FSEvents 毫秒级监听</div>
+          <div class="fig-desc">接入 macOS 内核事件流，零轮询。<br/>全天候挂载，CPU 占用长年贴近于零。</div>
+        </div>
+      </div>
+
+      <!-- FIG_02: 任务聚类 -->
+      <div class="fig-cell reveal">
+        <div class="fig-label">FIG_02</div>
+        <div class="fig-arrow">↗</div>
+        <div class="fig-visual">
+          <svg viewBox="0 0 340 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <line x1="48" y1="24" x2="48" y2="216" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+            <text x="66" y="30" font-size="10" fill="rgba(255,255,255,0.35)" font-family="ui-monospace,monospace" letter-spacing="0.05em">RAW FILE EVENTS</text>
+            <circle cx="48" cy="48" r="4" stroke="rgba(255,255,255,0.25)" stroke-width="1" fill="none"/>
+            <circle cx="48" cy="60" r="4" stroke="rgba(255,255,255,0.25)" stroke-width="1" fill="none"/>
+            <circle cx="48" cy="66" r="4" stroke="rgba(255,255,255,0.25)" stroke-width="1" fill="none"/>
+            <circle cx="48" cy="72" r="4" stroke="rgba(255,255,255,0.25)" stroke-width="1" fill="none"/>
+            <circle cx="48" cy="98" r="4" stroke="rgba(255,255,255,0.25)" stroke-width="1" fill="none"/>
+            <circle cx="48" cy="108" r="4" stroke="rgba(255,255,255,0.25)" stroke-width="1" fill="none"/>
+            <circle cx="48" cy="130" r="4" stroke="rgba(255,255,255,0.25)" stroke-width="1" fill="none"/>
+            <circle cx="48" cy="138" r="4" stroke="rgba(255,255,255,0.25)" stroke-width="1" fill="none"/>
+            <circle cx="48" cy="146" r="4" stroke="rgba(255,255,255,0.25)" stroke-width="1" fill="none"/>
+            <circle cx="48" cy="182" r="4" stroke="rgba(255,255,255,0.25)" stroke-width="1" fill="none"/>
+            <rect x="64" y="52" width="210" height="30" rx="2" stroke="rgba(255,255,255,0.3)" stroke-width="1" fill="rgba(255,255,255,0.02)"/>
+            <text x="76" y="72" font-size="10" fill="rgba(255,255,255,0.6)" font-family="ui-monospace,monospace">TASK · cursor · 4 files · 21:08</text>
+            <rect x="64" y="94" width="210" height="30" rx="2" stroke="rgba(255,255,255,0.3)" stroke-width="1" fill="rgba(255,255,255,0.02)"/>
+            <text x="76" y="114" font-size="10" fill="rgba(255,255,255,0.6)" font-family="ui-monospace,monospace">TASK · claude · 3 files · 21:13</text>
+            <rect x="64" y="120" width="210" height="38" rx="2" stroke="rgba(80,150,255,0.6)" stroke-width="1" fill="rgba(80,150,255,0.06)"/>
+            <text x="76" y="140" font-size="10" fill="rgba(160,200,255,0.9)" font-family="ui-monospace,monospace">TASK · claude · 7 files · 21:16</text>
+            <text x="76" y="153" font-size="9" fill="rgba(160,200,255,0.45)" font-family="ui-monospace,monospace">● SELECTED</text>
+            <rect x="64" y="174" width="210" height="30" rx="2" stroke="rgba(255,255,255,0.3)" stroke-width="1" fill="rgba(255,255,255,0.02)"/>
+            <text x="76" y="194" font-size="10" fill="rgba(255,255,255,0.6)" font-family="ui-monospace,monospace">SCHEDULED · auto · 5 files · 21:30</text>
+            <line x1="10" y1="218" x2="330" y2="218" stroke="rgba(255,255,255,0.08)" stroke-width="0.8"/>
+            <text x="10" y="233" font-size="10" fill="rgba(255,255,255,0.28)" font-family="ui-monospace,monospace">INTENT CLUSTERING  ·  TASK-SCOPED SNAPSHOT</text>
+          </svg>
+        </div>
+        <div class="fig-text">
+          <div class="fig-title">AI 意图聚类与独立存档</div>
+          <div class="fig-desc">高频写入自动归并为任务级快照。<br/>随点随查，精准定位每次 AI 的改动边界。</div>
+        </div>
+      </div>
+
+      <!-- FIG_03: 熔断拦截 -->
+      <div class="fig-cell reveal">
+        <div class="fig-label">FIG_03</div>
+        <div class="fig-arrow">↗</div>
+        <div class="fig-visual">
+          <svg viewBox="0 0 340 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <line x1="36" y1="200" x2="320" y2="200" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+            <line x1="36" y1="24" x2="36" y2="200" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+            <text x="40" y="218" font-size="10" fill="rgba(255,255,255,0.3)" font-family="ui-monospace,monospace">TIME (s)</text>
+            <polyline points="36,186 80,181 110,178 140,183 160,176 178,179" stroke="rgba(255,255,255,0.3)" stroke-width="1" fill="none"/>
+            <polyline points="178,179 192,149 210,88 224,42 232,58" stroke="rgba(255,100,80,0.85)" stroke-width="1.5" fill="none"/>
+            <line x1="36" y1="128" x2="320" y2="128" stroke="rgba(255,100,80,0.4)" stroke-width="1" stroke-dasharray="5 4"/>
+            <text x="254" y="122" font-size="10" fill="rgba(255,120,100,0.7)" font-family="ui-monospace,monospace">THRESHOLD</text>
+            <line x1="212" y1="24" x2="212" y2="200" stroke="rgba(255,255,255,0.12)" stroke-width="0.8" stroke-dasharray="2 5"/>
+            <rect x="186" y="12" width="56" height="18" rx="2" fill="rgba(255,80,58,0.15)" stroke="rgba(255,80,58,0.5)" stroke-width="1"/>
+            <text x="194" y="25" font-size="9.5" fill="rgba(255,140,120,0.95)" font-family="ui-monospace,monospace">FREEZE</text>
+            <text x="8" y="203" font-size="9" fill="rgba(255,255,255,0.2)" font-family="ui-monospace,monospace">0</text>
+            <text x="8" y="130" font-size="9" fill="rgba(255,255,255,0.2)" font-family="ui-monospace,monospace">N</text>
+            <line x1="10" y1="226" x2="330" y2="226" stroke="rgba(255,255,255,0.08)" stroke-width="0.8"/>
+            <text x="10" y="238" font-size="10" fill="rgba(255,255,255,0.28)" font-family="ui-monospace,monospace">CIRCUIT BREAKER  ·  LOCK LAST SNAPSHOT</text>
+          </svg>
+        </div>
+        <div class="fig-text">
+          <div class="fig-title">异常动作实时拦截</div>
+          <div class="fig-desc">写入速率超阈值立即冻结进程。<br/>灾难前的最后快照强制保留，不可覆盖。</div>
+        </div>
+      </div>
+
+      <!-- FIG_04: APFS 回退 -->
+      <div class="fig-cell reveal">
+        <div class="fig-label">FIG_04</div>
+        <div class="fig-arrow">↗</div>
+        <div class="fig-visual">
+          <svg viewBox="0 0 340 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="60" y="18" width="220" height="44" rx="2" stroke="rgba(255,255,255,0.18)" stroke-width="1"/>
+            <text x="80" y="36" font-size="11" fill="rgba(255,255,255,0.4)" font-family="ui-monospace,monospace">WORKING TREE</text>
+            <text x="80" y="51" font-size="9.5" fill="rgba(255,255,255,0.22)" font-family="ui-monospace,monospace">(current state)</text>
+            <line x1="170" y1="62" x2="170" y2="80" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+            <rect x="40" y="80" width="220" height="44" rx="2" stroke="rgba(255,255,255,0.35)" stroke-width="1"/>
+            <text x="60" y="98" font-size="11" fill="rgba(255,255,255,0.65)" font-family="ui-monospace,monospace">SNAPSHOT  T-1  ·  21:16</text>
+            <text x="60" y="113" font-size="9.5" fill="rgba(255,255,255,0.3)" font-family="ui-monospace,monospace">11 files changed</text>
+            <line x1="150" y1="124" x2="150" y2="142" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+            <rect x="20" y="142" width="220" height="46" rx="2" stroke="rgba(80,150,255,0.65)" stroke-width="1" fill="rgba(80,150,255,0.06)"/>
+            <text x="40" y="162" font-size="11" fill="rgba(160,200,255,0.95)" font-family="ui-monospace,monospace">SNAPSHOT  T-2  ·  21:08</text>
+            <text x="40" y="178" font-size="9.5" fill="rgba(160,200,255,0.55)" font-family="ui-monospace,monospace">← RESTORE TO THIS POINT</text>
+            <line x1="244" y1="162" x2="318" y2="162" stroke="rgba(255,255,255,0.1)" stroke-width="0.8"/>
+            <text x="248" y="153" font-size="9.5" fill="rgba(255,255,255,0.25)" font-family="ui-monospace,monospace">clonefile()</text>
+            <text x="248" y="168" font-size="9.5" fill="rgba(255,255,255,0.18)" font-family="ui-monospace,monospace">0 extra disk</text>
+            <line x1="10" y1="212" x2="330" y2="212" stroke="rgba(255,255,255,0.08)" stroke-width="0.8"/>
+            <text x="10" y="228" font-size="10" fill="rgba(255,255,255,0.28)" font-family="ui-monospace,monospace">APFS SNAPSHOT  ·  ZERO-COPY RESTORE</text>
+          </svg>
+        </div>
+        <div class="fig-text">
+          <div class="fig-title">APFS 零延迟秒级回退</div>
+          <div class="fig-desc">clonefile 特性，不额外占用磁盘空间。<br/>无需 git 命令，一键穿梭至任意历史节点。</div>
+        </div>
+      </div>
+
+    </div><!-- /fig-grid -->
+    </div><!-- /fig-section-inner -->
+  </div><!-- /fig-section -->
+
+  <hr class="divider" style="margin-bottom: 0;"/>
+
+  <!-- ─── Download ─── -->
+  <div class="download-section" id="download">
+    <h2 class="download-title reveal">免费下载，本地运行</h2>
+    <p class="download-sub reveal">数据完全存储在本地，无需注册，无需联网，无任何隐私顾虑。</p>
+
+    <a id="btn-arm64" href="https://github.com/kuqili/rew/releases/latest" class="dl-btn-primary reveal">
+      <svg viewBox="0 0 384 512" width="24" height="24" fill="currentColor">
+        <path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/>
+      </svg>
+      <div class="dl-btn-text">
+        <span class="dl-btn-main">下载 .dmg <span id="ver-arm64" style="font-size:12px;font-weight:500;opacity:0.45;margin-left:6px;"></span></span>
+        <span class="dl-btn-sub">原生支持 Apple Silicon (M1–M4)</span>
+      </div>
+    </a>
+
+    <div class="dl-fallback reveal">
+      还在使用较老的 Mac？
+      <a id="btn-x64" href="https://github.com/kuqili/rew/releases/latest" class="dl-fallback-link">下载 Intel 架构版本</a>
+    </div>
+
+    <div class="dl-sysreq reveal">macOS 11.0 或更高版本 · 免费开源</div>
+  </div>
+
+  <!-- ─── Footer ─── -->
+  <footer>
+    <div class="footer-content">
+      <div class="footer-top">
+        <div class="footer-brand">
+          <div class="footer-brand-name">
+            <img src="icon.png" alt="rew" onerror="this.style.display='none'"/>
+            rew
+          </div>
+          <p class="footer-tagline">AI 时代的文件安全网。<br/>让每一次 AI 协作都有退路。</p>
+        </div>
+        <div class="footer-cols">
+          <div>
+            <div class="footer-col-title">产品</div>
+            <ul class="footer-links">
+              <li><a href="#features">功能详情</a></li>
+              <li><a href="#how-it-works">工作原理</a></li>
+              <li><a href="#download">立即下载</a></li>
+            </ul>
+          </div>
+          <div>
+            <div class="footer-col-title">资源</div>
+            <ul class="footer-links">
+              <li><a href="#how-it-works">三步上手</a></li>
+              <li><a href="#features">与 Git 的区别</a></li>
+              <li><a href="#download">系统要求</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span class="footer-copy">© 2026 rew</span>
+        <span class="footer-copy">数据仅存储在你的设备上 · 完全本地运行</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ─── Scripts ─── -->
+  <script>
+    // Nav scroll
+    window.addEventListener('scroll', () => {
+      document.getElementById('navbar').classList.toggle('scrolled', window.scrollY > 20);
+    }, { passive: true });
+
+    // Scroll Reveal
+    const observer = new IntersectionObserver(
+      entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); } }),
+      { threshold: 0.06, rootMargin: '0px 0px -40px 0px' }
+    );
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+    // Smooth anchors
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        const target = document.querySelector(a.getAttribute('href'));
+        if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      });
     });
-  }
 
-  /* ── Windows notify ── */
-  function handleWinNotify() {
-    const email = document.getElementById('win-email').value.trim();
-    const msg = document.getElementById('win-msg');
-    if (!email || !email.includes('@')) { msg.textContent = '请输入有效邮箱'; return; }
-    msg.textContent = '✓ 已记录，上线后第一时间通知你！';
-    document.getElementById('win-email').value = '';
-  }
-</script>
+    // GitHub API - fetch latest release
+    (async function() {
+      try {
+        const res = await fetch('https://api.github.com/repos/kuqili/rew/releases/latest');
+        const data = await res.json();
+        const tag = data.tag_name;
+        const assets = data.assets || [];
+        const arm64Asset = assets.find(a => a.name.includes('aarch64') && a.name.endsWith('.dmg'));
+        const x64Asset   = assets.find(a => a.name.includes('x64')     && a.name.endsWith('.dmg'));
+        if (arm64Asset) {
+          document.getElementById('btn-arm64').href = arm64Asset.browser_download_url;
+          const verEl = document.getElementById('ver-arm64');
+          if (verEl) verEl.textContent = tag;
+        }
+        if (x64Asset) {
+          document.getElementById('btn-x64').href = x64Asset.browser_download_url;
+        }
+      } catch(e) { console.warn('Failed to fetch latest release:', e); }
+    })();
 
-<!-- Three.js WebGL 背景 -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script>
-  const container = document.getElementById('webgl-container');
-  const scene = new THREE.Scene();
-  const camera = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
-  const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: false });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    // Typewriter
+    const text = "Undo Claude Code changes...";
+    const typer = document.getElementById('typer');
+    let index = text.length, isDeleting = true;
+    function typeEffect() {
+      if (!typer) return;
+      typer.value = text.substring(0, index);
+      typer.classList.add('typewriter-effect');
+      let speed = 50;
+      if (isDeleting) { speed = 30; index--; if (index === 0) { isDeleting = false; speed = 800; } }
+      else { speed = 80; index++; if (index === text.length) { isDeleting = true; speed = 2000; } }
+      setTimeout(typeEffect, speed);
+    }
+    setTimeout(typeEffect, 1000);
+  </script>
 
-  const uniforms = {
-    u_time: { value: 0.0 },
-    u_resolution: { value: new THREE.Vector2() },
-    u_mouse: { value: new THREE.Vector2(0.5, 0.5) }
-  };
-
-  function resize() {
-    const w = window.innerWidth, h = 1000;
-    renderer.setSize(w, h);
-    uniforms.u_resolution.value.set(w, h);
-  }
-  window.addEventListener('resize', resize);
-  container.insertBefore(renderer.domElement, container.firstChild);
-  resize();
-
-  document.addEventListener('mousemove', e => {
-    uniforms.u_mouse.value.set(e.clientX / window.innerWidth, 1 - e.clientY / window.innerHeight);
-  });
-
-  const material = new THREE.ShaderMaterial({
-    uniforms,
-    vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
-    fragmentShader: `
-      uniform float u_time; uniform vec2 u_resolution; uniform vec2 u_mouse; varying vec2 vUv;
-      float wave(vec2 p, float t) {
-        float h=0.0,a=1.0; p*=0.8;
-        for(int i=0;i<4;i++){h+=a*sin(p.x+t)*cos(p.y-t);float c=cos(1.2),s=sin(1.2);p=mat2(c,-s,s,c)*p*1.6;a*=0.5;}
-        return h;
-      }
-      void main() {
-        vec2 uv=gl_FragCoord.xy/u_resolution.xy,p=uv*2.-1.; p.x*=u_resolution.x/u_resolution.y;
-        vec2 mouse=u_mouse*2.-1.; p-=mouse*0.05;
-        float t=u_time*0.15; p.y-=0.55;
-        float n1=sin(p.x*2.+t)+cos(p.y*2.+t),n2=cos(p.x*3.-t)+sin(p.y*1.5+t);
-        vec2 warp=vec2(n1,n2)*0.4;
-        float blobDist=length((p+warp)*vec2(1.0,2.0)),blobMask=smoothstep(1.8,0.5,blobDist);
-        float h=wave(p*2.5+warp,t*1.5);
-        vec2 eps=vec2(0.02,0.0);
-        float dx=wave((p+eps.xy)*2.5+warp,t*1.5)-wave((p-eps.xy)*2.5+warp,t*1.5);
-        float dy=wave((p+eps.yx)*2.5+warp,t*1.5)-wave((p-eps.yx)*2.5+warp,t*1.5);
-        vec3 normal=normalize(vec3(dx*2.5,dy*2.5,0.08));
-        vec3 lightDir=normalize(vec3(0.3,0.7,0.5)),viewDir=vec3(0,0,1);
-        float diff=max(dot(normal,lightDir),0.0),spec=pow(max(dot(normal,normalize(lightDir+viewDir)),0.0),35.0);
-        float fresnel=pow(1.-max(dot(normal,viewDir),0.0),4.0);
-        vec3 color=mix(vec3(0),vec3(0.15,0.,0.01),smoothstep(-0.4,0.2,h));
-        color=mix(color,vec3(0.95,0.15,0.1),smoothstep(0.4,1.2,h));
-        color+=vec3(0.95,0.15,0.1)*diff*0.4+vec3(1.,0.3,0.05)*spec*0.7+vec3(0.95,0.15,0.1)*fresnel*0.4;
-        color*=blobMask;
-        float grain=fract(sin(dot(gl_FragCoord.xy*(t+1.),vec2(12.9898,78.233)))*43758.5453);
-        color+=vec3(grain*0.06);
-        color*=smoothstep(0.0,0.5,uv.y);
-        gl_FragColor=vec4(color,1.0);
-      }
-    `
-  });
-
-  const plane = new THREE.Mesh(new THREE.PlaneGeometry(2,2), material);
-  scene.add(plane);
-  const clock = new THREE.Clock();
-  (function animate() { requestAnimationFrame(animate); uniforms.u_time.value=clock.getElapsedTime(); renderer.render(scene,camera); })();
-</script>
-
+  <!-- Three.js WebGL Background -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    const container = document.getElementById('webgl-container');
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    let uniforms;
+    function resize() {
+      const width = window.innerWidth, height = 1100;
+      renderer.setSize(width, height);
+      if (uniforms) uniforms.u_resolution.value.set(width, height);
+    }
+    window.addEventListener('resize', resize);
+    container.insertBefore(renderer.domElement, container.firstChild);
+    uniforms = {
+      u_time: { value: 0.0 },
+      u_resolution: { value: new THREE.Vector2() },
+      u_mouse: { value: new THREE.Vector2(0.5, 0.5) }
+    };
+    resize();
+    document.addEventListener('mousemove', (e) => {
+      uniforms.u_mouse.value.set(e.clientX / window.innerWidth, 1.0 - (e.clientY / window.innerHeight));
+    });
+    const material = new THREE.ShaderMaterial({
+      uniforms,
+      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
+      fragmentShader: `
+        uniform float u_time; uniform vec2 u_resolution; uniform vec2 u_mouse; varying vec2 vUv;
+        // 左右对称的波浪：用 |p.x| 让波形关于 x=0 镜像对称
+        float wave(vec2 p, float t) {
+          float h = 0.0, a = 1.0; p *= 0.8;
+          vec2 q = vec2(abs(p.x), p.y);
+          for (int i = 0; i < 4; i++) {
+            h += a * (sin(q.x + t) * cos(q.y - t) + cos(q.x * 1.3 - t) * sin(q.y * 0.9 + t)) * 0.5;
+            float c = cos(1.2), s = sin(1.2);
+            q = mat2(c,-s,s,c) * q * 1.6;
+            a *= 0.5;
+          }
+          return h;
+        }
+        void main() {
+          vec2 uv = gl_FragCoord.xy / u_resolution.xy;
+          float aspect = u_resolution.x / u_resolution.y;
+          vec2 p = uv * 2.0 - 1.0; p.x *= aspect;
+          // 整体向右平移，让原本偏左的亮区移到画面中央/偏右
+          p.x -= 0.8;
+          float t = u_time * 0.15; p.y -= 0.55;
+          // warp 使用偶函数形式 (cos/cos)，保证 warp(-x) == warp(x)，亮区不会整体漂向一侧
+          float n1 = cos(p.x*2.0+t) + cos(p.y*2.0+t);
+          float n2 = cos(p.x*3.0-t) + sin(p.y*1.5+t);
+          vec2 warp = vec2(n1, n2) * 0.25;
+          // blob mask 只依赖 |p.x|，保证 mask 关于 y 轴严格镜像
+          vec2 pm = vec2(abs(p.x), p.y);
+          float blobDist = length((pm + vec2(0.0, warp.y)) * vec2(1.0/max(aspect,1.0), 2.0));
+          float blobMask = smoothstep(1.0, 0.25, blobDist);
+          float h = wave(p*2.5+warp, t*1.5);
+          vec2 eps = vec2(0.02,0.0);
+          float dx = wave((p+eps.xy)*2.5+warp,t*1.5)-wave((p-eps.xy)*2.5+warp,t*1.5);
+          float dy = wave((p+eps.yx)*2.5+warp,t*1.5)-wave((p-eps.yx)*2.5+warp,t*1.5);
+          vec3 normal = normalize(vec3(dx*2.5,dy*2.5,0.08));
+          // 光源水平居中
+          vec3 lightDir = normalize(vec3(0.0,0.7,0.5)), viewDir = vec3(0,0,1);
+          float diff = max(dot(normal,lightDir),0.0);
+          vec3 hv = normalize(lightDir+viewDir); float spec = pow(max(dot(normal,hv),0.0),35.0);
+          float fresnel = pow(1.0-max(dot(normal,viewDir),0.0),4.0);
+          vec3 cBlack=vec3(0),cDarkRed=vec3(0.15,0,0.01),cRed=vec3(0.95,0.15,0.1),cOrange=vec3(1.0,0.3,0.05);
+          vec3 color = mix(cBlack,cDarkRed,smoothstep(-0.4,0.2,h));
+          color = mix(color,cRed,smoothstep(0.4,1.2,h));
+          color += cRed*diff*0.4 + cOrange*spec*0.7 + cRed*fresnel*0.4;
+          color *= blobMask;
+          float grain = fract(sin(dot(gl_FragCoord.xy*(t+1.0),vec2(12.9898,78.233)))*43758.5453);
+          color += vec3(grain*0.06);
+          color *= smoothstep(0.0,0.5,uv.y);
+          gl_FragColor = vec4(color, 1.0);
+        }
+      `
+    });
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+    scene.add(plane);
+    const clock = new THREE.Clock();
+    function animate() { requestAnimationFrame(animate); uniforms.u_time.value = clock.getElapsedTime(); renderer.render(scene, camera); }
+    animate();
+  </script>
 </body>
 </html>

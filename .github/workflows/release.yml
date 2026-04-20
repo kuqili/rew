@@ -72,6 +72,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ── Sync version from git tag ─────────────────────────────
+      # Tauri uses the version in tauri.conf.json / Cargo.toml to name
+      # the DMG (e.g. rew_0.1.2_aarch64.dmg). Without this step the
+      # filename would always contain the stale version hardcoded in
+      # those files, causing 404s on the download page.
+      - name: Sync version from git tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "📌 Syncing version to $VERSION"
+
+          # tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+
+          # src-tauri/Cargo.toml (first version = line under [package])
+          sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+
+          echo "✅ tauri.conf.json version: $(jq -r .version src-tauri/tauri.conf.json)"
+          echo "✅ Cargo.toml version: $(grep '^version' src-tauri/Cargo.toml | head -1)"
+
       # ── Rust toolchain ──────────────────────────────────────────
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
