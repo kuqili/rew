@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened Runtime 基础要求（公证必须） -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <false/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+
+    <!-- rew 需要读写用户文件（FSEvents 文件监控） -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- 允许访问所有文件（rew 需要监控任意目录） -->
+    <key>com.apple.security.files.all</key>
+    <true/>
+
+    <!-- 网络访问（如有需要） -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

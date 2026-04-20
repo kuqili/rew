@@ -112,16 +112,26 @@ jobs:
           cargo build --release -p rew-cli --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release/rew src-tauri/rew
 
+      # ── Import Developer ID certificate ────────────────────────
+      - name: Import code signing certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      # ── Place API key for notarization ──────────────────────────
+      - name: Place notarization API key
+        run: |
+          mkdir -p ~/.private_keys
+          echo "${{ secrets.APPLE_API_KEY_CONTENT }}" > ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          chmod 600 ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+
       # ── Build Tauri app (.dmg) ──────────────────────────────────
       - name: Build Tauri app (.dmg)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Code signing is disabled (signingIdentity is null in tauri.conf.json).
-          # Users will need to right-click → Open on first launch (Gatekeeper bypass).
-          # To enable signing, set these secrets in GitHub repo settings:
-          #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
-          #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'rew ${{ github.ref_name }}'
@@ -132,12 +142,61 @@ jobs:
             - **Apple Silicon (M1/M2/M3/M4)**：下载 `rew_*_aarch64.dmg`
             - **Intel Mac**：下载 `rew_*_x64.dmg`
 
-            ### 首次打开说明（Gatekeeper）
-            由于 rew 暂未完成 Apple 公证，首次打开时 macOS 会提示「无法验证开发者」：
-            1. 在 Finder 中找到 rew.app，**右键 → 打开**
-            2. 弹窗中点击「打开」即可永久允许
-            3. 后续启动无需重复此操作
-
           releaseDraft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}   # v1.0.0-beta → prerelease
+          prerelease: ${{ contains(github.ref_name, '-') }}
           args: --target ${{ matrix.target }}
+
+      # ── Re-sign CLI binary inside .app + notarize + staple ──────
+      - name: Sign CLI binary, notarize and staple
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          TARGET=${{ matrix.target }}
+          APP_PATH="target/release/bundle/macos/rew.app"
+          DMG_PATH=$(ls target/release/bundle/dmg/rew_*.dmg | head -1)
+
+          echo "✍️ Re-sign CLI binary inside .app..."
+          codesign --force \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --options runtime \
+            --timestamp \
+            --entitlements src-tauri/entitlements.plist \
+            "$APP_PATH/Contents/Resources/rew"
+
+          echo "✍️ Re-sign .app..."
+          codesign --force \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --options runtime \
+            --timestamp \
+            --entitlements src-tauri/entitlements.plist \
+            "$APP_PATH"
+
+          echo "📦 Rebuild DMG..."
+          rm -f "$DMG_PATH"
+          hdiutil create \
+            -volname "rew" \
+            -srcfolder "$APP_PATH" \
+            -ov -format UDZO \
+            "$DMG_PATH"
+
+          echo "✍️ Sign DMG..."
+          codesign --force \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --timestamp \
+            "$DMG_PATH"
+
+          echo "🔏 Notarize..."
+          xcrun notarytool submit "$DMG_PATH" \
+            --key ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8 \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+
+          echo "📎 Staple..."
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler staple "$DMG_PATH"
+
+          echo "🔍 Verify..."
+          spctl --assess --type exec --verbose "$APP_PATH"

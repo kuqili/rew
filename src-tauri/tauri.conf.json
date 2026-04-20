@@ -45,9 +45,9 @@
     "macOS": {
       "frameworks": [],
       "minimumSystemVersion": "11.0",
-      "signingIdentity": null,
-      "providerShortName": null,
-      "entitlements": null
+      "signingIdentity": "Developer ID Application: xu zhang (TV3TFAJ56J)",
+      "providerShortName": "TV3TFAJ56J",
+      "entitlements": "entitlements.plist"
     }
   }
 }
