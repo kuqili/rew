@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { X, Plus, FolderOpen, RefreshCw, Trash2, ChevronDown, ChevronRight, Info, CheckCircle, Settings, Clock, Cpu, HelpCircle } from "lucide-react";
 import { useScanProgress } from "../hooks/useScanProgress";
 import { getToolBrandIcon } from "./ToolIcons";
@@ -1031,10 +1032,12 @@ function InfoNote({ children }: { children: React.ReactNode }) {
 // ─── About Tab ───
 function AboutTab({ storage, fmt }: { storage: StorageInfo | null; fmt: (b: number) => string }) {
   const { status, updateInfo, progress, error, checkForUpdates, downloadAndInstall, restart } = useUpdater();
+  const [appVersion, setAppVersion] = useState<string>('...');
 
-  // 组件挂载时自动静默检查更新
+  // 组件挂载时自动静默检查更新 + 读取动态版本号
   useEffect(() => {
     checkForUpdates();
+    getVersion().then(setAppVersion).catch(() => setAppVersion('0.1.0'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1045,67 +1048,93 @@ function AboutTab({ storage, fmt }: { storage: StorageInfo | null; fmt: (b: numb
         实时监控文件，AI 工具操作时自动备份。误删或改错，一键撤销。
       </p>
       <div className="text-[11px] text-t-3 space-y-1">
-        <div>版本: 0.1.0</div>
+        <div>版本: {appVersion}</div>
         <div>存储: APFS clonefile (CoW)</div>
         <div>作者（联系人）: kuqili</div>
         {storage && <div>备份: {storage.object_count.toLocaleString()} 对象 · {fmt(storage.apparent_bytes)}</div>}
       </div>
 
-      {/* 有新版本时才显示更新区域 */}
-      {(status === 'available' || status === 'downloading' || status === 'ready' || status === 'error') && (
-        <div className="pt-3 border-t border-border space-y-2">
-          <h4 className="text-[11px] font-semibold text-t-1">软件更新</h4>
+      {/* 软件更新区域 — 始终显示 */}
+      <div className="pt-3 border-t border-border space-y-2">
+        <h4 className="text-[11px] font-semibold text-t-1">软件更新</h4>
 
-          {status === 'available' && updateInfo && (
-            <div className="space-y-2">
-              <p className="text-[11px] text-t-2">
-                发现新版本 <span className="font-semibold text-t-1">{updateInfo.version}</span>
+        {(status === 'idle' || status === 'up-to-date') && (
+          <div className="flex items-center gap-2">
+            {status === 'up-to-date' && (
+              <p className="text-[11px] text-t-3 flex items-center gap-1">
+                <CheckCircle className="w-3 h-3 text-sys-green" /> 已是最新版本
               </p>
-              {updateInfo.body && (
-                <p className="text-[11px] text-t-3 leading-relaxed whitespace-pre-wrap bg-bg-grouped rounded-md p-2">
-                  {updateInfo.body}
-                </p>
-              )}
-              <button
-                onClick={downloadAndInstall}
-                className="px-3 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover transition-colors cursor-default"
-              >
-                下载并安装
-              </button>
-            </div>
-          )}
+            )}
+            <button
+              onClick={checkForUpdates}
+              className="px-3 py-1.5 rounded-md bg-bg-grouped text-t-1 text-[12px] font-medium hover:bg-border transition-colors cursor-default"
+            >
+              检查更新
+            </button>
+          </div>
+        )}
 
-          {status === 'downloading' && (
-            <div className="space-y-1.5">
-              <p className="text-[11px] text-t-3">正在下载… {progress}%</p>
-              <div className="w-full h-1.5 bg-border rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-sys-blue rounded-full transition-all duration-200"
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-            </div>
-          )}
+        {status === 'checking' && (
+          <p className="text-[11px] text-t-3">正在检查更新…</p>
+        )}
 
-          {status === 'ready' && (
-            <div className="space-y-2">
-              <p className="text-[11px] text-sys-green flex items-center gap-1">
-                <CheckCircle className="w-3 h-3" /> 下载完成，重启后生效
+        {status === 'available' && updateInfo && (
+          <div className="space-y-2">
+            <p className="text-[11px] text-t-2">
+              发现新版本 <span className="font-semibold text-t-1">{updateInfo.version}</span>
+            </p>
+            {updateInfo.body && (
+              <p className="text-[11px] text-t-3 leading-relaxed whitespace-pre-wrap bg-bg-grouped rounded-md p-2">
+                {updateInfo.body}
               </p>
-              <button
-                onClick={restart}
-                className="px-3 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover transition-colors cursor-default"
-              >
-                立即重启
-              </button>
-            </div>
-          )}
+            )}
+            <button
+              onClick={downloadAndInstall}
+              className="px-3 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover transition-colors cursor-default"
+            >
+              下载并安装
+            </button>
+          </div>
+        )}
 
-          {status === 'error' && (
+        {status === 'downloading' && (
+          <div className="space-y-1.5">
+            <p className="text-[11px] text-t-3">正在下载… {progress}%</p>
+            <div className="w-full h-1.5 bg-border rounded-full overflow-hidden">
+              <div
+                className="h-full bg-sys-blue rounded-full transition-all duration-200"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {status === 'ready' && (
+          <div className="space-y-2">
+            <p className="text-[11px] text-sys-green flex items-center gap-1">
+              <CheckCircle className="w-3 h-3" /> 下载完成，重启后生效
+            </p>
+            <button
+              onClick={restart}
+              className="px-3 py-1.5 rounded-md bg-sys-blue text-white text-[12px] font-medium hover:bg-sys-blue-hover transition-colors cursor-default"
+            >
+              立即重启
+            </button>
+          </div>
+        )}
+
+        {status === 'error' && (
+          <div className="space-y-1.5">
             <p className="text-[11px] text-t-3">更新检查失败（{error}）</p>
-          )}
-        </div>
-      )}
+            <button
+              onClick={checkForUpdates}
+              className="px-3 py-1.5 rounded-md bg-bg-grouped text-t-1 text-[12px] font-medium hover:bg-border transition-colors cursor-default"
+            >
+              重新检查
+            </button>
+          </div>
+        )}
+      </div>
 
       <div className="pt-3 border-t border-border">
         <h4 className="text-[11px] font-semibold text-t-1 mb-2">默认不备份的文件类型</h4>
