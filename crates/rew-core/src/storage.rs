@@ -807,12 +807,20 @@ mod tests {
         }
 
         // Tier 3: 4 snapshots, 2 per day for 2 days (5-6 days ago)
-        // Use offsets that land on the same calendar day
+        // Anchor at noon (UTC) of the target calendar day to avoid midnight-crossing
+        // issues when the test runs in the early morning hours (e.g. UTC 02:xx).
+        // Subtracting hours from `now` can push timestamps into a different calendar
+        // day, splitting what should be one daily bucket into two.
         for d in 5..7i64 {
-            for h in &[2i64, 3] {
+            let day_noon = (now - Duration::days(d))
+                .date_naive()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc();
+            for offset_hours in &[0i64, 2] {
                 insert_snapshot_at(
                     manager.db(),
-                    now - Duration::days(d) - Duration::hours(*h),
+                    day_noon + Duration::hours(*offset_hours),
                     SnapshotTrigger::Auto,
                     false,
                 );
