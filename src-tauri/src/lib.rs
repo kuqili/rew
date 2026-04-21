@@ -245,8 +245,21 @@ pub fn run() {
                 api.prevent_close();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running rew");
+        .build(tauri::generate_context!())
+        .expect("error while building rew")
+        .run(|app_handle, event| {
+            // macOS: clicking the Dock icon when all windows are hidden
+            // should bring the main window back to the front.
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+                if !has_visible_windows {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                        let _ = window.unminimize();
+                    }
+                }
+            }
+        });
 }
 
 /// Copy the bundled `rew` CLI binary from the .app resources to ~/.rew/bin/rew.
