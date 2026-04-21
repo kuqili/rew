@@ -122,21 +122,8 @@ jobs:
         run: pnpm install
         working-directory: gui
 
-      # ── Build CLI binary for target architecture ─────────────────
-      # Sign CLI with hardened runtime BEFORE tauri-action so the DMG
-      # Tauri produces is already correct — no DMG rebuild needed later.
-      - name: Build rew CLI for ${{ matrix.target }}
-        run: |
-          cargo build --release -p rew-cli --target ${{ matrix.target }}
-          codesign --force \
-            --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
-            --options runtime \
-            --timestamp \
-            --entitlements src-tauri/entitlements.plist \
-            target/${{ matrix.target }}/release/rew
-          cp target/${{ matrix.target }}/release/rew src-tauri/rew
-
       # ── Import Developer ID certificate ────────────────────────
+      # Must come BEFORE codesign calls (CLI signing + tauri-action)
       - name: Import code signing certificate
         uses: apple-actions/import-codesign-certs@v3
         with:
@@ -149,6 +136,21 @@ jobs:
           mkdir -p ~/.private_keys
           echo "${{ secrets.APPLE_API_KEY_CONTENT }}" > ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
           chmod 600 ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+
+      # ── Build CLI binary for target architecture ─────────────────
+      # Sign CLI with hardened runtime BEFORE tauri-action so the DMG
+      # Tauri produces is already correct — no DMG rebuild needed later.
+      # Certificate must already be in keychain (imported above).
+      - name: Build rew CLI for ${{ matrix.target }}
+        run: |
+          cargo build --release -p rew-cli --target ${{ matrix.target }}
+          codesign --force \
+            --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
+            --options runtime \
+            --timestamp \
+            --entitlements src-tauri/entitlements.plist \
+            target/${{ matrix.target }}/release/rew
+          cp target/${{ matrix.target }}/release/rew src-tauri/rew
 
       # ── Build Tauri app (.dmg) ──────────────────────────────────
       - name: Build Tauri app (.dmg)
