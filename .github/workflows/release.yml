@@ -197,11 +197,17 @@ jobs:
 
           echo "📦 Rebuild DMG with re-signed .app..."
           rm -f "$DMG_PATH"
+          # Build a staging dir containing the app + /Applications symlink
+          # so the DMG window shows the drag-to-install UI
+          STAGING=$(mktemp -d)
+          cp -R "$APP_PATH" "$STAGING/rew.app"
+          ln -s /Applications "$STAGING/Applications"
           hdiutil create \
             -volname "rew" \
-            -srcfolder "$APP_PATH" \
+            -srcfolder "$STAGING" \
             -ov -format UDZO \
             "$DMG_PATH"
+          rm -rf "$STAGING"
 
           echo "✍️ Sign DMG..."
           codesign --force \

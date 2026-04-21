@@ -18,7 +18,8 @@ IDENTITY="Developer ID Application: xu zhang (TV3TFAJ56J)"
 ROOT="/Users/kuqili/Desktop/project/rew"
 APP_DST="/Applications/rew.app"
 ENTITLEMENTS="$ROOT/src-tauri/entitlements.plist"
-SRC_APP="$ROOT/src-tauri/target/release/bundle/macos/rew.app"
+# src-tauri 是 Cargo workspace 成员，编译产物统一输出到根 target/，不是 src-tauri/target/
+SRC_APP="$ROOT/target/release/bundle/macos/rew.app"
 SRC_BIN="$SRC_APP/Contents/MacOS/rew-tauri"
 DST_BIN="$APP_DST/Contents/MacOS/rew-tauri"
 
@@ -47,10 +48,6 @@ unset APPLE_API_KEY APPLE_API_KEY_PATH APPLE_API_ISSUER APPLE_API_KEY_ID
 # 私钥由 `cargo tauri signer generate` 生成，存放在 ~/.tauri/rew.key
 export TAURI_SIGNING_PRIVATE_KEY=$(cat "$HOME/.tauri/rew.key")
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
-# Cargo 使用内容 hash 做 fingerprint，tauri.conf.json 变化不一定触发重编。
-# 直接删掉旧产物，强制 Cargo 重新编译并链接，确保最新配置嵌入二进制。
-rm -f "$ROOT/src-tauri/target/release/rew-tauri"
-rm -f "$ROOT/src-tauri/target/release/librew_tauri_lib.rlib"
 CI=true cargo tauri build --bundles app
 
 # ── 本地模式：安装到 /Applications ───────────────────────────
