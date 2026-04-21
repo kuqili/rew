@@ -123,12 +123,17 @@ jobs:
         working-directory: gui
 
       # ── Build CLI binary for target architecture ─────────────────
-      # Must be done before tauri-action because the CLI binary is
-      # bundled as a resource inside the .app. Cross-compiling ensures
-      # the binary matches the target arch (arm64 or x64).
+      # Sign CLI with hardened runtime BEFORE tauri-action so the DMG
+      # Tauri produces is already correct — no DMG rebuild needed later.
       - name: Build rew CLI for ${{ matrix.target }}
         run: |
           cargo build --release -p rew-cli --target ${{ matrix.target }}
+          codesign --force \
+            --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
+            --options runtime \
+            --timestamp \
+            --entitlements src-tauri/entitlements.plist \
+            target/${{ matrix.target }}/release/rew
           cp target/${{ matrix.target }}/release/rew src-tauri/rew
 
       # ── Import Developer ID certificate ────────────────────────
@@ -167,10 +172,11 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           args: --target ${{ matrix.target }}
 
-      # ── Re-sign CLI binary inside .app + notarize + staple ──────
-      - name: Sign CLI binary, notarize and staple
+      # ── Notarize + staple ────────────────────────────────────────
+      # CLI was pre-signed before tauri-action, so the Tauri-generated
+      # DMG already has the correct layout. Only notarize and staple.
+      - name: Notarize and staple
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -178,42 +184,6 @@ jobs:
           TARGET=${{ matrix.target }}
           APP_PATH="target/${TARGET}/release/bundle/macos/rew.app"
           DMG_PATH=$(ls target/${TARGET}/release/bundle/dmg/rew_*.dmg | head -1)
-
-          echo "✍️ Re-sign CLI binary inside .app..."
-          codesign --force \
-            --sign "$APPLE_SIGNING_IDENTITY" \
-            --options runtime \
-            --timestamp \
-            --entitlements src-tauri/entitlements.plist \
-            "$APP_PATH/Contents/Resources/rew"
-
-          echo "✍️ Re-sign .app..."
-          codesign --force \
-            --sign "$APPLE_SIGNING_IDENTITY" \
-            --options runtime \
-            --timestamp \
-            --entitlements src-tauri/entitlements.plist \
-            "$APP_PATH"
-
-          echo "📦 Rebuild DMG with re-signed .app..."
-          rm -f "$DMG_PATH"
-          # Build a staging dir containing the app + /Applications symlink
-          # so the DMG window shows the drag-to-install UI
-          STAGING=$(mktemp -d)
-          cp -R "$APP_PATH" "$STAGING/rew.app"
-          ln -s /Applications "$STAGING/Applications"
-          hdiutil create \
-            -volname "rew" \
-            -srcfolder "$STAGING" \
-            -ov -format UDZO \
-            "$DMG_PATH"
-          rm -rf "$STAGING"
-
-          echo "✍️ Sign DMG..."
-          codesign --force \
-            --sign "$APPLE_SIGNING_IDENTITY" \
-            --timestamp \
-            "$DMG_PATH"
 
           echo "🔏 Notarize DMG..."
           xcrun notarytool submit "$DMG_PATH" \
@@ -230,5 +200,5 @@ jobs:
           spctl --assess --type exec --verbose "$APP_PATH"
           spctl --assess --type install --verbose "$DMG_PATH" 2>&1 || true
 
-          echo "⬆️ Replace Release asset with notarized DMG..."
+          echo "⬆️ Upload notarized DMG..."
           gh release upload "${{ github.ref_name }}" "$DMG_PATH" --clobber
