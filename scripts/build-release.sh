@@ -43,6 +43,14 @@ cd "$ROOT"
 # ── Step 4: 打包 app ─────────────────────────────────────────
 echo "== 4) 打包最新 App =="
 unset APPLE_API_KEY APPLE_API_KEY_PATH APPLE_API_ISSUER APPLE_API_KEY_ID
+# tauri.conf.json 配置了 pubkey，本地构建需要同时提供私钥
+# 私钥由 `cargo tauri signer generate` 生成，存放在 ~/.tauri/rew.key
+export TAURI_SIGNING_PRIVATE_KEY=$(cat "$HOME/.tauri/rew.key")
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+# Cargo 使用内容 hash 做 fingerprint，tauri.conf.json 变化不一定触发重编。
+# 直接删掉旧产物，强制 Cargo 重新编译并链接，确保最新配置嵌入二进制。
+rm -f "$ROOT/src-tauri/target/release/rew-tauri"
+rm -f "$ROOT/src-tauri/target/release/librew_tauri_lib.rlib"
 CI=true cargo tauri build --bundles app
 
 # ── 本地模式：安装到 /Applications ───────────────────────────
