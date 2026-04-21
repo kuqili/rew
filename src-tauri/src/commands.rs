@@ -1159,6 +1159,10 @@ pub async fn get_insights(
 pub struct ChangeDiffResult {
     /// Unified diff text ready for display, or None for binary files.
     pub diff_text: Option<String>,
+    /// Object hash of the old version (for binary preview).
+    pub old_hash: Option<String>,
+    /// Object hash of the new version (for binary preview).
+    pub new_hash: Option<String>,
     /// Re-computed lines added (may update stale DB value).
     pub lines_added: u32,
     /// Re-computed lines removed.
@@ -1202,15 +1206,31 @@ pub async fn get_change_diff(
     Ok(match result {
         Some(dr) => ChangeDiffResult {
             diff_text: Some(dr.text),
+            old_hash: old_hash.clone(),
+            new_hash: new_hash.clone(),
             lines_added: dr.lines_added,
             lines_removed: dr.lines_removed,
         },
         None => ChangeDiffResult {
             diff_text: None, // binary file
+            old_hash: old_hash.clone(),
+            new_hash: new_hash.clone(),
             lines_added: 0,
             lines_removed: 0,
         },
     })
+}
+
+/// Read a stored object by hash and return its content as a base64-encoded string.
+/// Used by the frontend to preview binary files (images) from snapshots.
+#[tauri::command]
+pub async fn get_object_base64(hash: String) -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let objects_root = rew_home_dir().join("objects");
+    let obj_store = rew_core::objects::ObjectStore::new(objects_root).map_err(|e| e.to_string())?;
+    let path = obj_store.retrieve(&hash).ok_or_else(|| format!("Object {} not found", hash))?;
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(STANDARD.encode(&bytes))
 }
 
 // ----------------------------------------------------------------

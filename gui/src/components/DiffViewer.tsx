@@ -1,9 +1,16 @@
 /**
  * DiffViewer — dark-themed unified diff with line numbers.
+ * Also renders before/after image previews for binary image files.
  */
 interface Props {
   diffText: string | null;
   loading?: boolean;
+  /** base64-encoded content of the old version (for image preview) */
+  imageBefore?: string | null;
+  /** base64-encoded content of the new version (for image preview) */
+  imageAfter?: string | null;
+  /** MIME type for the image, e.g. "image/png" */
+  imageMime?: string;
 }
 
 interface DiffLine {
@@ -53,7 +60,7 @@ function parseDiff(text: string): DiffLine[] {
   return lines;
 }
 
-export default function DiffViewer({ diffText, loading }: Props) {
+export default function DiffViewer({ diffText, loading, imageBefore, imageAfter, imageMime = "image/png" }: Props) {
   if (loading) {
     return (
       <div className="px-6 py-4 text-zinc-500 text-[12px] flex items-center gap-2 bg-zinc-900">
@@ -63,6 +70,34 @@ export default function DiffViewer({ diffText, loading }: Props) {
   }
 
   if (!diffText) {
+    const hasBefore = imageBefore != null;
+    const hasAfter = imageAfter != null;
+    if (hasBefore || hasAfter) {
+      return (
+        <div className="bg-zinc-900 p-3 flex gap-3 flex-wrap">
+          {hasBefore && (
+            <div className="flex flex-col items-center gap-1 flex-1 min-w-0">
+              <span className="text-[10px] text-red-400 font-mono select-none">旧版本</span>
+              <img
+                src={`data:${imageMime};base64,${imageBefore}`}
+                alt="旧版本"
+                className="max-w-full max-h-72 object-contain rounded border border-red-900/40"
+              />
+            </div>
+          )}
+          {hasAfter && (
+            <div className="flex flex-col items-center gap-1 flex-1 min-w-0">
+              <span className="text-[10px] text-emerald-400 font-mono select-none">新版本</span>
+              <img
+                src={`data:${imageMime};base64,${imageAfter}`}
+                alt="新版本"
+                className="max-w-full max-h-72 object-contain rounded border border-emerald-900/40"
+              />
+            </div>
+          )}
+        </div>
+      );
+    }
     return (
       <div className="px-6 py-4 text-zinc-600 text-[12px] text-center bg-zinc-900">
         二进制文件或无可用 diff

@@ -127,8 +127,14 @@ export interface InsightsDataInfo {
 
 export interface ChangeDiffResult {
   diff_text: string | null;
+  old_hash: string | null;
+  new_hash: string | null;
   lines_added: number;
   lines_removed: number;
+}
+
+export async function getObjectBase64(hash: string): Promise<string> {
+  return invoke<string>("get_object_base64", { hash });
 }
 
 export interface UndoPreviewInfo {

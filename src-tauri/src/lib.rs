@@ -105,6 +105,7 @@ pub fn run() {
             // Task statistics
             commands::get_task_stats,
             commands::get_insights,
+            commands::get_object_base64,
         ])
         .setup(|app| {
             // Install CLI binary from bundled resources to ~/.rew/bin/rew

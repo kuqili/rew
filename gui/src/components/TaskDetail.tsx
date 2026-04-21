@@ -15,6 +15,7 @@ import {
   restoreFile,
   restoreDirectory,
   getChangeDiff,
+  getObjectBase64,
   stopTask,
 } from "../lib/tauri";
 import { timeAgo, fileName, dirName } from "../lib/format";
@@ -539,17 +540,40 @@ function FileRowWithDiff({
   const [diffText, setDiffText] = useState<string | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffLoaded, setDiffLoaded] = useState(false);
+  const [imageBefore, setImageBefore] = useState<string | null>(null);
+  const [imageAfter, setImageAfter] = useState<string | null>(null);
+  const [imageMime, setImageMime] = useState<string>("image/png");
 
-  // Load diff when expanded
+  // Detect if file is a previewable image by extension
+  const imageExtensions: Record<string, string> = {
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+    gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml",
+  };
+  const fileExt = change.file_path.split(".").pop()?.toLowerCase() ?? "";
+  const isImage = fileExt in imageExtensions;
+
+  // Load diff (and image previews for binary image files) when expanded
   useEffect(() => {
     if (expanded && !diffLoaded) {
       setDiffLoading(true);
       getChangeDiff(taskId, change.file_path)
-        .then((res) => { setDiffText(res.diff_text); setDiffLoaded(true); })
+        .then(async (res) => {
+          setDiffText(res.diff_text);
+          setDiffLoaded(true);
+          if (!res.diff_text && isImage) {
+            setImageMime(imageExtensions[fileExt] ?? "image/png");
+            const [before, after] = await Promise.all([
+              res.old_hash ? getObjectBase64(res.old_hash).catch(() => null) : Promise.resolve(null),
+              res.new_hash ? getObjectBase64(res.new_hash).catch(() => null) : Promise.resolve(null),
+            ]);
+            setImageBefore(before);
+            setImageAfter(after);
+          }
+        })
         .catch(() => { setDiffText(null); setDiffLoaded(true); })
         .finally(() => setDiffLoading(false));
     }
-  }, [expanded, diffLoaded, taskId, change.file_path]);
+  }, [expanded, diffLoaded, taskId, change.file_path]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const canRestore =
     (change.change_type === "modified" || change.change_type === "deleted" || change.change_type === "renamed") &&
@@ -674,7 +698,13 @@ function FileRowWithDiff({
           </div>
           {/* Diff content */}
           <div className="max-h-[400px] overflow-y-auto">
-            <DiffViewer diffText={diffText} loading={diffLoading} />
+            <DiffViewer
+              diffText={diffText}
+              loading={diffLoading}
+              imageBefore={imageBefore}
+              imageAfter={imageAfter}
+              imageMime={imageMime}
+            />
           </div>
         </div>
       )}
