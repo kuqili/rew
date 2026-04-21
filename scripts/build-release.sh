@@ -93,7 +93,8 @@ if [[ "$MODE" == "local" ]]; then
 fi
 
 # ── 发版模式：签名 + 公证 + staple ──────────────────────────
-DMG_DIR="$ROOT/src-tauri/target/release/bundle/dmg"
+# src-tauri 是 workspace 成员，DMG 产物在根 target/，不在 src-tauri/target/
+DMG_DIR="$ROOT/target/release/bundle/dmg"
 DMG_PATH=$(ls "$DMG_DIR/rew_"*.dmg 2>/dev/null | head -1 || echo "")
 
 echo "== 5) 签名 CLI 二进制 =="
@@ -112,13 +113,17 @@ codesign --force \
   --entitlements "$ENTITLEMENTS" \
   "$SRC_APP"
 
-echo "== 5c) 重打 DMG =="
+echo "== 5c) 重打 DMG（含 Applications 快捷方式）=="
 rm -f "$DMG_PATH"
+STAGING=$(mktemp -d)
+cp -R "$SRC_APP" "$STAGING/rew.app"
+ln -s /Applications "$STAGING/Applications"
 hdiutil create \
   -volname "rew" \
-  -srcfolder "$SRC_APP" \
+  -srcfolder "$STAGING" \
   -ov -format UDZO \
   "$DMG_DIR/rew_release.dmg"
+rm -rf "$STAGING"
 DMG_PATH="$DMG_DIR/rew_release.dmg"
 codesign --force --sign "$IDENTITY" --timestamp "$DMG_PATH"
 
